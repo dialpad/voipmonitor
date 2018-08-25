@@ -1457,7 +1457,7 @@ fail_exit:
 }
 
 int get_ip_port_from_sdp(Call *call, char *sdp_text, size_t sdp_text_len,
-			 in_addr_t *addr, unsigned short *port, unsigned short *port2, int8_t *protocol, int8_t *fax, 
+			 in_addr_t *addr, unsigned short *port, int8_t *protocol, int8_t *fax, 
 			 char *sessid, list<rtp_crypto_config> **rtp_crypto_config_list, int8_t *rtcp_mux, int sip_method){
 	unsigned long l;
 	char *s;
@@ -1542,24 +1542,6 @@ int get_ip_port_from_sdp(Call *call, char *sdp_text, size_t sdp_text_len,
 			}
 		}
 	}
-
-	s = gettag(sdp_text, sdp_text_len, NULL,
-			   "m=video ", &l, &gettagLimitLen);
-	if (l == 0 || (*port2 = atoi(s)) == 0)
-	{
-		s = gettag(sdp_text, sdp_text_len, NULL,
-				   "m=image ", &l, &gettagLimitLen);
-		if (l == 0 || (*port2 = atoi(s)) == 0)
-		{
-			*port2 = 0;
-			return 1;
-		}
-		else
-		{
-			*fax = 1;
-		}
-	}
-
 	s = gettag(sdp_text, sdp_text_len, NULL,
 		   "a=crypto:", &l, &gettagLimitLen);
 	if(l > 0) {
@@ -2622,14 +2604,13 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 
 	in_addr_t tmp_addr;
 	unsigned short tmp_port;
-	unsigned short tmp_port2 = 0;
 	int rtpmap[MAX_RTPMAP];
 	memset(rtpmap, 0, sizeof(int) * MAX_RTPMAP);
 	s_sdp_flags sdp_flags;
 	char sessid[MAXLEN_SDP_SESSID];
 	list<rtp_crypto_config> *rtp_crypto_config_list = NULL;
 	if (!get_ip_port_from_sdp(call, sdp, sdplen,
-				  &tmp_addr, &tmp_port, &tmp_port2, &sdp_flags.protocol, &sdp_flags.is_fax, 
+				  &tmp_addr, &tmp_port, &sdp_flags.protocol, &sdp_flags.is_fax, 
 				  sessid, &rtp_crypto_config_list, &sdp_flags.rtcp_mux, packetS->sip_method)){
 		bool ok_ip_port = true;
 		if(opt_sdp_ignore_ip_port.size()) {
@@ -2684,26 +2665,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 					call->add_ip_port_hash(packetS->saddr, packetS->saddr, ip_port_call_info::_ta_sdp_reverse_ipport, tmp_port, packetS->header_pt, 
 							       sessid, rtp_crypto_config_list, to, branch, iscaller, rtpmap, sdp_flags);
 				}
-				//m=video support
-				if (tmp_port2)
-				{
-					call->add_ip_port_hash(packetS->saddr, tmp_addr, ip_port_call_info::_ta_base, tmp_port2, packetS->header_pt,
-										   sessid, rtp_crypto_config_list, to, branch, iscaller, rtpmap, sdp_flags);
-					// check if the IP address is listed in nat_aliases
-					in_addr_t alias = 0;
-					if ((alias = match_nat_aliases(tmp_addr)) != 0)
-					{
-						call->add_ip_port_hash(packetS->saddr, alias, ip_port_call_info::_ta_natalias, tmp_port2, packetS->header_pt,
-											   sessid, rtp_crypto_config_list, to, branch, iscaller, rtpmap, sdp_flags);
-					}
-					if (opt_sdp_reverse_ipport)
-					{
-						call->add_ip_port_hash(packetS->saddr, packetS->saddr, ip_port_call_info::_ta_sdp_reverse_ipport, tmp_port2, packetS->header_pt,
-											   sessid, rtp_crypto_config_list, to, branch, iscaller, rtpmap, sdp_flags);
-					}
-				}
 			}
-			
 			if(rtp_crypto_config_list) {
 				delete rtp_crypto_config_list;
 			}
