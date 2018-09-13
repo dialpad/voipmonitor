@@ -1945,7 +1945,7 @@ int get_rtpmap_from_sdp(char *sdp_text, unsigned long len, bool is_video, RTPMAP
 }
 
 int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, size_t sdp_text_len,
-			 int sip_method, char *sessid, 
+			 int sip_method, char *sessid,
 			 s_sdp_media_data *sdp_media_data,
 			 list<s_sdp_media_data*> **next_sdp_media_data) {
 	unsigned long l;
@@ -1954,7 +1954,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 	if(!sdp_text_len) {
 		sdp_text_len = strlen(sdp_text);
 	}
-	
+
 	s = _gettag(sdp_text,sdp_text_len, "o=", &l);
 	if(l == 0) return 0;
 	while(l > 0 && *s != ' ') {
@@ -1973,7 +1973,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 	unsigned sessid_length = MIN(ispace, MAXLEN_SDP_SESSID - 1);
 	memcpy(sessid, s, sessid_length);
 	sessid[sessid_length] = 0;
-	
+
 	vmIP ip;
 	s = _gettag(sdp_text, sdp_text_len,
 		    packetS->saddr_().is_v6() ? "c=IN IP6 " : "c=IN IP4 ",
@@ -1985,7 +1985,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		ip_str[ip_length] = 0;
 		ip.setFromString(ip_str);
 	}
-	
+
 	unsigned sdp_media_start_max = 10;
 	unsigned sdp_media_start_count = 0;
 	char *sdp_media_start[sdp_media_start_max];
@@ -1993,10 +1993,10 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 	vmPort sdp_media_port[sdp_media_start_max];
 	while(sdp_media_start_count < sdp_media_start_max) {
 		s = _gettag(sdp_media_start_count ? sdp_media_start[sdp_media_start_count - 1] + 1 : sdp_text,
-			    sdp_text_len - (sdp_media_start_count ? sdp_media_start[sdp_media_start_count - 1] + 1 - sdp_text: 0), 
+			    sdp_text_len - (sdp_media_start_count ? sdp_media_start[sdp_media_start_count - 1] + 1 - sdp_text: 0),
 			    "\nm=", &l);
 		if(l > 0) {
-			e_sdp_media_type media_type = l > 5 ? 
+			e_sdp_media_type media_type = l > 5 ?
 						       (!strncasecmp(s, "audio", 5) ? sdp_media_type_audio :
 							!strncasecmp(s, "image", 5) ? sdp_media_type_image :
 							!strncasecmp(s, "video", 5) ? sdp_media_type_video :
@@ -2021,26 +2021,26 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 			break;
 		}
 	}
-	
+
 	unsigned sdp_media_counter = 0;
 	for(unsigned sdp_media_i = 0; sdp_media_i < sdp_media_start_count; sdp_media_i++) {
-	 
+
 		if(sdp_media_type[sdp_media_i] == sdp_media_type_video && !processing_rtp_video(call)) {
 			continue;
 		}
-		
+
 		char *sdp_media_text = sdp_media_start[sdp_media_i];
 		unsigned sdp_media_text_len = sdp_media_i < sdp_media_start_count - 1 ?
 					       sdp_media_start[sdp_media_i + 1] - sdp_media_start[sdp_media_i] :
 					       sdp_text_len - (sdp_media_start[sdp_media_i] - sdp_text);
-					       
+
 		e_sdp_protocol sdp_protocol = sdp_proto_na;
 		char *pointToBeginProtocol = strnchr(sdp_media_text, ' ', sdp_media_text_len);
 		if(pointToBeginProtocol) {
 			++pointToBeginProtocol;
 			char *pointToEndProtocol = strnchr(pointToBeginProtocol, ' ', sdp_media_text_len - (pointToBeginProtocol - sdp_media_text));
-			unsigned lengthProtocol = pointToEndProtocol ? 
-						   pointToEndProtocol - pointToBeginProtocol : 
+			unsigned lengthProtocol = pointToEndProtocol ?
+						   pointToEndProtocol - pointToBeginProtocol :
 						   sdp_media_text_len - (pointToBeginProtocol - sdp_media_text);
 			if(lengthProtocol > 0 && lengthProtocol < 100) {
 				static struct {
@@ -2066,13 +2066,13 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 				}
 			}
 		}
-		
-		if(sdp_media_type[sdp_media_i] == sdp_media_type_application && 
+
+		if(sdp_media_type[sdp_media_i] == sdp_media_type_application &&
 		   !(sdp_protocol == sdp_proto_tcp_mrcpv2 && cFilters::saveMrcp())) {
 			continue;
 		}
-					       
-		s_sdp_media_data *sdp_media_data_item; 
+
+		s_sdp_media_data *sdp_media_data_item;
 		if(sdp_media_counter == 0) {
 			sdp_media_data_item = sdp_media_data;
 		} else {
@@ -2081,13 +2081,13 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 			}
 			sdp_media_data_item = new FILE_LINE(0) s_sdp_media_data;
 		}
-		
+
 		sdp_media_data_item->ip = ip;
 		sdp_media_data_item->port = sdp_media_port[sdp_media_i];
 		sdp_media_data_item->sdp_flags.media_type = sdp_media_type[sdp_media_i];
-		
+
 		sdp_media_data_item->sdp_flags.protocol = sdp_protocol;
-		
+
 		if(sdp_media_i > 0) {
 			s = _gettag(sdp_media_text, sdp_media_text_len,
 				    packetS->saddr_().is_v6() ? "c=IN IP6 " : "c=IN IP4 ",
@@ -2103,14 +2103,14 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 				}
 			}
 		}
-		
+
 		s = _gettag(sdp_media_text, sdp_media_text_len, "a=label:", &l);
 		if(l > 0) {
 			unsigned label_length = MIN(l, MAXLEN_SDP_LABEL - 1);
 			memcpy(sdp_media_data_item->label, s, label_length);
 			sdp_media_data_item->label[label_length] = 0;
 		}
-		
+
 		if(sdp_media_data_item->sdp_flags.protocol == sdp_proto_srtp) {
 			s = _gettag(sdp_media_text, sdp_media_text_len, "a=crypto:", &l);
 			if(l > 0) {
@@ -2175,12 +2175,12 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 				}
 			}
 		}
-		
+
 		if(memmem(sdp_media_text, sdp_media_text_len, "a=rtcp-mux", 10)) {
 			sdp_media_data_item->sdp_flags.rtcp_mux = 1;
 			call->use_rtcp_mux = true;
 		}
-		
+
 		bool sdp_sendonly = false;
 		bool sdp_sendrecv = false;
 		if(memmem(sdp_media_text, sdp_media_text_len, "a=sendonly", 10)) {
@@ -2194,11 +2194,11 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 
 			call->HandleHold(sdp_sendonly, sdp_sendrecv);
 		}
-		
+
 		if(!sdp_media_data_item->ip.isSet() && memmem(sdp_media_text, sdp_media_text_len, "a=inactive", 10)) {
 			sdp_media_data_item->inactive_ip0 = true;
 		}
-		
+
 		if(sdp_media_type[sdp_media_i] != sdp_media_type_application) {
 			get_rtpmap_from_sdp(sdp_media_text, sdp_media_text_len, sdp_media_type[sdp_media_i] == sdp_media_type_video, sdp_media_data_item->rtpmap, &sdp_media_data_item->exists_payload_televent);
 		}
@@ -2206,11 +2206,11 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		if(sdp_media_counter > 0) {
 			(*next_sdp_media_data)->push_back(sdp_media_data_item);
 		}
-		
+
 		++sdp_media_counter;
-		
+
 	}
-	
+
 	return sdp_media_counter;
 }
 
@@ -2222,7 +2222,7 @@ int get_value_stringkeyval2(const char *data, unsigned int data_len, const char 
 	if(!tag_len) {
 		goto fail_exit;
 	} else {
-		//gettag remove trailing CR but we need it 
+		//gettag remove trailing CR but we need it
 		tag_len++;
 	}
 	if((r = (unsigned long)memmem(tmp, tag_len, ";", 1)) == 0 &&
@@ -9995,3 +9995,5 @@ void *checkSizeOfLivepacketTables(void */*arg*/) {
 	usersniffer_checksize_sync = 0;
 	return(NULL);
 }
+}
+
