@@ -1218,7 +1218,6 @@ Call::read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_i
 	if(packetS->datalen &&
 	   (packetS->data_()[0] == 0x16 || packetS->data_()[0] == 0x14)) {
 		read_dtls(packetS);
-		return(true);
 	}
 	bool record_dtmf = false;
 	bool disable_save = false;
