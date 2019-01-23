@@ -1596,7 +1596,7 @@ fail_exit:
 }
 
 int get_ip_port_from_sdp(Call *call, char *sdp_text, size_t sdp_text_len,
-			 in_addr_t *addr, unsigned short *port, unsigned short *port2, int8_t *protocol, int8_t *fax, int8_t *inactive_ip0, 
+			 in_addr_t *addr, unsigned short *port, unsigned short *port2, int8_t *protocol, int8_t *fax, int8_t *inactive_ip0,
 			 char *sessid, list<rtp_crypto_config> **rtp_crypto_config_list, int8_t *rtcp_mux, int sip_method){
 	unsigned long l;
 	char *s;
@@ -2774,12 +2774,13 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 	in_addr_t tmp_addr;
 	unsigned short tmp_port;
 	unsigned short tmp_port2 = 0;
+	int8_t inactive_ip0;
 	RTPMAP rtpmap[MAX_RTPMAP];
 	s_sdp_flags sdp_flags;
 	char sessid[MAXLEN_SDP_SESSID];
 	list<rtp_crypto_config> *rtp_crypto_config_list = NULL;
 	if (!get_ip_port_from_sdp(call, sdp, sdplen,
-				  &tmp_addr, &tmp_port, &tmp_port2, &sdp_flags.protocol, &sdp_flags.is_fax, &inactive_ip0, 
+				  &tmp_addr, &tmp_port, &tmp_port2, &sdp_flags.protocol, &sdp_flags.is_fax, &inactive_ip0,
 				  sessid, &rtp_crypto_config_list, &sdp_flags.rtcp_mux, packetS->sip_method)){
 		if(tmp_addr > 0 && tmp_port > 0) {
 			bool ok_ip_port = true;
