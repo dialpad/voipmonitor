@@ -14,7 +14,7 @@
 
 extern bool CR_TERMINATE();
 extern void CR_SET_TERMINATE();
-extern sCloudRouterVerbose CR_VERBOSE();
+extern sCloudRouterVerbose& CR_VERBOSE();
 extern bool opt_socket_use_poll;
 extern cResolver resolver;
 
@@ -482,16 +482,18 @@ bool cSocket::await(cSocket **clientSocket) {
 		}
 		if(doAccept) {
 			clientHandle = accept(handle, (sockaddr*)&clientInfo, &clientInfoLen);
-			int flags = fcntl(clientHandle, F_GETFL, 0);
-			if(flags >= 0) {
-				fcntl(clientHandle, F_SETFL, flags | O_NONBLOCK);
-			}
-			if(clientSocket) {
-				*clientSocket = new cSocket("client/await");
-				(*clientSocket)->host = inet_ntoa(clientInfo.sin_addr);
-				(*clientSocket)->port = htons(clientInfo.sin_port);
-				(*clientSocket)->ipl = clientInfo.sin_addr.s_addr;
-				(*clientSocket)->handle = clientHandle;
+			if(clientHandle >= 0) {
+				int flags = fcntl(clientHandle, F_GETFL, 0);
+				if(flags >= 0) {
+					fcntl(clientHandle, F_SETFL, flags | O_NONBLOCK);
+				}
+				if(clientSocket) {
+					*clientSocket = new cSocket("client/await");
+					(*clientSocket)->host = inet_ntoa(clientInfo.sin_addr);
+					(*clientSocket)->port = htons(clientInfo.sin_port);
+					(*clientSocket)->ipl = clientInfo.sin_addr.s_addr;
+					(*clientSocket)->handle = clientHandle;
+				}
 			}
 		}
 	}
@@ -935,7 +937,7 @@ u_char *cSocketBlock::readBlock(size_t *dataLen, eTypeEncode typeEncode, string 
 			}
 		} else {
 			usleep(1000);
-			if(timeout && getTimeUS() > startTime + timeout * 1000000ull) {
+			if((timeout && getTimeUS() > startTime + timeout * 1000000ull) || terminate) {
 				rsltRead = false;
 				break;
 			}
@@ -1014,6 +1016,7 @@ string cSocketBlock::readLine(u_char **remainder, size_t *remainder_length) {
 }
 
 void cSocketBlock::readDecodeAesAndResendTo(cSocketBlock *dest, u_char *remainder, size_t remainder_length, u_int16_t timeout) {
+	string verb_str;
 	if(!timeout) {
 		timeout = timeouts.readblock;
 	}
@@ -1027,6 +1030,9 @@ void cSocketBlock::readDecodeAesAndResendTo(cSocketBlock *dest, u_char *remainde
 		}
 		if(data_dec) {
 			delete [] data_dec;
+		}
+		if(CR_VERBOSE().socket_decode) {
+			verb_str += "header: " + intToString(remainder_length) + "/d:" + intToString(data_dec_len) + "; ";
 		}
 	}
 	size_t bufferLen = 1000;
@@ -1045,6 +1051,9 @@ void cSocketBlock::readDecodeAesAndResendTo(cSocketBlock *dest, u_char *remainde
 				if(data_dec) {
 					delete [] data_dec;
 				}
+				if(CR_VERBOSE().socket_decode) {
+					verb_str += "data: " + intToString(len) + "/d:" + intToString(data_dec_len) + "; ";
+				}
 			}
 		} else {
 			u_char *data_dec;
@@ -1056,6 +1065,9 @@ void cSocketBlock::readDecodeAesAndResendTo(cSocketBlock *dest, u_char *remainde
 			if(data_dec) {
 				delete [] data_dec;
 			}
+			if(CR_VERBOSE().socket_decode) {
+				verb_str += "rest: d:" + intToString(data_dec_len) + "; ";
+			}
 			break;
 		}
 		++counter;
@@ -1066,6 +1078,9 @@ void cSocketBlock::readDecodeAesAndResendTo(cSocketBlock *dest, u_char *remainde
 	delete [] buffer;
 	if(remainder) {
 		delete [] remainder;
+	}
+	if(CR_VERBOSE().socket_decode) {
+		syslog(LOG_INFO, "decode %s", verb_str.c_str());
 	}
 }
 
@@ -1131,14 +1146,16 @@ void cServer::listen_process() {
 	cSocket *clientSocket;
 	while(!((listen_socket && listen_socket->isTerminate()) || CR_TERMINATE())) {
 		if(listen_socket->await(&clientSocket)) {
-			if(CR_VERBOSE().connect_info) {
-				ostringstream verbstr;
-				verbstr << "NEW CONNECTION FROM: " 
-					<< clientSocket->getIP() << " : " << clientSocket->getPort();
-				syslog(LOG_INFO, "%s", verbstr.str().c_str());
-			}
 			if(!CR_TERMINATE()) {
+				if(CR_VERBOSE().connect_info) {
+					ostringstream verbstr;
+					verbstr << "NEW CONNECTION FROM: " 
+						<< clientSocket->getIP() << " : " << clientSocket->getPort();
+					syslog(LOG_INFO, "%s", verbstr.str().c_str());
+				}
 				createConnection(clientSocket);
+			} else {
+				delete clientSocket;
 			}
 		}
 	}
@@ -1189,6 +1206,12 @@ void cServerConnection::connection_process() {
 void cServerConnection::evData(u_char *data, size_t dataLen) {
 }
 
+void cServerConnection::setTerminateSocket() {
+	if(socket) {
+		socket->setTerminate();
+	}
+}
+
 
 cReceiver::cReceiver() {
 	receive_socket = NULL;
@@ -1216,6 +1239,7 @@ void cReceiver::receive_stop() {
 			pthread_join(receive_thread, NULL);
 			receive_thread = 0;
 		}
+		delete receive_socket;
 		receive_socket = NULL;
 	}
 }

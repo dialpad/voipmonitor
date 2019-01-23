@@ -23,6 +23,7 @@ struct sVerbose {
 	int hash_rtp;
 	int rtp_set_base_seq;
 	int rtp_streams;
+	int forcemark;
 	int wavmix;
 	int check_is_caller_called;
 	int disable_threads_rtp;
@@ -31,6 +32,7 @@ struct sVerbose {
 	int http;
 	int webrtc;
 	int ssl;
+	int ssl_sessionkey;
 	int sip;
 	char *tcpreassembly_debug_file;
 	int ssldecode;
@@ -57,9 +59,11 @@ struct sVerbose {
 	int memory_stat_log;
 	int memory_stat_ignore_limit;
 	int qring_stat;
+	int qring_full;
 	int alloc_stat;
 	int qfiles;
 	int query_error;
+	int new_invite;
 	int dump_sip;
 	int dump_sip_line;
 	int dump_sip_without_counter;
@@ -70,14 +74,17 @@ struct sVerbose {
 	int scanpcapdir;
 	int debug_rtcp;
 	int defrag;
+	int defrag_overflow;
 	int dedup;
 	int reassembly_sip;
 	int reassembly_sip_output;
 	int log_manager_cmd;
 	int rtp_extend_stat;
+	int process_rtp_header;
 	int disable_process_packet_in_packetbuffer;
 	int disable_push_to_t2_in_packetbuffer;
 	int disable_save_packet;
+	int disable_save_graph;
 	int disable_save_call;
 	int disable_read_rtp;
 	int thread_create;
@@ -96,6 +103,10 @@ struct sVerbose {
 	int dump_call_flags;
 	int log_srtp_callid;
 	int send_call_info;
+	int disable_cb_cache;
+	int system_command;
+	int malloc_trim;
+	int socket_decode;
 	int _debug1;
 	int _debug2;
 	int _debug3;

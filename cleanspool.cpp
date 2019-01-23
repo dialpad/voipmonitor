@@ -82,6 +82,18 @@ long long CleanSpool::cSpoolData::getSumSize() {
 
 long long CleanSpool::cSpoolData::getSplitSumSize(long long *sip, long long *rtp, long long *graph, long long *audio) {
 	long long size = 0;
+	if(sip) {
+		*sip = 0;
+	}
+	if(rtp) {
+		*rtp = 0;
+	}
+	if(graph) {
+		*graph = 0;
+	}
+	if(audio) {
+		*audio = 0;
+	}
 	for(map<sSpoolDataDirIndex, sSpoolDataDirItem>::iterator iter = data.begin(); iter != data.end(); iter++) {
 		switch(iter->first._type) {
 		case tsf_rtp:
@@ -401,7 +413,7 @@ void CleanSpool::check_filesindex() {
 void CleanSpool::check_index_date(string date, SqlDb *sqlDb) {
 	for(int h = 0; h < 24 && !is_terminating(); h++) {
 		char hour[8];
-		sprintf(hour, "%02d", h);
+		snprintf(hour, sizeof(hour), "%02d", h);
 		string ymdh = string(date.substr(0,4)) + date.substr(5,2) + date.substr(8,2) + hour;
 		map<string, long long> typeSize;
 		reindex_date_hour(date, h, true, &typeSize, true);
@@ -470,7 +482,7 @@ string CleanSpool::getMaxSpoolDate() {
 	}
 	if(maxDate) {
 		char maxDate_str[20];
-		sprintf(maxDate_str, "%4i-%02i-%02i", maxDate / 10000, maxDate % 10000 / 100, maxDate % 100);
+		snprintf(maxDate_str, sizeof(maxDate_str), "%4i-%02i-%02i", maxDate / 10000, maxDate % 10000 / 100, maxDate % 100);
 		return(maxDate_str);
 	} else {
 		return("");
@@ -778,7 +790,7 @@ void CleanSpool::loadSpoolDataDir(cSpoolData *spoolData, sSpoolDataDirIndex inde
 		dirent* de;
 		while((de = readdir(dp)) != NULL && !is_terminating()) {
 			if(string(de->d_name) == ".." or string(de->d_name) == ".") continue;
-			if(de->d_type == DT_DIR) {
+			if(is_dir(de, path.c_str())) {
 				de_dirs.push_back(de->d_name);
 			} else {
 				de_files.push_back(de->d_name);
@@ -1244,8 +1256,8 @@ bool CleanSpool::check_exists_act_files_in_filesindex() {
 		strftime(date, 20, "%Y%m%d", &checkTimeInfo);
 		for(int j = 0; j < 24; j++) {
 			char datehour[20];
-			strcpy(datehour, date);
-			sprintf(datehour + strlen(datehour), "%02i", j);
+			strcpy_null_term(datehour, date);
+			snprintf(datehour + strlen(datehour), sizeof(datehour) - strlen(datehour), "%02i", j);
 			if(file_exists(getSpoolDir_string(tsf_main) + "/filesindex/sipsize/" + datehour)) {
 				ok = true;
 				break;
@@ -1658,7 +1670,7 @@ void CleanSpool::erase_dir(string dir, sSpoolDataDirIndex index, string callFrom
 		dirent* de;
 		while((de = readdir(dp)) != NULL) {
 			if(string(de->d_name) == ".." or string(de->d_name) == ".") continue;
-			if(de->d_type != DT_DIR) {
+			if(!is_dir(de, dir.c_str())) {
 				if(!sverb.cleanspool_disable_rm) {
 					unlink((string(dir) + "/" + de->d_name).c_str());
 				}
@@ -2369,7 +2381,7 @@ void CleanSpool::check_spooldir_filesindex(const char *dirfilter) {
 			for(int h = 0; h < 24; h++) {
 				long long sumSizeMissingFilesInIndex[2] = {0, 0};
 				char hour[8];
-				sprintf(hour, "%02d", h);
+				snprintf(hour, sizeof(hour), "%02d", h);
 				syslog(LOG_NOTICE, "cleanspool[%i]: - hour %s", spoolIndex, hour);
 				string ymd = dateDir;
 				string ymdh = string(ymd.substr(0,4)) + ymd.substr(5,2) + ymd.substr(8,2) + hour;
@@ -2431,15 +2443,16 @@ void CleanSpool::check_spooldir_filesindex(const char *dirfilter) {
 					vector<string> filesInFolder;
 					for(int m = 0; m < 60; m++) {
 						char min[8];
-						sprintf(min, "%02d", m);
+						snprintf(min, sizeof(min), "%02d", m);
 						string timetypedir = dateDir + '/' + hour + '/' + min + '/' + getSpoolTypeDir((eTypeSpoolFile)typeSpoolFile);
-						DIR* dp = opendir(this->findExistsSpoolDirFile((eTypeSpoolFile)typeSpoolFile, timetypedir).c_str());
+						string dir = this->findExistsSpoolDirFile((eTypeSpoolFile)typeSpoolFile, timetypedir).c_str();
+						DIR* dp = opendir(dir.c_str());
 						if(!dp) {
 							continue;
 						}
 						dirent* de2;
 						while((de2 = readdir(dp)) != NULL) {
-							if(de2->d_type != 4 && string(de2->d_name) != ".." && string(de2->d_name) != ".") {
+							if(!is_dir(de2, dir.c_str()) && string(de2->d_name) != ".." && string(de2->d_name) != ".") {
 								filesInFolder.push_back(timetypedir + '/' + de2->d_name);
 							}
 						}
@@ -2561,13 +2574,15 @@ string CleanSpool::print_spool() {
 unsigned int CleanSpool::get_reduk_maxpoolsize(unsigned int maxpoolsize) {
 	unsigned int reduk_maxpoolsize = maxpoolsize_set ? maxpoolsize_set : 
 					 maxpoolsize ? maxpoolsize : opt_max.maxpoolsize;
-	extern TarQueue *tarQueue[2];
-	if(tarQueue[spoolIndex]) {
-		unsigned int open_tars_size = tarQueue[spoolIndex]->sumSizeOpenTars() / (1204 * 1024);
-		if(open_tars_size < reduk_maxpoolsize) {
-			reduk_maxpoolsize -= open_tars_size;
-		} else {
-			return(0);
+	if(opt_cleanspool_use_files) {
+		extern TarQueue *tarQueue[2];
+		if(tarQueue[spoolIndex]) {
+			unsigned int open_tars_size = tarQueue[spoolIndex]->sumSizeOpenTars() / (1204 * 1024);
+			if(open_tars_size < reduk_maxpoolsize) {
+				reduk_maxpoolsize -= open_tars_size;
+			} else {
+				return(0);
+			}
 		}
 	}
 	return(reduk_maxpoolsize);

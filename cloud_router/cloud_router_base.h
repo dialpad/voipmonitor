@@ -36,6 +36,7 @@ struct sCloudRouterVerbose {
 		start_client = true;
 		connect_command = true;
 		connect_info = true;
+		socket_decode = false;
 	}
 	bool start_server;
 	bool start_client;
@@ -43,6 +44,7 @@ struct sCloudRouterVerbose {
 	bool connect_command;
 	bool connect_info;
 	bool create_thread;
+	bool socket_decode;
 };
 
 
@@ -398,6 +400,10 @@ public:
 	static void *connection_process(void *arg);
 	virtual void connection_process();
 	virtual void evData(u_char *data, size_t dataLen);
+	void setTerminateSocket();
+	pthread_t getThread() {
+		return(thread);
+	}
 protected:
 	cSocketBlock *socket;
 	pthread_t thread;

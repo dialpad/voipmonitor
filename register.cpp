@@ -27,6 +27,12 @@ extern bool opt_sip_register_state_compare_from_name;
 extern bool opt_sip_register_state_compare_from_domain;
 extern bool opt_sip_register_state_compare_digest_realm;
 extern bool opt_sip_register_state_compare_ua;
+extern bool opt_sip_register_state_compare_sipalg;
+extern bool opt_sipalg_detect;
+
+extern Calltable *calltable;
+
+extern sExistsColumns existsColumns;
 
 Registers registers;
 
@@ -54,7 +60,9 @@ struct RegisterFields {
 	{ rf_expires_at, "expires_at" },
 	{ rf_state, "state" },
 	{ rf_ua, "ua" },
-	{ rf_rrd_avg, "rrd_avg" }
+	{ rf_rrd_avg, "rrd_avg" },
+	{ rf_spool_index, "spool_index" },
+	{ rf_is_sipalg_detected, "is_sipalg_detected" }
 };
 
 SqlDb *sqlDbSaveRegister = NULL;
@@ -71,7 +79,7 @@ bool RegisterId:: operator == (const RegisterId& other) const {
 	       (!opt_sip_register_compare_to_domain || REG_EQ_STR(this->reg->to_domain, other.reg->to_domain)) &&
 	       //REG_EQ_STR(this->reg->contact_num, other.reg->contact_num) &&
 	       //REG_EQ_STR(this->reg->contact_domain, other.reg->contact_domain) &&
-	       REG_EQ_STR(this->reg->digest_username, other.reg->digest_username));
+	       REG_EQ0_STR(this->reg->digest_username, other.reg->digest_username));
 }
 
 bool RegisterId:: operator < (const RegisterId& other) const { 
@@ -86,7 +94,7 @@ bool RegisterId:: operator < (const RegisterId& other) const {
 	       (opt_sip_register_compare_to_domain && (rslt_cmp_to_domain = REG_CMP_STR(this->reg->to_domain, other.reg->to_domain)) < 0) ? 1 : (opt_sip_register_compare_to_domain && rslt_cmp_to_domain > 0) ? 0 :
 	       //((rslt_cmp_contact_num = REG_CMP_STR(this->reg->contact_num, other.reg->contact_num)) < 0) ? 1 : (rslt_cmp_contact_num > 0) ? 0 :
 	       //((rslt_cmp_contact_domain = REG_CMP_STR(this->reg->contact_domain, other.reg->contact_domain)) < 0) ? 1 : (rslt_cmp_contact_domain > 0) ? 0 :
-	       ((rslt_cmp_digest_username = REG_CMP_STR(this->reg->digest_username, other.reg->digest_username)) < 0));
+	       ((rslt_cmp_digest_username = REG_CMP0_STR(this->reg->digest_username, other.reg->digest_username)) < 0));
 }
 
 
@@ -117,9 +125,11 @@ RegisterState::RegisterState(Call *call, Register *reg) {
 		ua = reg->ua && REG_EQ_STR(call->a_ua, reg->ua) ?
 		      EQ_REG :
 		      REG_NEW_STR(call->a_ua);
+		spool_index = call->getSpoolIndex();
 		fname = call->fname_register;
 		expires = call->register_expires;
 		id_sensor = call->useSensorId;
+		is_sipalg_detected = call->is_sipalg_detected;
 	} else {
 		state_from = state_to = 0;
 		counter = 0;
@@ -131,6 +141,7 @@ RegisterState::RegisterState(Call *call, Register *reg) {
 		from_domain = NULL;
 		digest_realm = NULL;
 		ua = NULL;
+		is_sipalg_detected = false;
 	}
 	db_id = 0;
 	save_at = 0;
@@ -157,6 +168,8 @@ void RegisterState::copyFrom(const RegisterState *src) {
 	from_domain = REG_NEW_STR(src->from_domain);
 	digest_realm = REG_NEW_STR(src->digest_realm);
 	ua = REG_NEW_STR(src->ua);
+	spool_index = src->spool_index;
+	is_sipalg_detected = src->is_sipalg_detected;
 }
 
 bool RegisterState::isEq(Call *call, Register *reg) {
@@ -183,6 +196,7 @@ bool RegisterState::isEq(Call *call, Register *reg) {
 	       (!opt_sip_register_state_compare_from_domain || REG_EQ_STR(from_domain == EQ_REG ? reg->from_domain : from_domain, call->caller_domain)) &&
 	       (!opt_sip_register_state_compare_digest_realm || REG_EQ_STR(digest_realm == EQ_REG ? reg->digest_realm : digest_realm, call->digest_realm)) &&
 	       (!opt_sip_register_state_compare_ua || REG_EQ_STR(ua == EQ_REG ? reg->ua : ua, call->a_ua)) &&
+	       (!opt_sip_register_state_compare_sipalg || (!opt_sipalg_detect || is_sipalg_detected == call->is_sipalg_detected)) &&
 	       id_sensor == call->useSensorId);
 }
 
@@ -234,6 +248,29 @@ void Register::update(Call *call) {
 	}
 	if(!contact_domain && call->contact_domain[0]) {
 		contact_domain = REG_NEW_STR(call->contact_domain);
+	}
+	if(!digest_username && call->digest_username[0]) {
+		digest_username = REG_NEW_STR(call->digest_username);
+	}
+	if(!opt_sip_register_state_compare_from_num &&
+	   !from_num && call->caller[0]) {
+		from_num = REG_NEW_STR(call->caller);
+	}
+	if(!opt_sip_register_state_compare_from_name &&
+	   !from_name && call->callername[0]) {
+		from_name = REG_NEW_STR(call->callername);
+	}
+	if(!opt_sip_register_state_compare_from_domain &&
+	   !from_domain && call->caller_domain[0]) {
+		from_domain = REG_NEW_STR(call->caller_domain);
+	}
+	if(!opt_sip_register_state_compare_digest_realm &&
+	   !digest_realm && call->digest_realm[0]) {
+		digest_realm = REG_NEW_STR(call->digest_realm);
+	}
+	if(!opt_sip_register_state_compare_ua &&
+	   !ua && call->a_ua[0]) {
+		ua = REG_NEW_STR(call->a_ua);
 	}
 	sipcallerip = call->sipcallerip[0];
 	sipcalledip = call->sipcalledip[0];
@@ -345,7 +382,44 @@ void Register::updateLastState(Call *call) {
 		state->state_to = call->calltime();
 		state->fname = call->fname_register;
 		state->expires = call->register_expires;
+		if(!opt_sip_register_state_compare_digest_realm && 
+		   !state->digest_realm && call->digest_realm[0] && this->digest_realm) {
+			state->digest_realm = EQ_REG;
+		}
+		if(!opt_sip_register_state_compare_from_num) {
+			this->updateLastStateItem(call->caller, this->from_num, &state->from_num);
+		}
+		if(!opt_sip_register_state_compare_from_name) {
+			this->updateLastStateItem(call->callername, this->from_name, &state->from_name);
+		}
+		if(!opt_sip_register_state_compare_from_domain) {
+			this->updateLastStateItem(call->caller_domain, this->from_domain, &state->from_domain);
+		}
+		if(!opt_sip_register_state_compare_digest_realm) {
+			this->updateLastStateItem(call->digest_realm, this->digest_realm, &state->digest_realm);
+		}
+		if(!opt_sip_register_state_compare_ua) {
+			this->updateLastStateItem(call->a_ua, this->ua, &state->ua);
+		}
+		if(call->is_sipalg_detected) {
+			state->is_sipalg_detected = true;
+		}
 		++state->counter;
+	}
+}
+
+void Register::updateLastStateItem(char *callItem, char *registerItem, char **stateItem) {
+	if(callItem && callItem[0] && registerItem && registerItem[0] &&
+	   !REG_EQ_STR(*stateItem == EQ_REG ? registerItem : *stateItem, callItem)) {
+		char *tmp_str;
+		if(*stateItem && *stateItem != EQ_REG) {
+			REG_FREE_STR(*stateItem);
+		}
+		if(!strcmp(registerItem, callItem)) {
+			*stateItem = EQ_REG;
+		} else {
+			*stateItem = REG_NEW_STR(callItem);
+		}
 	}
 }
 
@@ -378,11 +452,7 @@ void Register::saveStateToDb(RegisterState *state, bool enableBatchIfPossible) {
 		sqlDbSaveRegister->setEnableSqlStringInContent(true);
 	}
 	string adj_ua = REG_CONV_STR(state->ua == EQ_REG ? ua : state->ua);
-	adjustUA((char*)adj_ua.c_str());
-	SqlDb_row cdr_ua;
-	if(adj_ua[0]) {
-		cdr_ua.add(sqlEscapeString(adj_ua), "ua");
-	}
+	adjustUA(&adj_ua);
 	SqlDb_row reg;
 	reg.add(sqlEscapeString(sqlDateTimeString(state->state_from).c_str()), "created_at");
 	reg.add(htonl(sipcallerip), "sipcallerip");
@@ -401,28 +471,46 @@ void Register::saveStateToDb(RegisterState *state, bool enableBatchIfPossible) {
 	} else {
 		reg.add(state->expires, "expires");
 		reg.add(state->state <= rs_Expired ? state->state : rs_OK, "state");
+		if (existsColumns.register_state_flags) {
+			u_int64_t flags = 0;
+			if (state->is_sipalg_detected) {
+				flags |= REG_SIPALG_DETECTED;
+			}
+			reg.add(flags, "flags");
+		}
 	}
 	if(state->id_sensor > -1) {
 		reg.add(state->id_sensor, "id_sensor");
 	}
+	if(state->spool_index && 
+	   (state->state == rs_Failed ? existsColumns.register_failed_spool_index : existsColumns.register_state_spool_index)) {
+		reg.add(state->spool_index, "spool_index");
+	}
 	string register_table = state->state == rs_Failed ? "register_failed" : "register_state";
 	if(enableBatchIfPossible && isSqlDriver("mysql")) {
 		string query_str;
-		if(adj_ua[0]) {
-			query_str += string("set @ua_id = ") +  "getIdOrInsertUA(" + sqlEscapeStringBorder(adj_ua) + ");\n";
-			reg.add("_\\_'SQL'_\\_:@ua_id", "ua_id");
+		if(!adj_ua.empty()) {
+			unsigned _cb_id = calltable->cb_ua_getId(adj_ua.c_str(), false, true);
+			if(_cb_id) {
+				reg.add(_cb_id, "ua_id");
+			} else {
+				query_str += string("set @ua_id = ") +  "getIdOrInsertUA(" + sqlEscapeStringBorder(adj_ua) + ");\n";
+				reg.add("_\\_'SQL'_\\_:@ua_id", "ua_id");
+			}
 		}
 		query_str += sqlDbSaveRegister->insertQuery(register_table, reg, false, false, state->state == rs_Failed) + ";\n";
 		static unsigned int counterSqlStore = 0;
 		int storeId = STORE_PROC_ID_REGISTER_1 + 
 			      (opt_mysqlstore_max_threads_register > 1 &&
-			       sqlStore->getSize(STORE_PROC_ID_CDR_1) > 1000 ? 
+			       sqlStore->getSize(STORE_PROC_ID_REGISTER_1) > 1000 ? 
 				counterSqlStore % opt_mysqlstore_max_threads_register : 
 				0);
 		++counterSqlStore;
 		sqlStore->query_lock(query_str.c_str(), storeId);
 	} else {
-		reg.add(sqlDbSaveRegister->getIdOrInsert(sql_cdr_ua_table, "id", "ua", cdr_ua), "ua_id");
+		if(!adj_ua.empty()) {
+			reg.add(calltable->cb_ua_getId(adj_ua.c_str(), true), "ua_id");
+		}
 		sqlDbSaveRegister->insert(register_table, reg);
 	}
 }
@@ -455,7 +543,7 @@ void Register::saveFailedToDb(RegisterState *state, bool force, bool enableBatch
 					static unsigned int counterSqlStore = 0;
 					int storeId = STORE_PROC_ID_REGISTER_1 + 
 						      (opt_mysqlstore_max_threads_register > 1 &&
-						       sqlStore->getSize(STORE_PROC_ID_CDR_1) > 1000 ? 
+						       sqlStore->getSize(STORE_PROC_ID_REGISTER_1) > 1000 ? 
 							counterSqlStore % opt_mysqlstore_max_threads_register : 
 							0);
 					++counterSqlStore;
@@ -519,6 +607,8 @@ bool Register::getDataRow(RecordArray *rec) {
 	if(rrd_count) {
 		rec->fields[rf_rrd_avg].set(rrd_sum / rrd_count);
 	}
+	rec->fields[rf_spool_index].set(state->spool_index);
+	rec->fields[rf_is_sipalg_detected].set(getSipAlgState());
 	unlock_states();
 	return(true);
 }
@@ -539,12 +629,16 @@ Registers::~Registers() {
 	clean_all();
 }
 
-void Registers::add(Call *call, time_t currtime, int expires_add) {
+int Registers::getCount() {
+	return(registers.size());
+}
+
+void Registers::add(Call *call) {
  
 	/*
 	string digest_username_orig = call->digest_username;
 	for(int q = 1; q <= 3; q++) {
-	sprintf(call->digest_username, "%s-%i", digest_username_orig.c_str(), q);
+	snprintf(call->digest_username, sizeof(call->digest_username), "%s-%i", digest_username_orig.c_str(), q);
 	*/
 	
 	if(!convRegisterState(call)) {
@@ -575,17 +669,15 @@ void Registers::add(Call *call, time_t currtime, int expires_add) {
 		unlock_registers();
 	} else {
 		Register *existsReg = iter->second;
-		if(currtime) {
-			existsReg->lock_states();
-			RegisterState *regstate = existsReg->states_last();
-			if(regstate &&
-			   (regstate->state == rs_OK || regstate->state == rs_UnknownMessageOK) &&
-			   regstate->expires &&
-			   regstate->state_to + regstate->expires + expires_add < currtime) {
-				existsReg->expire(false);
-			}
-			existsReg->unlock_states();
+		existsReg->lock_states();
+		RegisterState *regstate = existsReg->states_last();
+		if(regstate &&
+		   (regstate->state == rs_OK || regstate->state == rs_UnknownMessageOK) &&
+		   regstate->expires &&
+		   regstate->state_to + regstate->expires < call->calltime()) {
+			existsReg->expire(false);
 		}
+		existsReg->unlock_states();
 		existsReg->update(call);
 		unlock_registers();
 		existsReg->addState(call);
@@ -597,7 +689,8 @@ void Registers::add(Call *call, time_t currtime, int expires_add) {
 	strcpy(call->digest_username, digest_username_orig.c_str());
 	*/
 	
-	cleanup(call->calltime());
+	struct timeval cleanup_time;
+	cleanup(call->get_calltime(&cleanup_time), false, 30);
 	
 	/*
 	eRegisterState states[] = {
@@ -609,12 +702,12 @@ void Registers::add(Call *call, time_t currtime, int expires_add) {
 	*/
 }
 
-void Registers::cleanup(u_int32_t act_time, bool force, int expires_add) {
+void Registers::cleanup(struct timeval *act_time, bool force, int expires_add) {
 	if(!last_cleanup_time) {
-		last_cleanup_time = act_time;
+		last_cleanup_time = act_time->tv_sec;
 		return;
 	}
-	if(act_time > last_cleanup_time + NEW_REGISTER_CLEAN_PERIOD || force) {
+	if((act_time && act_time->tv_sec > last_cleanup_time + NEW_REGISTER_CLEAN_PERIOD) || force) {
 		lock_registers();
 		map<RegisterId, Register*>::iterator iter;
 		for(iter = registers.begin(); iter != registers.end(); ) {
@@ -625,8 +718,9 @@ void Registers::cleanup(u_int32_t act_time, bool force, int expires_add) {
 			bool eraseRegisterFailed = false;
 			if(regstate) {
 				if(regstate->state == rs_OK || regstate->state == rs_UnknownMessageOK) {
-					if(regstate->expires &&
-					   regstate->state_to + regstate->expires + expires_add < act_time) {
+					if(act_time &&
+					   regstate->expires &&
+					   regstate->state_to + regstate->expires + expires_add < act_time->tv_sec) {
 						reg->expire(false);
 						// cout << "expire" << endl;
 					}
@@ -634,20 +728,23 @@ void Registers::cleanup(u_int32_t act_time, bool force, int expires_add) {
 					if(regstate->state == rs_Failed) {
 						iter->second->saveFailedToDb(regstate, force);
 						RegisterState *regstate_prev = reg->states_prev_last();
-						if(regstate_prev &&
+						if(act_time &&
+						   regstate_prev &&
 						   (regstate_prev->state == rs_OK || regstate_prev->state == rs_UnknownMessageOK) &&
 						   regstate_prev->expires &&
-						   regstate_prev->state_to + regstate_prev->expires + expires_add < act_time) {
+						   regstate_prev->state_to + regstate_prev->expires + expires_add < act_time->tv_sec) {
 							reg->expire(false, true);
 							// cout << "expire prev state" << endl;
 						}
 					}
 					if(!_sync_registers_erase) {
-						if(regstate->state == rs_Failed && reg->countStates == 1 &&
-						   regstate->state_to + NEW_REGISTER_ERASE_FAILED_TIMEOUT < act_time) {
+						if(act_time &&
+						   regstate->state == rs_Failed && reg->countStates == 1 &&
+						   regstate->state_to + NEW_REGISTER_ERASE_FAILED_TIMEOUT < act_time->tv_sec) {
 							eraseRegisterFailed = true;
 							// cout << "erase failed" << endl;
-						} else if(regstate->state_to + NEW_REGISTER_ERASE_TIMEOUT < act_time) {
+						} else if(act_time &&
+							  regstate->state_to + NEW_REGISTER_ERASE_TIMEOUT < act_time->tv_sec) {
 							eraseRegister = true;
 							// cout << "erase" << endl;
 						}
@@ -665,7 +762,9 @@ void Registers::cleanup(u_int32_t act_time, bool force, int expires_add) {
 			}
 		}
 		unlock_registers();
-		last_cleanup_time = act_time;
+		if(act_time) {
+			last_cleanup_time = act_time->tv_sec;
+		}
 	}
 }
 

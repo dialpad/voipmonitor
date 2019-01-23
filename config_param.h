@@ -86,6 +86,12 @@ protected:
 	class cConfig *config;
 	list<sMapValue> mapValues;
 	bool set;
+	bool set_in_config;
+	bool set_in_db;
+	bool set_in_json;
+	string value_in_config;
+	string value_in_db;
+	string value_in_json;
 	string defaultValueStr;
 	bool defaultValueStr_set;
 	bool naDefaultValueStr;
@@ -570,8 +576,8 @@ public:
 	cConfigMap getConfigMap();
 	string getContentConfig(bool configFile = false, bool putDefaultValues = false);
 	string getJson(bool onlyIfSet = false);
-	void setFromJson(const char *jsonStr, bool onlyIfSet = false);
-	void setFromMysql(bool checkConnect = false);
+	void setFromJson(const char *jsonStr, bool onlyIfSet = true);
+	void setFromMysql(bool checkConnect = false, bool onlyIfSet = true);
 	void putToMysql();
 	void setDefaultValues();
 	void clearToDefaultValues();
@@ -580,6 +586,8 @@ public:
 	string getMainItemName(const char *name);
 	bool testEqValues(const char *itemName, const char *value1, const char *value2);
 	bool testEqValues(string itemName, list<string> values1, list<string> values2);
+	cConfigItem *getItem(const char *itemName);
+	bool isSet(const char *itemName);
 private:
 	void loadFromConfigFileError(const char *errorString, const char *filename, string *error = NULL);
 private:
@@ -591,6 +599,7 @@ private:
 	bool defaultMinor;
 	bool defaultMinorGroupIfNotSet;
 	string defaultDisableIf;
+	bool setFromMysqlOk;
 };
 
 

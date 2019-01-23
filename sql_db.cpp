@@ -59,6 +59,9 @@ extern int opt_enable_fraud;
 extern bool _save_sip_history;
 extern bool opt_sql_time_utc;
 extern int opt_enable_ss7;
+extern int opt_ssl_store_sessions;
+extern int opt_cdr_country_code;
+extern int opt_message_country_code;
 
 extern char sql_driver[256];
 
@@ -87,6 +90,7 @@ extern int opt_nocdr;
 
 extern CustomHeaders *custom_headers_cdr;
 extern CustomHeaders *custom_headers_message;
+extern CustomHeaders *custom_headers_sip_msg;
 
 extern int opt_ptime;
 
@@ -159,7 +163,7 @@ void SqlDb_row::add(int content, string fieldName, bool null) {
 		this->add((const char*)NULL, fieldName);
 	} else {
 		char str_content[100];
-		sprintf(str_content, "%i", content);
+		snprintf(str_content, sizeof(str_content), "%i", content);
 		this->add(str_content, fieldName);
 	}
 }
@@ -169,7 +173,7 @@ void SqlDb_row::add(unsigned int content, string fieldName, bool null) {
 		this->add((const char*)NULL, fieldName);
 	} else {
 		char str_content[100];
-		sprintf(str_content, "%u", content);
+		snprintf(str_content, sizeof(str_content), "%u", content);
 		this->add(str_content, fieldName);
 	}
 }
@@ -179,7 +183,7 @@ void SqlDb_row::add(long int content,  string fieldName, bool null) {
 		this->add((const char*)NULL, fieldName);
 	} else {
 		char str_content[100];
-		sprintf(str_content, "%li", content);
+		snprintf(str_content, sizeof(str_content), "%li", content);
 		this->add(str_content, fieldName);
 	}
 }
@@ -189,7 +193,7 @@ void SqlDb_row::add(unsigned long int content,  string fieldName, bool null) {
 		this->add((const char*)NULL, fieldName);
 	} else {
 		char str_content[100];
-		sprintf(str_content, "%lu", content);
+		snprintf(str_content, sizeof(str_content), "%lu", content);
 		this->add(str_content, fieldName);
 	}
 }
@@ -199,7 +203,7 @@ void SqlDb_row::add(long long int content,  string fieldName, bool null) {
 		this->add((const char*)NULL, fieldName);
 	} else {
 		char str_content[100];
-		sprintf(str_content, "%lli", content);
+		snprintf(str_content, sizeof(str_content), "%lli", content);
 		this->add(str_content, fieldName);
 	}
 }
@@ -209,7 +213,7 @@ void SqlDb_row::add(unsigned long long int content,  string fieldName, bool null
 		this->add((const char*)NULL, fieldName);
 	} else {
 		char str_content[100];
-		sprintf(str_content, "%llu", content);
+		snprintf(str_content, sizeof(str_content), "%llu", content);
 		this->add(str_content, fieldName);
 	}
 }
@@ -219,7 +223,7 @@ void SqlDb_row::add(double content,  string fieldName, bool null) {
 		this->add((const char*)NULL, fieldName);
 	} else {
 		char str_content[100];
-		sprintf(str_content, "%lf", content);
+		snprintf(str_content, sizeof(str_content), "%lf", content);
 		this->add(str_content, fieldName);
 	}
 }
@@ -329,6 +333,62 @@ void SqlDb_row::removeFieldsIfNotContainIn(map<string, int> *fields) {
 	}
 }
 
+void SqlDb_row::clearSqlDb() {
+	this->sqlDb = NULL;
+}
+
+
+SqlDb_rows::SqlDb_rows() {
+	iter_rows = NULL;
+}
+
+SqlDb_rows::~SqlDb_rows() {
+	if(iter_rows) {
+		delete iter_rows;
+	}
+}
+
+SqlDb_row& SqlDb_rows::fetchRow() {
+	static SqlDb_row row_empty;
+	if(!iter_rows) {
+		if(!rows.size()) {
+			return(row_empty);
+		}
+		iter_rows = new list<SqlDb_row>::iterator;
+		*iter_rows = rows.begin();
+	} else {
+		(*iter_rows)++;
+	}
+	if(*iter_rows == rows.end()) {
+		delete iter_rows;
+		iter_rows = NULL;
+	} else {
+		return(*(*iter_rows));
+	}
+	return(row_empty);
+}
+
+void SqlDb_rows::initFetch() {
+	if(iter_rows) {
+		delete iter_rows;
+	}
+}
+
+unsigned SqlDb_rows::countRow() {
+	return(rows.size());
+}
+
+SqlDb_rows::operator unsigned() {
+	return(rows.size());
+}
+
+void SqlDb_rows::clear() {
+	if(iter_rows) {
+		delete iter_rows;
+	}
+	rows.clear();
+}
+
 
 SqlDb::SqlDb() {
 	this->clearLastError();
@@ -346,6 +406,8 @@ SqlDb::SqlDb() {
 	this->maxAllowedPacket = 1024*1024*100;
 	this->lastError = 0;
 	this->remote_socket = NULL;
+	this->existsColumnCache_enable = false;
+	this->existsColumnCache_suspend = false;
 }
 
 SqlDb::~SqlDb() {
@@ -696,11 +758,94 @@ string SqlDb::prepareQuery(string query, bool nextPass) {
 	return(query);
 }
 
-string SqlDb::insertQuery(string table, SqlDb_row row, bool enableSqlStringInContent, bool escapeAll, bool insertIgnore) {
+unsigned SqlDb::fetchRows(SqlDb_rows *rows) {
+	rows->clear();
+	SqlDb_row row;
+	while((row = fetchRow())) {
+		row.clearSqlDb();
+		rows->rows.push_back(row);
+	}
+	return(*rows);
+}
+
+string SqlDb::getFieldsStr(list<SqlDb_field> *fields) {
+	string fieldsStr;
+	for(list<SqlDb_field>::iterator iter = fields->begin(); iter != fields->end(); iter++) {
+		if(!fieldsStr.empty()) {
+			fieldsStr += ", ";
+		}
+		fieldsStr += iter->needEscapeField ?
+			      getFieldBorder() + iter->field + getFieldBorder() :
+			      iter->field;
+		if(!iter->alias.empty()) {
+			fieldsStr += " as ";
+			fieldsStr += getFieldBorder() + iter->alias + getFieldBorder();
+		}
+	}
+	return(fieldsStr);
+}
+
+string SqlDb::getCondStr(list<SqlDb_condField> *cond) {
+	string condStr;
+	for(list<SqlDb_condField>::iterator iter = cond->begin(); iter != cond->end(); iter++) {
+		if(!condStr.empty()) {
+			condStr += " and ";
+		}
+		condStr += iter->needEscapeField ?
+			    getFieldBorder() + iter->field + getFieldBorder() :
+			    iter->field;
+		condStr += iter->oper.empty() ? " = " : " " + iter->oper + " ";
+		condStr += iter->needEscapeValue ?
+			    getContentBorder() + escape(iter->value.c_str()) + getContentBorder() :
+			    iter->value;
+	}
+	return(condStr);
+}
+
+string SqlDb::selectQuery(string table, list<SqlDb_field> *fields, list<SqlDb_condField> *cond, unsigned limit) {
 	string query = 
-		string("INSERT ") + (insertIgnore ? "IGNORE " : "") + "INTO " + table + " ( " + row.implodeFields(this->getFieldSeparator(), this->getFieldBorder()) + 
-		" ) VALUES ( " + row.implodeContent(this->getContentSeparator(), this->getContentBorder(), enableSqlStringInContent || this->enableSqlStringInContent, escapeAll) + " )";
+		"select " +
+		(fields && fields->size() ? getFieldsStr(fields) : "*") + 
+		" from " + escapeTableName(table);
+	if(cond && cond->size()) {
+		query += " where " + getCondStr(cond);
+	}
+	if(limit) {
+		query += " limit " + intToString(limit);
+	}
 	return(query);
+}
+
+string SqlDb::selectQuery(string table, const char *field, const char *condField, const char *condValue, unsigned limit) {
+	list<SqlDb_field> fields;
+	if(field) {
+		fields.push_back(field);
+	}
+	list<SqlDb_condField> cond;
+	if(condField) {
+		if(condValue) {
+			cond.push_back(SqlDb_condField(condField, condValue));
+		} else {
+			cond.push_back(SqlDb_condField(condField, "NULL", true, false));
+		}
+	}
+	return(selectQuery(table, &fields, &cond, limit));
+}
+
+string SqlDb::insertQuery(string table, SqlDb_row row, bool enableSqlStringInContent, bool escapeAll, bool insertIgnore, SqlDb_row *row_on_duplicate) {
+	string query = 
+		string("INSERT ") + (insertIgnore ? "IGNORE " : "") + "INTO " + escapeTableName(table) + " ( " + row.implodeFields(this->getFieldSeparator(), this->getFieldBorder()) + 
+		" ) VALUES ( " + row.implodeContent(this->getContentSeparator(), this->getContentBorder(), enableSqlStringInContent || this->enableSqlStringInContent, escapeAll) + " )";
+	if(row_on_duplicate) {
+		query += 
+			" ON DUPLICATE KEY UPDATE " +
+			row_on_duplicate->implodeFieldContent(this->getFieldSeparator(), this->getFieldBorder(), this->getContentBorder(), enableSqlStringInContent || this->enableSqlStringInContent, escapeAll);
+	}
+	return(query);
+}
+
+string SqlDb::insertOrUpdateQuery(string table, SqlDb_row row, SqlDb_row row_on_duplicate, bool enableSqlStringInContent, bool escapeAll, bool insertIgnore) {
+	return(insertQuery(table, row, enableSqlStringInContent, escapeAll, insertIgnore, &row_on_duplicate));
 }
 
 string SqlDb::insertQuery(string table, vector<SqlDb_row> *rows, bool enableSqlStringInContent, bool escapeAll, bool insertIgnore) {
@@ -715,14 +860,38 @@ string SqlDb::insertQuery(string table, vector<SqlDb_row> *rows, bool enableSqlS
 		}
 	}
 	string query = 
-		string("INSERT ") + (insertIgnore ? "IGNORE " : "") + "INTO " + table + " ( " + (*rows)[0].implodeFields(this->getFieldSeparator(), this->getFieldBorder()) + 
+		string("INSERT ") + (insertIgnore ? "IGNORE " : "") + "INTO " + escapeTableName(table) + " ( " + (*rows)[0].implodeFields(this->getFieldSeparator(), this->getFieldBorder()) + 
 		" ) VALUES " + values;
+	return(query);
+}
+
+string SqlDb::insertQueryWithLimitMultiInsert(string table, vector<SqlDb_row> *rows, unsigned limitMultiInsert, const char *queriesSeparator,
+					      bool enableSqlStringInContent, bool escapeAll, bool insertIgnore) {
+	if(!rows->size()) {
+		return("");
+	}
+	string query = "";
+	string values = "";
+	for(size_t i = 0; i < rows->size(); i++) {
+		values += "( " + (*rows)[i].implodeContent(this->getContentSeparator(), this->getContentBorder(), enableSqlStringInContent || this->enableSqlStringInContent, escapeAll) + " )";
+		if((limitMultiInsert && !((i + 1) % limitMultiInsert)) || i == (rows->size() - 1)) {
+			if(!query.empty()) {
+				query += queriesSeparator ? queriesSeparator : "; ";
+			}
+			query +=
+				string("INSERT ") + (insertIgnore ? "IGNORE " : "") + "INTO " + escapeTableName(table) + " ( " + (*rows)[0].implodeFields(this->getFieldSeparator(), this->getFieldBorder()) + 
+				" ) VALUES " + values;
+			values = "";
+		} else {
+			values += ",";
+		}
+	}
 	return(query);
 }
 
 string SqlDb::updateQuery(string table, SqlDb_row row, const char *whereCond, bool enableSqlStringInContent, bool escapeAll) {
 	string query = 
-		string("UPDATE ") + table + " set " + row.implodeFieldContent(this->getFieldSeparator(), this->getFieldBorder(), this->getContentBorder(), enableSqlStringInContent || this->enableSqlStringInContent, escapeAll);
+		string("UPDATE ") + escapeTableName(table) + " set " + row.implodeFieldContent(this->getFieldSeparator(), this->getFieldBorder(), this->getContentBorder(), enableSqlStringInContent || this->enableSqlStringInContent, escapeAll);
 	if(whereCond) {
 		query += string(" WHERE ") + whereCond;
 	}
@@ -733,6 +902,16 @@ string SqlDb::updateQuery(string table, SqlDb_row row, SqlDb_row whereCond, bool
 	string cond = 
 		whereCond.implodeFieldContent(" and ", this->getFieldBorder(), this->getContentBorder(), enableSqlStringInContent || this->enableSqlStringInContent, escapeAll);
 	return(updateQuery(table, row, cond.c_str(), enableSqlStringInContent, escapeAll));
+}
+
+bool SqlDb::select(string table, list<SqlDb_field> *fields, list<SqlDb_condField> *cond, unsigned limit) {
+	string query = this->selectQuery(table, fields, cond, limit);
+	return(this->query(query));
+}
+
+bool SqlDb::select(string table, const char *field, const char *condField, const char *condValue, unsigned limit) {
+	string query = this->selectQuery(table, field, condField, condValue, limit);
+	return(this->query(query));
 }
 
 int64_t SqlDb::insert(string table, SqlDb_row row) {
@@ -761,7 +940,7 @@ bool SqlDb::update(string table, SqlDb_row row, const char *whereCond) {
 
 int SqlDb::getIdOrInsert(string table, string idField, string uniqueField, SqlDb_row row, const char *uniqueField2) {
 	string query = 
-		"SELECT * FROM " + table + " WHERE " + uniqueField + " = " + 
+		"SELECT * FROM " + escapeTableName(table) + " WHERE " + uniqueField + " = " + 
 		this->getContentBorder() + row[uniqueField] + this->getContentBorder();
 	if(uniqueField2) {
 		query = query + " AND " + uniqueField2 + " = " +
@@ -784,6 +963,55 @@ int64_t SqlDb::getQueryRsltIntValue(string query, int indexRslt, int64_t failedR
 		}
 	}
 	return(failedResult);
+}
+
+void SqlDb::startExistsColumnCache() {
+	this->existsColumnCache.clear();
+	this->existsColumnCache_enable = true;
+	this->existsColumnCache_suspend = false;
+}
+
+void SqlDb::stopExistsColumnCache() {
+	this->existsColumnCache.clear();
+	this->existsColumnCache_enable = false;
+	this->existsColumnCache_suspend = false;
+}
+
+void SqlDb::suspendExistsColumnCache() {
+	if(this->existsColumnCache_enable) {
+		this->existsColumnCache_suspend = true;
+	}
+}
+
+void SqlDb::resumeExistsColumnCache() {
+	this->existsColumnCache_suspend = false;
+}
+
+bool SqlDb::isEnableExistColumnCache() {
+	return(this->existsColumnCache_enable &&
+	       !this->existsColumnCache_suspend);
+}
+
+int SqlDb::existsColumnInCache(const char *table, const char *column) {
+	map<string, list<string> >::iterator iter = this->existsColumnCache.find(table);
+	if(iter != this->existsColumnCache.end()) {
+		return(find(iter->second.begin(), iter->second.end(), column) != iter->second.end());
+	}
+	return(-1);
+}
+
+void SqlDb::addColumnToCache(const char *table, const char *column) {
+	this->existsColumnCache[table].push_back(column);
+}
+
+int SqlDb::getPartitions(const char *table, vector<string> *partitions, bool useCache) {
+	list<string> partitions_l;
+	int rslt = getPartitions(table, &partitions_l, useCache);
+	partitions->clear();
+	for(list<string>::iterator iter = partitions_l.begin(); iter != partitions_l.end(); iter++) {
+		partitions->push_back(*iter);
+	}
+	return(rslt);
 }
 
 bool SqlDb::existsDayPartition(string table, unsigned addDaysToNow, bool useCache) {
@@ -939,7 +1167,7 @@ SqlDb_mysql::SqlDb_mysql() {
 	this->hMysqlConn = NULL;
 	this->hMysqlRes = NULL;
 	this->mysqlThreadId = 0;
-	this->exists_partition_cache_sync = 0;
+	this->partitions_cache_sync = 0;
 }
 
 SqlDb_mysql::~SqlDb_mysql() {
@@ -1044,7 +1272,8 @@ bool SqlDb_mysql::connect(bool createDb, bool mainInit) {
 				this->query(string("SET time_zone = '") + opt_mysql_timezone + "'");
 			}
 			sql_noerror = 0;
-			if(!this->query("SET sql_mode = ''")) {
+			if(!this->query("SET sql_mode = ''") ||
+			   !this->query("SET group_concat_max_len = 100000000")) {
 				rslt = false;
 			}
 			char tmp[1024];
@@ -1053,12 +1282,12 @@ bool SqlDb_mysql::connect(bool createDb, bool mainInit) {
 					!(this->getDbMajorVersion() == 5 and this->getDbMinorVersion() <= 1)) {
 					this->query("SET GLOBAL innodb_file_per_table=1;");
 				}
-				sprintf(tmp, "CREATE DATABASE IF NOT EXISTS `%s`", this->conn_database.c_str());
+				snprintf(tmp, sizeof(tmp), "CREATE DATABASE IF NOT EXISTS `%s`", this->conn_database.c_str());
 				if(!this->query(tmp)) {
 					rslt = false;
 				}
 			}
-			sprintf(tmp, "USE `%s`", this->conn_database.c_str());
+			snprintf(tmp, sizeof(tmp), "USE `%s`", this->conn_database.c_str());
 			if(!this->existsDatabase() || !this->query(tmp)) {
 				rslt = false;
 			}
@@ -1317,6 +1546,7 @@ bool SqlDb_mysql::query(string query, bool callFromStoreProcessWithFixDeadlock, 
 					cout << endl << "ERROR IN QUERY: " << endl
 					     << preparedQuery << endl;
 				}
+				this->evError(pass);
 				if(this->connecting) {
 					break;
 				} else {
@@ -1386,13 +1616,13 @@ bool SqlDb_mysql::query(string query, bool callFromStoreProcessWithFixDeadlock, 
 	return(rslt);
 }
 
-SqlDb_row SqlDb_mysql::fetchRow(bool assoc) {
+SqlDb_row SqlDb_mysql::fetchRow() {
 	SqlDb_row row(this);
 	if(isCloud() || snifferClientOptions.isEnableRemoteQuery()) {
 		if(response_data_index < response_data_rows &&
 		   response_data_index < response_data.size()) {
 			for(size_t i = 0; i < min(response_data[response_data_index].size(), response_data_columns.size()); i++) {
-				row.add(response_data[response_data_index][i].str, assoc ? response_data_columns[i] : "", response_data[response_data_index][i].null);
+				row.add(response_data[response_data_index][i].str, response_data_columns[i], response_data[response_data_index][i].null);
 			}
 			++response_data_index;
 		}
@@ -1413,7 +1643,7 @@ SqlDb_row SqlDb_mysql::fetchRow(bool assoc) {
 			if(mysqlRow) {
 				unsigned int numFields = mysql_num_fields(this->hMysqlRes);
 				for(unsigned int i = 0; i < numFields; i++) {
-					row.add(mysqlRow[i], assoc ? this->fields[i] : "");
+					row.add(mysqlRow[i], this->fields[i]);
 				}
 			} else {
 				this->checkLastError("fetch row error", true);
@@ -1527,17 +1757,34 @@ bool SqlDb_mysql::existsDatabase() {
 }
 
 bool SqlDb_mysql::existsColumn(const char *table, const char *column) {
-	this->query(string("show columns from ") + table + 
-		    " where Field='" + column + "'");
-	int countRow = 0;
-	while(this->fetchRow()) {
-		++countRow;
+	if(isEnableExistColumnCache()) {
+		int exists = this->existsColumnInCache(table, column);
+		if(exists < 0) {
+			this->query(string("show columns from ") + escapeTableName(table));
+			SqlDb_row cdr_struct_row;
+			while((cdr_struct_row = this->fetchRow())) {
+				this->addColumnToCache(table, cdr_struct_row["field"].c_str());
+				if(cdr_struct_row["field"] == column) {
+					exists = true;
+				}
+			}
+			return(exists > 0);
+		} else {
+			return(exists);
+		}
+	} else {
+		this->query(string("show columns from ") + escapeTableName(table) + 
+			    " where Field='" + column + "'");
+		int countRow = 0;
+		while(this->fetchRow()) {
+			++countRow;
+		}
+		return(countRow > 0);
 	}
-	return(countRow > 0);
 }
 
 string SqlDb_mysql::getTypeColumn(const char *table, const char *column, bool toLower) {
-	this->query(string("show columns from ") + table + " like '" + column + "'");
+	this->query(string("show columns from ") + escapeTableName(table) + " like '" + column + "'");
 	SqlDb_row cdr_struct_row = this->fetchRow();
 	if(cdr_struct_row) {
 		string type = cdr_struct_row["type"];
@@ -1549,31 +1796,58 @@ string SqlDb_mysql::getTypeColumn(const char *table, const char *column, bool to
 	return("");
 }
 
-bool SqlDb_mysql::existsPartition(const char *table, const char *partition, bool useCache) {
-	string partitions;
+int SqlDb_mysql::getPartitions(const char *table, list<string> *partitions, bool useCache) {
 	if(useCache) {
-		while(__sync_lock_test_and_set(&exists_partition_cache_sync, 1));
-		if(exists_partition_cache.find(table) != exists_partition_cache.end()) {
-			partitions = exists_partition_cache[table];
+		bool existsInCache = false;
+		int sizeInCache = 0;
+		while(__sync_lock_test_and_set(&partitions_cache_sync, 1));
+		if(partitions_cache.find(table) != partitions_cache.end()) {
+			if(partitions) {
+				*partitions = partitions_cache[table];
+			}
+			sizeInCache = partitions_cache[table].size();
+			existsInCache = true;
 		}
-		__sync_lock_release(&exists_partition_cache_sync);
+		__sync_lock_release(&partitions_cache_sync);
+		if(existsInCache) {
+			return(sizeInCache);
+		}
 	}
-	if(!partitions.length()) {
-		this->query(string("explain partitions select * from ") + table);
+	list<string> _partitions;
+	int _size = 0;
+	if(partitions) {
+		partitions->clear();
+	} else if(useCache) {
+		partitions = &_partitions;
+	}
+	string query = 
+		string("explain") + (getDbName() == "mysql" && getDbMajorVersion() >= 8 ? "" : " partitions") + " " +
+		selectQuery(table);
+	if(this->query(query)) {
 		SqlDb_row row;
 		if((row = this->fetchRow())) {
-			partitions = row["partitions"];
+			vector<string> partitions_v = split(row["partitions"], ',');
+			_size = partitions_v.size();
+			if(partitions) {
+				for(unsigned i = 0; i < partitions_v.size(); i++) {
+					partitions->push_back(partitions_v[i]);
+				}
+			}
 		}
 	}
-	if(partitions.length()) {
-		if(useCache) {
-			while(__sync_lock_test_and_set(&exists_partition_cache_sync, 1));
-			exists_partition_cache[table] = partitions;
-			__sync_lock_release(&exists_partition_cache_sync);
-		}
-		vector<string> partitions_v = split(partitions, ',');
-		for(unsigned i = 0; i < partitions_v.size(); i++) {
-			if(partitions_v[i] == partition) {
+	if(useCache && partitions) {
+		while(__sync_lock_test_and_set(&partitions_cache_sync, 1));
+		partitions_cache[table] = *partitions;
+		__sync_lock_release(&partitions_cache_sync);
+	}
+	return(_size);
+}
+
+bool SqlDb_mysql::existsPartition(const char *table, const char *partition, bool useCache) {
+	list<string> partitions;
+	if(getPartitions(table, &partitions, useCache) > 0) {
+		for(list<string>::iterator iter = partitions.begin(); iter != partitions.end(); iter++) {
+			if(*iter == partition) {
 				return(true);
 			}
 		}
@@ -1582,9 +1856,15 @@ bool SqlDb_mysql::existsPartition(const char *table, const char *partition, bool
 }
 
 bool SqlDb_mysql::emptyTable(const char *table) {
-	this->query(string("select count(*) as cnt from ") + table);
+	return(rowsInTable(table) <= 0);
+}
+
+int64_t SqlDb_mysql::rowsInTable(const char *table) {
+	list<SqlDb_field> fields;
+	fields.push_back(SqlDb_field("count(*)", "cnt", false));
+	this->select(table, &fields);
 	SqlDb_row row = this->fetchRow();
-	return(!row || !atol(row["cnt"].c_str()));
+	return(row ? atol(row["cnt"].c_str()) : -1);
 }
 
 bool SqlDb_mysql::isOldVerPartition(const char *table) {
@@ -1597,12 +1877,33 @@ string SqlDb_mysql::escape(const char *inputString, int length) {
 	return sqlEscapeString(inputString, length, this->getTypeDb().c_str(), this);
 }
 
+string SqlDb_mysql::escapeTableName(string tableName) {
+	if(isReservedWord(tableName)) {
+		return("`" + tableName + "`");
+	}
+	return(tableName);
+}
+
+bool SqlDb_mysql::isReservedWord(string word) {
+	const char* reservedWords[] = {
+		"system",
+		"group",
+		"groups"
+	};
+	for(unsigned i = 0; i < sizeof(reservedWords) / sizeof(reservedWords[0]); i++) {
+		if(!strcasecmp(reservedWords[i], word.c_str())) {
+			return(true);
+		}
+	}
+	return(false);
+}
+
 bool SqlDb_mysql::checkLastError(string prefixError, bool sysLog, bool clearLastError) {
 	if(this->hMysql) {
 		unsigned int errnoMysql = mysql_errno(this->hMysql);
 		if(errnoMysql) {
 			char errnoMysqlString[20];
-			sprintf(errnoMysqlString, "%u", errnoMysql);
+			snprintf(errnoMysqlString, sizeof(errnoMysqlString), "%u", errnoMysql);
 			this->setLastError(errnoMysql, (prefixError + ":  " + errnoMysqlString + " - " + mysql_error(this->hMysql)).c_str(), sysLog);
 			return(true);
 		} else if(clearLastError) {
@@ -1610,6 +1911,19 @@ bool SqlDb_mysql::checkLastError(string prefixError, bool sysLog, bool clearLast
 		}
 	}
 	return(false);
+}
+
+void SqlDb_mysql::evError(int pass) {
+	unsigned _errno = mysql_errno(this->hMysql);
+	string _error = mysql_error(this->hMysql);
+	switch(_errno) {
+	case 1146:
+		if(pass == 0) {
+			string table = reg_replace(_error.c_str(), "'.+\\.([^']+)'", "$1", __FILE__, __LINE__);
+			this->createTable(table.c_str());
+		}
+		break;
+	}
 }
 
 void SqlDb_mysql::clean() {
@@ -1854,7 +2168,7 @@ bool SqlDb_odbc::query(string query, bool /*callFromStoreProcessWithFixDeadlock*
 	return(this->okRslt(rslt) || rslt == SQL_NO_DATA);
 }
 
-SqlDb_row SqlDb_odbc::fetchRow(bool assoc) {
+SqlDb_row SqlDb_odbc::fetchRow() {
 	SqlDb_row row(this);
 	if(this->hConnection && this->hStatement) {
 		if(!this->bindBuffer.size()) {
@@ -1864,8 +2178,7 @@ SqlDb_row SqlDb_odbc::fetchRow(bool assoc) {
 		if(this->okRslt(rslt) || rslt == SQL_NO_DATA) {
 			if(rslt != SQL_NO_DATA) {
 				for(unsigned int i = 0; i < this->bindBuffer.size(); i++) {
-					row.add(this->bindBuffer.getColBuffer(i),
-						assoc ? this->bindBuffer[i]->fieldName : "");
+					row.add(this->bindBuffer.getColBuffer(i), this->bindBuffer[i]->fieldName);
 				}
 			}
 		} else {
@@ -1904,14 +2217,23 @@ string SqlDb_odbc::getTypeColumn(const char */*table*/, const char */*column*/, 
 	return("");
 }
 
-bool SqlDb_odbc::existsPartition(const char *table, const char *partition, bool useCache) {
+int SqlDb_odbc::getPartitions(const char */*table*/, list<string> */*partitions*/, bool /*useCache*/) {
+	// TODO
+	return(-1);
+}
+
+bool SqlDb_odbc::existsPartition(const char */*table*/, const char */*partition*/, bool /*useCache*/) {
 	// TODO
 	return(false);
 }
 
-bool SqlDb_odbc::emptyTable(const char */*table*/) {
+bool SqlDb_odbc::emptyTable(const char *table) {
+	return(rowsInTable(table));
+}
+
+int64_t SqlDb_odbc::rowsInTable(const char */*table*/) {
 	// TODO
-	return(false);
+	return(-1);
 }
 
 int SqlDb_odbc::getIndexField(string fieldName) {
@@ -1947,6 +2269,9 @@ bool SqlDb_odbc::checkLastError(string prefixError, bool sysLog, bool /*clearLas
 		}
 	}
 	return(false);
+}
+
+void SqlDb_odbc::evError(int /*pass*/) {
 }
 
 void SqlDb_odbc::cleanFields() {
@@ -2384,9 +2709,9 @@ void MySqlStore_process::waitForTerminate() {
 
 string MySqlStore_process::getInsertFuncName() {
 	char insert_funcname[20];
-	sprintf(insert_funcname, "__insert_%i", this->id);
+	snprintf(insert_funcname, sizeof(insert_funcname), "__insert_%i", this->id);
 	if(opt_id_sensor > -1) {
-		sprintf(insert_funcname + strlen(insert_funcname), "S%i", opt_id_sensor);
+		snprintf(insert_funcname + strlen(insert_funcname), sizeof(insert_funcname) - strlen(insert_funcname), "S%i", opt_id_sensor);
 	}
 	return(insert_funcname);
 }
@@ -2605,7 +2930,7 @@ void MySqlStore::query_to_file(const char *query_str, int id) {
 		unsigned int query_length = query.length();
 		query.append("\n");
 		char buffIdLength[100];
-		sprintf(buffIdLength, "%i/%u:", id, query_length);
+		snprintf(buffIdLength, sizeof(buffIdLength), "%i/%u:", id, query_length);
 		qfile->fileZipHandler->write(buffIdLength, strlen(buffIdLength));
 		qfile->fileZipHandler->write((char*)query.c_str(), query.length());
 		u_long actTimeMS = getTimeMS();
@@ -2621,7 +2946,7 @@ string MySqlStore::getQFilename(int idc, u_long actTime) {
 	char fileName[100];
 	string dateTime = sqlDateTimeString(actTime / 1000).c_str();
 	find_and_replace(dateTime, " ", "T");
-	sprintf(fileName, "%s-%i-%lu-%s", QFILE_PREFIX, idc, actTime, dateTime.c_str());
+	snprintf(fileName, sizeof(fileName), "%s-%i-%lu-%s", QFILE_PREFIX, idc, actTime, dateTime.c_str());
 	return(qfileConfig.getDirectory() + "/" + fileName);
 }
 
@@ -2711,7 +3036,7 @@ bool MySqlStore::fillQFiles(int id) {
 		return(false);
 	}
 	char prefix[10];
-	sprintf(prefix, "%s-%i-", QFILE_PREFIX, id);
+	snprintf(prefix, sizeof(prefix), "%s-%i-", QFILE_PREFIX, id);
 	dirent* de;
 	while((de = readdir(dp)) != NULL) {
 		if(strncmp(de->d_name, prefix, strlen(prefix))) continue;
@@ -2746,7 +3071,7 @@ string MySqlStore::getMinQFile(int id) {
 		u_long minTime = 0;
 		string minTimeFileName;
 		char prefix[10];
-		sprintf(prefix, "%s-%i-", QFILE_PREFIX, id);
+		snprintf(prefix, sizeof(prefix), "%s-%i-", QFILE_PREFIX, id);
 		dirent* de;
 		while((de = readdir(dp)) != NULL) {
 			if(strncmp(de->d_name, prefix, strlen(prefix))) continue;
@@ -2771,7 +3096,7 @@ int MySqlStore::getCountQFiles(int id) {
 		return(-1);
 	}
 	char prefix[10];
-	sprintf(prefix, "%s-%i-", QFILE_PREFIX, id);
+	snprintf(prefix, sizeof(prefix), "%s-%i-", QFILE_PREFIX, id);
 	dirent* de;
 	int counter = 0;
 	while((de = readdir(dp)) != NULL) {
@@ -2847,6 +3172,13 @@ bool MySqlStore::loadFromQFile(const char *filename, int id, bool onlyCheck) {
 				/*if(sverb.qfiles) {
 					cout << " ** send query id: " << id << " to thread: " << queryThreadId << " / " << getSize(queryThreadId) << endl;
 				}*/
+				extern int opt_query_cache_check_utf;
+				if(opt_query_cache_check_utf) {
+					extern cUtfConverter utfConverter;
+					if(!utfConverter.check(query.c_str())) {
+						utfConverter._remove_no_ascii(query.c_str());
+					}
+				}
 				query_lock(query.c_str(), queryThreadId);
 			}
 			++counter;
@@ -2925,6 +3257,14 @@ string MySqlStore::getLoadFromQFilesStat(bool processes) {
 		}
 	}
 	return(outStr.str());
+}
+
+unsigned MySqlStore::getLoadFromQFilesCount() {
+	unsigned count = 0;
+	for(map<int, LoadFromQFilesThreadData>::iterator iter = loadFromQFilesThreadData.begin(); iter != loadFromQFilesThreadData.end(); iter++) {
+		count += getCountQFiles(iter->second.id);
+	}
+	return(count);
 }
 
 void MySqlStore::lock(int id) {
@@ -3583,10 +3923,14 @@ string _sqlEscapeString(const char *inputStr, int length, const char *typeDb) {
 			rsltString += inputStr[posInputString];
 		}
 	}
+	extern cUtfConverter utfConverter;
+	if(!utfConverter.check(rsltString.c_str())) {
+		rsltString = utfConverter.remove_no_ascii(rsltString.c_str());
+	}
 	return(rsltString);
 }
 
-void _sqlEscapeString(const char *inputStr, int length, char *outputStr, const char *typeDb) {
+void _sqlEscapeString(const char *inputStr, int length, char *outputStr, const char *typeDb, bool checkUtf) {
 	bool mysql = false;
 	unsigned char (*escTable)[2] = NULL;
 	if(!typeDb || isTypeDb("mysql", typeDb)) {
@@ -3622,6 +3966,10 @@ void _sqlEscapeString(const char *inputStr, int length, char *outputStr, const c
 		}
 	}
 	outputStr[posOutputString] = 0;
+	extern cUtfConverter utfConverter;
+	if(checkUtf && !utfConverter.check(outputStr)) {
+		utfConverter._remove_no_ascii(outputStr);
+	}
 }
 
 string sqlEscapeStringBorder(string inputStr, char borderChar, const char *typeDb, SqlDb_mysql *sqlDbMysql) {
@@ -3665,14 +4013,8 @@ bool cmpStringIgnoreCase(const char* str1, const char* str2) {
 }
 
 string reverseString(const char *str) {
-	string rslt;
-	if(str) {
-		int length = strlen(str);
-		for(int i = length - 1; i >= 0; i--) {
-			rslt += str[i];
-		}
-	}
-	return rslt;
+	extern cUtfConverter utfConverter;
+	return(utfConverter.reverse(str));
 }
 
 string prepareQueryForPrintf(const char *query) {
@@ -3746,8 +4088,7 @@ bool SqlDb_mysql::createSchema(int connectId) {
 
 	bool existsCdrTable = false;
 	if(connectId == 0) {
-		this->query("show tables like 'cdr'");
-		existsCdrTable = this->fetchRow();
+		existsCdrTable = this->existsTable("cdr");
 	}
 
 	unsigned sniffer_version_num = 0;
@@ -3761,10 +4102,9 @@ bool SqlDb_mysql::createSchema(int connectId) {
 				sniffer_version_num += atoi(sniffer_version_split[i].c_str()) * (i == 0 ? 1000000 : i == 1 ? 1000 : 1);
 			}
 		}
-		this->query("show tables like 'system'");
-		if(this->fetchRow()) {
+		if(this->existsTable("system")) {
 			existsTableSystem = true;
-			this->query("select content from system where type = 'sniffer_db_version'");
+			this->select("system", "content", "type", "sniffer_db_version");
 			SqlDb_row rslt = this->fetchRow();
 			if(rslt) {
 				sniffer_version_num_save = atol(rslt[0].c_str());
@@ -3819,8 +4159,7 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 	string partDayName = this->getPartDayName(limitDay);
 	
 	bool okTableSensorConfig = false;
-	this->query("show tables like 'filter_ip'");
-	if(this->fetchRow()) {
+	if(this->existsTable("filter_ip")) {
 		if(this->query("select * from filter_ip")) {
 			okTableSensorConfig = true;
 		} else {
@@ -3852,6 +4191,7 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 			`rtcp` tinyint default NULL,\
 			`sip` tinyint DEFAULT NULL,\
 			`register` tinyint DEFAULT NULL,\
+			`dtmf` tinyint DEFAULT NULL,\
 			`graph` tinyint DEFAULT NULL,\
 			`wav` tinyint DEFAULT NULL,\
 			`skip` tinyint DEFAULT NULL,\
@@ -3873,6 +4213,7 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 			`rtcp` tinyint default NULL,\
 			`sip` tinyint DEFAULT NULL,\
 			`register` tinyint DEFAULT NULL,\
+			`dtmf` tinyint DEFAULT NULL,\
 			`graph` tinyint DEFAULT NULL,\
 			`wav` tinyint DEFAULT NULL,\
 			`skip` tinyint DEFAULT NULL,\
@@ -3893,6 +4234,7 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 			`rtcp` tinyint default NULL,\
 			`sip` tinyint DEFAULT NULL,\
 			`register` tinyint DEFAULT NULL,\
+			`dtmf` tinyint DEFAULT NULL,\
 			`graph` tinyint DEFAULT NULL,\
 			`wav` tinyint DEFAULT NULL,\
 			`skip` tinyint DEFAULT NULL,\
@@ -3915,6 +4257,7 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 			`rtcp` tinyint default NULL,\
 			`sip` tinyint DEFAULT NULL,\
 			`register` tinyint DEFAULT NULL,\
+			`dtmf` tinyint DEFAULT NULL,\
 			`graph` tinyint DEFAULT NULL,\
 			`wav` tinyint DEFAULT NULL,\
 			`skip` tinyint DEFAULT NULL,\
@@ -3975,8 +4318,7 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 					       opt_database_backup_from_mysql_password,
 					       opt_database_backup_from_mysql_database,
 					       opt_database_backup_from_mysql_port);
-		sqlDbSrc->query("show columns from cdr where Field='price_customer_mult1000000'");
-		if(sqlDbSrc->fetchRow()) {
+		if(sqlDbSrc->existsColumn("cdr", "price_customer_mult1000000")) {
 			existsExtPrecisionBilling = true;
 		}
 	} else {
@@ -4209,24 +4551,18 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 		""));
 	
 	if(opt_cdr_partition) {
-		bool okExplainPartition = false;
-		bool existPartition = false;
+		bool tableIsExists = false;
+		bool partitionIsExists = false;
 		vector<string> cdrMainTables = this->getSourceTables(tt_main | tt_child, tt2_cdr);
 		for(size_t i = 0; i < cdrMainTables.size(); i++) {
-			this->query("show tables like '" + cdrMainTables[i] + "'");
-			if(this->fetchRow()) {
-				this->query(string("EXPLAIN PARTITIONS SELECT * from ") + cdrMainTables[i] + " limit 1");
-				SqlDb_row row;
-				if((row = this->fetchRow())) {
-					okExplainPartition = true;
-					if(row["partitions"] != "") {
-						existPartition = true;
-						break;
-					}
+			if(existsTable(cdrMainTables[i].c_str())) {
+				tableIsExists = true;
+				if(getPartitions(cdrMainTables[i].c_str()) > 0) {
+					partitionIsExists = true;
 				}
 			}
 		}
-		if(okExplainPartition && !existPartition) {
+		if(tableIsExists && !partitionIsExists) {
 			syslog(LOG_INFO, "disable opt_cdr_partition (tables cdr... does not have partitions)");
 			opt_cdr_partition = 0;
 		}
@@ -4452,11 +4788,16 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 			(opt_cdr_partition ?
 				"`calldate` datetime NOT NULL," :
 				"") + 
-			"`sipcallerip_country_code` char(5),\
-			`sipcalledip_country_code` char(5),\
-			`caller_number_country_code` char(5),\
-			`called_number_country_code` char(5),\
-		KEY (`cdr_ID`)" + 
+			(opt_cdr_country_code == 2 ?
+				"`sipcallerip_country_code` smallint,\
+				`sipcalledip_country_code` smallint,\
+				`caller_number_country_code` smallint,\
+				`called_number_country_code` smallint," :
+				"`sipcallerip_country_code` varchar(5),\
+				`sipcalledip_country_code` varchar(5),\
+				`caller_number_country_code` varchar(5),\
+				`called_number_country_code` varchar(5),") +
+		"KEY (`cdr_ID`)" + 
 		(opt_cdr_partition ? 
 			",KEY (`calldate`)" :
 			"") +
@@ -4596,15 +4937,15 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 				`caller_number` varchar(255),\
 				`called_number_reverse` varchar(255),\
 				`caller_number_reverse` varchar(255),\
-				`called_number_country_code` char(5),\
-				`caller_number_country_code` char(5),\
+				`called_number_country_code` varchar(5),\
+				`caller_number_country_code` varchar(5),\
 				`rel_cause_indicator` int unsigned,\
 				`state` enum('call_setup','in_call','completed','rejected','canceled'),\
 				`last_message_type` enum('iam','acm','cpg','anm','rel','rlc'),\
 				`src_ip` int unsigned,\
 				`dst_ip` int unsigned,\
-				`src_ip_country_code` char(5),\
-				`dst_ip_country_code` char(5),\
+				`src_ip_country_code` varchar(5),\
+				`dst_ip_country_code` varchar(5),\
 				`ss7_id` varchar(255),\
 				`pcap_filename` varchar(255),\
 				`id_sensor` smallint unsigned,") +
@@ -4730,18 +5071,27 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 	
 	this->query(string(
 	"CREATE TABLE IF NOT EXISTS `message_country_code` (\
-			`message_ID` " + messageIdType + " unsigned NOT NULL,\
-			`calldate` datetime NOT NULL,\
-			`sipcallerip_country_code` char(5),\
-			`sipcalledip_country_code` char(5),\
-			`caller_number_country_code` char(5),\
-			`called_number_country_code` char(5),\
-		KEY (`message_ID`),\
-		KEY (`calldate`),\
-		KEY(`sipcallerip_country_code`),\
+			`message_ID` " + messageIdType + " unsigned NOT NULL,") +
+			(opt_cdr_partition ?
+				"`calldate` datetime NOT NULL," :
+				"") + 
+			(opt_message_country_code == 2 ?
+				"`sipcallerip_country_code` smallint,\
+				`sipcalledip_country_code` smallint,\
+				`caller_number_country_code` smallint,\
+				`called_number_country_code` smallint," :
+				"`sipcallerip_country_code` varchar(5),\
+				`sipcalledip_country_code` varchar(5),\
+				`caller_number_country_code` varchar(5),\
+				`called_number_country_code` varchar(5),") +
+		"KEY (`message_ID`)" +
+		(opt_cdr_partition ? 
+			",KEY (`calldate`)" :
+			"") +
+		",KEY(`sipcallerip_country_code`),\
 		KEY(`sipcalledip_country_code`),\
 		KEY(`caller_number_country_code`),\
-		KEY(`called_number_country_code`)") +
+		KEY(`called_number_country_code`)" +
 		(opt_cdr_partition ?
 			"" :
 			",CONSTRAINT `message_country_code_ibfk_1` FOREIGN KEY (`message_ID`) REFERENCES `message` (`ID`) ON DELETE CASCADE ON UPDATE CASCADE") +
@@ -4827,7 +5177,9 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 			`expires` mediumint NULL DEFAULT NULL,\
 			`state` tinyint unsigned NULL DEFAULT NULL,\
 			`ua_id` int unsigned DEFAULT NULL,\
-			`to_domain` varchar(255) NULL DEFAULT NULL,") +
+			`to_domain` varchar(255) NULL DEFAULT NULL,\
+			`flags` bigint unsigned DEFAULT NULL,\
+			`spool_index` tinyint unsigned DEFAULT NULL,") +
 		(opt_cdr_partition ? 
 			"PRIMARY KEY (`ID`, `created_at`)," :
 			"PRIMARY KEY (`ID`),") +
@@ -4858,7 +5210,8 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 			`contact_domain` varchar(255) NULL DEFAULT NULL,\
 			`digestusername` varchar(255) NULL DEFAULT NULL,\
 			`ua_id` int unsigned DEFAULT NULL,\
-			`to_domain` varchar(255) NULL DEFAULT NULL,") +
+			`to_domain` varchar(255) NULL DEFAULT NULL,\
+			`spool_index` tinyint unsigned DEFAULT NULL,") +
 		(opt_cdr_partition ? 
 			"PRIMARY KEY (`ID`, `created_at`)," :
 			"PRIMARY KEY (`ID`),") +
@@ -4875,6 +5228,80 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 	""));
 
 	checkColumns_register(true);
+	
+	this->query(string(
+	"CREATE TABLE IF NOT EXISTS `sip_msg` (\
+			`ID` bigint unsigned NOT NULL AUTO_INCREMENT,\
+			`time` datetime NOT NULL,\
+			`type` tinyint unsigned NOT NULL,\
+			`ip_src` int unsigned DEFAULT NULL,\
+			`ip_dst` int unsigned DEFAULT NULL,\
+			`ip_src_country_code` varchar(5),\
+			`ip_dst_country_code` varchar(5),\
+			`port_src` smallint unsigned DEFAULT NULL,\
+			`port_dst` smallint unsigned DEFAULT NULL,\
+			`number_src` varchar(255) DEFAULT NULL,\
+			`number_dst` varchar(255) DEFAULT NULL,\
+			`number_src_country_code` varchar(5),\
+			`number_dst_country_code` varchar(5),\
+			`domain_src` varchar(255) DEFAULT NULL,\
+			`domain_dst` varchar(255) DEFAULT NULL,\
+			`ua_src_id` int unsigned DEFAULT NULL,\
+			`ua_dst_id` int unsigned DEFAULT NULL,\
+			`callername` varchar(255),\
+			`callid` varchar(255),\
+			`cseq` int unsigned DEFAULT NULL,\
+			`request_id_content_type` mediumint unsigned DEFAULT NULL,\
+			`request_content_length` mediumint unsigned DEFAULT NULL,\
+			`request_content` mediumtext DEFAULT NULL,\
+			`response_id_content_type` mediumint unsigned DEFAULT NULL,\
+			`response_content_length` mediumint DEFAULT NULL,\
+			`response_content` mediumtext DEFAULT NULL,\
+			`response_number` smallint unsigned DEFAULT NULL,\
+			`response_id` mediumint unsigned DEFAULT NULL,\
+			`time_us` bigint unsigned DEFAULT NULL,\
+			`request_repetition` smallint unsigned DEFAULT NULL,\
+			`request_time` datetime DEFAULT NULL,\
+			`request_time_us` int unsigned DEFAULT NULL,\
+			`response_time` datetime DEFAULT NULL,\
+			`response_time_us` int unsigned DEFAULT NULL,\
+			`response_duration_ms` int unsigned DEFAULT NULL,\
+			`qualify_ok` tinyint unsigned DEFAULT NULL,\
+			`id_sensor` smallint unsigned DEFAULT NULL,\
+			`spool_index` tinyint unsigned DEFAULT NULL,\
+			`flags` bigint unsigned DEFAULT NULL,") +
+		(opt_cdr_partition ? 
+			"PRIMARY KEY (`ID`, `time`)," :
+			"PRIMARY KEY (`ID`),") + 
+		"KEY `type` (`type`),\
+		KEY `time` (`time`),\
+		KEY `ip_src` (`ip_src`),\
+		KEY `ip_dst` (`ip_dst`),\
+		KEY `number_src` (`number_src`),\
+		KEY `number_dst` (`number_dst`),\
+		KEY `domain_src` (`number_src`),\
+		KEY `domain_dst` (`number_dst`),\
+		KEY `ua_src_id` (`ua_src_id`),\
+		KEY `ua_dst_id` (`ua_dst_id`),\
+		KEY `callername` (`callername`),\
+		KEY `callid` (`callid`),\
+		KEY `cseq` (`cseq`),\
+		KEY `response_number` (`response_number`),\
+		KEY `response_id` (`response_id`),\
+		KEY `id_sensor` (`id_sensor`)" +
+		(opt_cdr_partition ?
+			"" :
+			",CONSTRAINT `sip_msg_ibfk_1` FOREIGN KEY (`lastSIPresponse_id`) REFERENCES `cdr_sip_response` (`id`) ON UPDATE CASCADE,\
+			CONSTRAINT `sip_msg_ibfk_2` FOREIGN KEY (`a_ua_id`) REFERENCES `cdr_ua` (`id`) ON UPDATE CASCADE,\
+			CONSTRAINT `sip_msg_ibfk_3` FOREIGN KEY (`b_ua_id`) REFERENCES `cdr_ua` (`id`) ON UPDATE CASCADE") +
+	") ENGINE=InnoDB DEFAULT CHARSET=latin1 " + compress + 
+	(opt_cdr_partition ?
+		(opt_cdr_partition_oldver ? 
+			string(" PARTITION BY RANGE (to_days(time))(\
+				 PARTITION ") + partDayName + " VALUES LESS THAN (to_days('" + limitDay + "')) engine innodb)" :
+			string(" PARTITION BY RANGE COLUMNS(time)(\
+				 PARTITION ") + partDayName + " VALUES LESS THAN ('" + limitDay + "') engine innodb)") :
+		""));
 
 	this->query("CREATE TABLE IF NOT EXISTS `sensors` (\
 			`id_sensor` int unsigned NOT NULL,\
@@ -4962,12 +5389,12 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 			`number` varchar(30) NOT NULL,\
 			`number_ip` int unsigned NOT NULL,\
 			`ip` int unsigned,\
-			`country_code` char(5),\
-			`continent_code` char(5),\
+			`country_code` varchar(5),\
+			`continent_code` varchar(5),\
 			`at` bigint unsigned,\
 			`old_ip` int unsigned,\
-			`old_country_code` char(5),\
-			`old_continent_code` char(5),\
+			`old_country_code` varchar(5),\
+			`old_continent_code` varchar(5),\
 			`old_at` bigint unsigned,\
 		PRIMARY KEY (`number`, `number_ip`)\
 	) ENGINE=InnoDB DEFAULT CHARSET=latin1;");
@@ -4977,12 +5404,12 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 			`domain` varchar(100) NOT NULL,\
 			`number_ip` int unsigned NOT NULL,\
 			`ip` int unsigned,\
-			`country_code` char(5),\
-			`continent_code` char(5),\
+			`country_code` varchar(5),\
+			`continent_code` varchar(5),\
 			`at` bigint unsigned,\
 			`old_ip` int unsigned,\
-			`old_country_code` char(5),\
-			`old_continent_code` char(5),\
+			`old_country_code` varchar(5),\
+			`old_continent_code` varchar(5),\
 			`old_at` bigint unsigned,\
 		PRIMARY KEY (`number`, `domain`, `number_ip`)\
 	) ENGINE=InnoDB DEFAULT CHARSET=latin1;");
@@ -5013,6 +5440,10 @@ bool SqlDb_mysql::createSchema_tables_other(int connectId) {
 			string(" PARTITION BY RANGE COLUMNS(`time`)(\
 				 PARTITION ") + partDayName + " VALUES LESS THAN ('" + limitDay + "') engine innodb)") :
 		""));
+	
+	if(opt_ssl_store_sessions) {
+		this->createTable("ssl_sessions:auto");
+	}
 	
 	checkColumns_other(true);
 
@@ -5072,8 +5503,7 @@ bool SqlDb_mysql::createSchema_table_http_jj(int connectId) {
 	string partDayName = this->getPartDayName(limitDay);
 
 	bool okTableHttpJj = false;
-	this->query("show tables like 'http_jj'");
-	if(this->fetchRow()) {
+	if(this->existsTable("http_jj")) {
 		if(this->query("select * from http_jj limit 1")) {
 			okTableHttpJj = true;
 		} else {
@@ -5174,8 +5604,7 @@ bool SqlDb_mysql::createSchema_table_webrtc(int connectId) {
 	string partDayName = this->getPartDayName(limitDay);
 
 	bool okTableWebrtc = false;
-	this->query("show tables like 'webrtc'");
-	if(this->fetchRow()) {
+	if(this->existsTable("webrtc")) {
 		if(this->query("select * from webrtc limit 1")) {
 			okTableWebrtc = true;
 		} else {
@@ -5228,9 +5657,9 @@ bool SqlDb_mysql::createSchema_alter_other(int connectId) {
 	}
 	
 	char alter_funcname[20];
-	sprintf(alter_funcname, "__alter");
+	snprintf(alter_funcname, sizeof(alter_funcname), "__alter");
 	if(opt_id_sensor > -1) {
-		sprintf(alter_funcname + strlen(alter_funcname), "_S%i", opt_id_sensor);
+		snprintf(alter_funcname + strlen(alter_funcname), sizeof(alter_funcname) - strlen(alter_funcname),"_S%i", opt_id_sensor);
 	}
 	this->query(string("drop procedure if exists ") + alter_funcname);
 	ostringstream outStrAlter;
@@ -5340,8 +5769,7 @@ bool SqlDb_mysql::createSchema_alter_other(int connectId) {
 	
 	//17
 	if(opt_enable_fraud) {
-		this->query("show tables like 'fraud_alert_info'");
-		if(this->fetchRow()) {
+		if(this->existsTable("fraud_alert_info")) {
 			outStrAlter << "ALTER TABLE fraud_alert_info\
 					ADD `id_sensor` smallint unsigned;" << endl;
 		}
@@ -5377,9 +5805,9 @@ bool SqlDb_mysql::createSchema_alter_http_jj(int connectId) {
 	}
 	
 	char alter_funcname[20];
-	sprintf(alter_funcname, "__alter");
+	snprintf(alter_funcname, sizeof(alter_funcname), "__alter");
 	if(opt_id_sensor > -1) {
-		sprintf(alter_funcname + strlen(alter_funcname), "_S%i", opt_id_sensor);
+		snprintf(alter_funcname + strlen(alter_funcname), sizeof(alter_funcname) - strlen(alter_funcname), "_S%i", opt_id_sensor);
 	}
 	this->query(string("drop procedure if exists ") + alter_funcname);
 	ostringstream outStrAlter;
@@ -5789,12 +6217,12 @@ bool SqlDb_mysql::createSchema_init_cdr_partitions(int connectId) {
 	return(true);
 }
 
-string SqlDb_mysql::getPartDayName(string &limitDay_str) {
+string SqlDb_mysql::getPartDayName(string &limitDay_str, bool enableOldPartition) {
 	char partDayName[20] = "";
 	char limitDay[20] = "";
 	if(supportPartitions != _supportPartitions_na) {
 		time_t act_time = time(NULL);
-		if(opt_create_old_partitions > 0) {
+		if(enableOldPartition && opt_create_old_partitions > 0) {
 			act_time -= opt_create_old_partitions * 24 * 60 * 60;
 		}
 		struct tm actTime = time_r(&act_time);
@@ -5821,16 +6249,9 @@ void SqlDb_mysql::saveTimezoneInformation() {
 		timezone_offset = lt.tm_gmtoff;
 	}
 	if(opt_id_sensor <= 0) {
-		this->query("show tables like 'system'");
-		if(!this->fetchRow()) {
-			return;
-		}
-		this->query("show columns from system where Field='content'");
-		if(!this->fetchRow()) {
-			return;
-		}
-		this->query("show columns from system where Field='type'");
-		if(!this->fetchRow()) {
+		if(!this->existsTable("system") ||
+		   !this->existsColumn("system", "content") ||
+		   !this->existsColumn("system", "type")) {
 			return;
 		}
 		char timezoneInfo[100];
@@ -5838,7 +6259,7 @@ void SqlDb_mysql::saveTimezoneInformation() {
 			 timezone_name.c_str(),
 			 timezone_offset,
 			 sqlDateTimeString(time(NULL)).c_str());
-		this->query("select content from `system` where type='timezone_info_local_sensor'");
+		this->select("system", "content", "type", "timezone_info_local_sensor");
 		SqlDb_row row = this->fetchRow();
 		if(row) {
 			SqlDb_row rowU;
@@ -5851,16 +6272,9 @@ void SqlDb_mysql::saveTimezoneInformation() {
 			this->insert("system", rowI);
 		}
 	} else {
-		this->query("show tables like 'sensors'");
-		if(!this->fetchRow()) {
-			return;
-		}
-		this->query("show columns from sensors where Field='timezone_name'");
-		if(!this->fetchRow()) {
-			return;
-		}
-		this->query("show columns from sensors where Field='timezone_offset'");
-		if(!this->fetchRow()) {
+		if(!this->existsTable("sensors") ||
+		   !this->existsColumn("sensors", "timezone_name") ||
+		   !this->existsColumn("sensors", "timezone_offset")) {
 			return;
 		}
 		SqlDb_row row;
@@ -5878,16 +6292,10 @@ void SqlDb_mysql::checkDbMode() {
 	if(!opt_cdr_partition &&
 	   (isCloud() ||
 	    this->getDbMajorVersion() * 100 + this->getDbMinorVersion() > 500)) {
-		this->query("show tables like 'cdr'");
-		if(this->fetchRow()) {
-			this->query("EXPLAIN PARTITIONS SELECT * from cdr limit 1");
-			SqlDb_row row;
-			if((row = this->fetchRow())) {
-				if(row["partitions"] != "") {
-					syslog(LOG_INFO, "enable opt_cdr_partition (table cdr has partitions)");
-					opt_cdr_partition = true;
-				}
-			}
+		if(this->existsTable("cdr") &&
+		   this->getPartitions("cdr") > 0) {
+			syslog(LOG_INFO, "enable opt_cdr_partition (table cdr has partitions)");
+			opt_cdr_partition = true;
 		}
 	}
 	if(!isCloud()) {
@@ -5934,8 +6342,7 @@ void SqlDb_mysql::checkDbMode() {
 
 void SqlDb_mysql::createTable(const char *tableName) {
 	if(!strcmp(tableName, "fraud_alert_info")) {
-		this->query("show tables like 'alerts'");
-		if(this->fetchRow()) {
+		if(this->existsTable("alerts")) {
 			this->query(
 			"CREATE TABLE IF NOT EXISTS `fraud_alert_info` (\
 					`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,\
@@ -5948,6 +6355,23 @@ void SqlDb_mysql::createTable(const char *tableName) {
 			) ENGINE=InnoDB DEFAULT CHARSET=latin1;");
 		}
 	}
+	if(!strcmp(tableName, "ssl_sessions:auto") ||
+	   !strcmp(tableName, "ssl_sessions") ||
+	   !strcmp(tableName, "ssl_sessions_mem")) {
+		bool mem = (!strcmp(tableName, "ssl_sessions:auto") && opt_ssl_store_sessions == 1) ||
+			   !strcmp(tableName, "ssl_sessions_mem");
+		this->query(string(
+		"CREATE TABLE IF NOT EXISTS `ssl_sessions") + (mem ? "_mem" : "") + "` (\
+				`id_sensor` smallint unsigned,\
+				`serverip` int unsigned,\
+				`serverport` smallint unsigned,\
+				`clientip` int unsigned,\
+				`clientport` smallint unsigned,\
+				`stored_at` datetime,\
+				`session` varchar(1024),\
+			PRIMARY KEY (`id_sensor`, `clientip`, `clientport`, `serverip`, `serverport`)\
+		) ENGINE=" + (mem ? "MEMORY" : "InnoDB") + " DEFAULT CHARSET=latin1;");
+	}
 }
 
 void SqlDb_mysql::checkSchema(int connectId, bool checkColumns) {
@@ -5957,6 +6381,7 @@ void SqlDb_mysql::checkSchema(int connectId, bool checkColumns) {
 	}
 	
 	sql_disable_next_attempt_if_error = 1;
+	startExistsColumnCache();
 	
 	existsColumns.cdr_next_calldate = this->existsColumn("cdr_next", "calldate");
 	existsColumns.cdr_rtp_calldate = this->existsColumn("cdr_rtp", "calldate");
@@ -5971,13 +6396,9 @@ void SqlDb_mysql::checkSchema(int connectId, bool checkColumns) {
 	if(!opt_cdr_partition &&
 	   (isCloud() ||
 	    this->getDbMajorVersion() * 100 + this->getDbMinorVersion() > 500)) {
-		this->query("EXPLAIN PARTITIONS SELECT * from cdr limit 1");
-		SqlDb_row row;
-		if((row = this->fetchRow())) {
-			if(row["partitions"] != "") {
-				syslog(LOG_INFO, "enable opt_cdr_partition (table cdr has partitions)");
-				opt_cdr_partition = true;
-			}
+		if(this->getPartitions("cdr") > 0) {
+			syslog(LOG_INFO, "enable opt_cdr_partition (table cdr has partitions)");
+			opt_cdr_partition = true;
 		}
 	}
 	existsColumns.register_rrd_count = this->existsColumn("register", "rrd_count");
@@ -5993,6 +6414,7 @@ void SqlDb_mysql::checkSchema(int connectId, bool checkColumns) {
 	}
 	
 	sql_disable_next_attempt_if_error = 0;
+	stopExistsColumnCache();
 }
 
 void SqlDb_mysql::updateSensorState() {
@@ -6241,7 +6663,7 @@ void SqlDb_mysql::checkColumns_cdr(bool log) {
 void SqlDb_mysql::checkColumns_cdr_next(bool log) {
 	map<string, u_int64_t> tableSize;
 	existsColumns.cdr_next_spool_index= this->existsColumn("cdr_next", "spool_index");
-	if(!existsColumns.cdr_next_spool_index && CleanSpool::isSetCleanspoolParameters(1)) {
+	if(!existsColumns.cdr_next_spool_index) {
 		this->logNeedAlter("cdr_next",
 				   "cdr spool index",
 				   "ALTER TABLE cdr_next "
@@ -6319,7 +6741,7 @@ void SqlDb_mysql::checkColumns_message(bool log) {
 				   log, &tableSize, &existsColumns.message_response_time);
 	}
 	existsColumns.message_spool_index= this->existsColumn("message", "spool_index");
-	if(!existsColumns.message_spool_index && CleanSpool::isSetCleanspoolParameters(1)) {
+	if(!existsColumns.message_spool_index) {
 		this->logNeedAlter("message",
 				   "message spool index",
 				   "ALTER TABLE message "
@@ -6349,6 +6771,30 @@ void SqlDb_mysql::checkColumns_register(bool log) {
 					   "CHANGE COLUMN `ID` `ID` bigint unsigned NOT NULL;",
 					   log, &tableSize, NULL);
 		}
+	}
+	existsColumns.register_state_spool_index= this->existsColumn("register_state", "spool_index");
+	if(!existsColumns.register_state_spool_index) {
+		this->logNeedAlter("register_state",
+				   "register_state spool index",
+				   "ALTER TABLE register_state "
+				   "ADD COLUMN `spool_index` tinyint unsigned DEFAULT NULL;",
+				   log, &tableSize, &existsColumns.register_state_spool_index);
+	}
+	existsColumns.register_state_flags= this->existsColumn("register_state", "flags");
+	if(!existsColumns.register_state_flags) {
+		this->logNeedAlter("register_state",
+				   "register_state flags",
+				   "ALTER TABLE register_state "
+				   "ADD COLUMN `flags` bigint unsigned DEFAULT NULL;",
+				   log, &tableSize, &existsColumns.register_state_flags);
+	}
+	existsColumns.register_failed_spool_index= this->existsColumn("register_failed", "spool_index");
+	if(!existsColumns.register_failed_spool_index) {
+		this->logNeedAlter("register_failed",
+				   "register_failed spool index",
+				   "ALTER TABLE register_failed "
+				   "ADD COLUMN `spool_index` tinyint unsigned DEFAULT NULL;",
+				   log, &tableSize, &existsColumns.register_failed_spool_index);
 	}
 }
 
@@ -6381,9 +6827,8 @@ bool SqlDb_mysql::isExtPrecissionBilling() {
 	bool existsExtPrecisionBilling = false;
 	for(int i = 0; i < 2 && !existsExtPrecisionBilling; i++) {
 		string table = string("billing") + (i ? "_rule" : "");
-		this->query("show tables like '" + table + "'");
-		if(this->fetchRow()) {
-			this->query("select * from " + table);
+		if(this->existsTable(table)) {
+			this->select(table);
 			SqlDb_row row;
 			while((row = this->fetchRow())) {
 				for(int j = 0; j < 2 && !existsExtPrecisionBilling; j++) {
@@ -6531,7 +6976,7 @@ void SqlDb_mysql::copyFromSourceTable(SqlDb_mysql *sqlDbSrc,
 			unsigned int counterInsert = 0;
 			extern int opt_database_backup_insert_threads;
 			unsigned int insertThreads = opt_database_backup_insert_threads > 1 ? opt_database_backup_insert_threads : 1;
-			while(!is_terminating() && (row = sqlDbSrc->fetchRow(true))) {
+			while(!is_terminating() && (row = sqlDbSrc->fetchRow())) {
 				row.removeFieldsIfNotContainIn(&columnsDest);
 				if(!descDir) {
 					useMaxIdInSrc = atoll(row["id"].c_str());
@@ -6639,12 +7084,10 @@ void SqlDb_mysql::copyFromSourceTableSlave(SqlDb_mysql *sqlDbSrc,
 	bool existsCalldateInSlaveTableSrc = false;
 	bool existsCalldateInSlaveTableDst = false;
 	if(slaveCalldateColumn) {
-		sqlDbSrc->query(string("show columns from ") + slaveTableName + " where Field='" + slaveCalldateColumn + "'");
-		if(sqlDbSrc->fetchRow()) {
+		if(sqlDbSrc->existsColumn(slaveTableName, slaveCalldateColumn)) {
 			existsCalldateInSlaveTableSrc = true;
 		}
-		this->query(string("show columns from ") + slaveTableName + " where Field='" + slaveCalldateColumn + "'");
-		if(this->fetchRow()) {
+		if(this->existsColumn(slaveTableName, slaveCalldateColumn)) {
 			existsCalldateInSlaveTableDst = true;
 		}
 	}
@@ -6703,7 +7146,7 @@ void SqlDb_mysql::copyFromSourceTableSlave(SqlDb_mysql *sqlDbSrc,
 		extern int opt_database_backup_insert_threads;
 		unsigned int insertThreads = opt_database_backup_insert_threads > 1 ? opt_database_backup_insert_threads : 1;
 		unsigned long counterRows = 0;
-		while(!is_terminating() && (row = sqlDbSrc->fetchRow(true))) {
+		while(!is_terminating() && (row = sqlDbSrc->fetchRow())) {
 			++counterRows;
 			row.removeFieldsIfNotContainIn(&columnsDest);
 			u_int64_t readMasterId = atoll(row[slaveIdToMasterColumn].c_str());
@@ -6839,6 +7282,21 @@ vector<string> SqlDb_mysql::getSourceTables(int typeTables, int typeTables2) {
 				tables.push_back("register_state");
 			}
 		}
+		if(typeTables2 == tt2_na || typeTables2 & tt2_sip_msg_static) {
+			if(typeTables & tt_main) {
+				tables.push_back("sip_msg");
+			}
+		}
+		if(typeTables2 == tt2_na || typeTables2 & tt2_sip_msg_dynamic) {
+			if(typeTables & tt_child) {
+				if(custom_headers_sip_msg) {
+					list<string> nextTables = custom_headers_sip_msg->getAllNextTables();
+					for(list<string>::iterator it = nextTables.begin(); it != nextTables.end(); it++) {
+						tables.push_back(it->c_str());
+					}
+				}
+			}
+		}
 	}
 	return(tables);
 }
@@ -6886,6 +7344,9 @@ void createMysqlPartitionsCdr() {
 			}
 			if(custom_headers_message) {
 				custom_headers_message->createMysqlPartitions(sqlDb);
+			}
+			if(custom_headers_sip_msg) {
+				custom_headers_sip_msg->createMysqlPartitions(sqlDb);
 			}
 		}
 		delete sqlDb;
@@ -6937,15 +7398,19 @@ void createMysqlPartitionsLogSensor() {
 	createMysqlPartitionsTable("log_sensor", opt_log_sensor_partition_oldver);
 }
 
-void createMysqlPartitionsBillingAgregation() {
+void createMysqlPartitionsBillingAgregation(SqlDb *sqlDb) {
 	cBillingAgregationSettings agregSettingsInst;
-	agregSettingsInst.load();
+	agregSettingsInst.load(sqlDb);
 	sBillingAgregationSettings agregSettings = agregSettingsInst.getAgregSettings();
 	if(!agregSettings.enable_by_ip &&
 	   !agregSettings.enable_by_number) {
 		return;
 	}
-	SqlDb *sqlDb = createSqlObject();
+	bool _createSqlObject = false;
+	if(!sqlDb) {
+		sqlDb = createSqlObject();
+		_createSqlObject = true;
+	}
 	syslog(LOG_NOTICE, "%s", "create billing partitions - begin");
 	vector<cBilling::sAgregationTypePart> typeParts = cBilling::getAgregTypeParts(&agregSettings);
 	bool tablesExists = true;
@@ -6995,7 +7460,9 @@ void createMysqlPartitionsBillingAgregation() {
 		}
 		sqlDb->setMaxQueryPass(maxQueryPassOld);
 	}
-	delete sqlDb;
+	if(_createSqlObject) {
+		delete sqlDb;
+	}
 	syslog(LOG_NOTICE, "%s", "create billing partitions - end");
 }
 
@@ -7059,7 +7526,7 @@ void dropMysqlPartitionsCdr() {
 	_dropMysqlPartitions("cdr_rtp", opt_cleandatabase_cdr, 0, sqlDb);
 	_dropMysqlPartitions("cdr_dtmf", opt_cleandatabase_cdr, 0, sqlDb);
 	_dropMysqlPartitions("cdr_sipresp", opt_cleandatabase_cdr, 0, sqlDb);
-	if(_save_sip_history) {
+	if(_save_sip_history || sqlDb->existsTable("cdr_siphistory")) {
 		_dropMysqlPartitions("cdr_siphistory", opt_cleandatabase_cdr, 0, sqlDb);
 	}
 	_dropMysqlPartitions("cdr_tar_part", opt_cleandatabase_cdr, 0, sqlDb);
@@ -7103,6 +7570,13 @@ void dropMysqlPartitionsCdr() {
 	}
 	_dropMysqlPartitions("register_state", opt_cleandatabase_register_state, 0, sqlDb);
 	_dropMysqlPartitions("register_failed", opt_cleandatabase_register_failed, 0, sqlDb);
+	_dropMysqlPartitions("sip_msg", opt_cleandatabase_cdr, 0, sqlDb);
+	if(custom_headers_sip_msg) {
+		list<string> nextTables = custom_headers_sip_msg->getAllNextTables();
+		for(list<string>::iterator iter = nextTables.begin(); iter != nextTables.end(); iter++) {
+			_dropMysqlPartitions((*iter).c_str(), opt_cleandatabase_cdr, 0, sqlDb);
+		}
+	}
 	delete sqlDb;
 	syslog(LOG_NOTICE, "drop cdr old partitions - end");
 }
@@ -7185,52 +7659,25 @@ void _dropMysqlPartitions(const char *table, int cleanParam, unsigned maximumPar
 			maximumPartitions = maximumDbPartitions;
 		}
 	}
-	SqlDb_row row;
-	if(isCloud()) {
-		sqlDb->query(string("explain partitions select * from ") + table);
-		row = sqlDb->fetchRow();
-		if(row) {
-			vector<string> exists_partitions = split(row["partitions"], ',');
-			std::sort(exists_partitions.begin(), exists_partitions.end());
-			if(maximumPartitions ) {
-				if(exists_partitions.size() > maximumPartitions) {
-					for(size_t i = 0; i < (exists_partitions.size() - maximumPartitions); i++) {
-						partitions[exists_partitions[i]] = 1;
-					}
-				}
-			}
-			if(cleanParam > 0) {
-				for(size_t i = 0; i < exists_partitions.size() && exists_partitions[i] <= limitPartName; i++) {
+	vector<string> exists_partitions;
+	if(sqlDb->getPartitions(table, &exists_partitions) > 0) {
+		std::sort(exists_partitions.begin(), exists_partitions.end());
+		if(maximumPartitions ) {
+			if(exists_partitions.size() > maximumPartitions) {
+				for(size_t i = 0; i < (exists_partitions.size() - maximumPartitions); i++) {
 					partitions[exists_partitions[i]] = 1;
 				}
 			}
 		}
-	} else {
-		if(maximumPartitions) {
-			sqlDb->query(string("select count(*) as cnt from information_schema.partitions where table_schema='") + 
-				     mysql_database+ "' and table_name='" + table + "'");
-			if((row = sqlDb->fetchRow())) {
-				unsigned countPartitions = atoi(row["cnt"].c_str());
-				if(countPartitions > maximumPartitions) {
-					sqlDb->query(string("select partition_name from information_schema.partitions where table_schema='") + 
-						     mysql_database+ "' and table_name='" + table + "' order by partition_name limit " + intToString(countPartitions - maximumPartitions));
-					while((row = sqlDb->fetchRow())) {
-						partitions[row["partition_name"]] = 1;
-					}
-				}
-			}
-		}
 		if(cleanParam > 0) {
-			sqlDb->query(string("select partition_name from information_schema.partitions where table_schema='") + 
-				     mysql_database+ "' and table_name='" + table + "' and partition_name<='" + limitPartName+ "' order by partition_name");
-			while((row = sqlDb->fetchRow())) {
-				partitions[row["partition_name"]] = 1;
+			for(size_t i = 0; i < exists_partitions.size() && exists_partitions[i] <= limitPartName; i++) {
+				partitions[exists_partitions[i]] = 1;
 			}
 		}
 	}
 	for(map<string, int>::iterator iter = partitions.begin(); iter != partitions.end(); iter++) {
 		syslog(LOG_NOTICE, "DROP PARTITION %s : %s", table, iter->first.c_str());
-		sqlDb->query(string("ALTER TABLE ") + table + " DROP PARTITION " + iter->first);
+		sqlDb->query(string("ALTER TABLE ") + sqlDb->escapeTableName(table) + " DROP PARTITION " + iter->first);
 	}
 }
 
@@ -7249,8 +7696,7 @@ void checkMysqlIdCdrChildTables() {
 	}
 	vector<string> cdrTables = sqlDbMysql->getSourceTables(SqlDb_mysql::tt_main | SqlDb_mysql::tt_child, SqlDb_mysql::tt2_cdr);
 	for(size_t i = 0; i < cdrTables.size(); i++) {
-		sqlDb->query("show tables like '" + cdrTables[i] + "'");
-		if(!sqlDb->fetchRow()) {
+		if(!sqlDb->existsTable(cdrTables[i])) {
 			continue;
 		}
 		// check id is bigint
@@ -7287,8 +7733,7 @@ void checkMysqlIdCdrChildTables() {
 			continue;
 		}
 		// check if exists calldate
-		sqlDb->query("show columns from " + cdrTables[i] + " like 'calldate'");
-		if(!sqlDb->fetchRow()) {
+		if(!sqlDb->existsColumn(cdrTables[i], "calldate")) {
 			continue;
 		}
 		// check min id
@@ -7327,12 +7772,11 @@ u_int64_t _checkMysqlIdCdrChildTables_getAutoIncrement(string table, SqlDb *sqlD
 }
 
 u_int64_t _checkMysqlIdCdrChildTables_getAutoIncrement_v2(string table, SqlDb *sqlDb) {
-	if(!sqlDb->query("show tables like '" + table + "_auto_increment'") ||
-	   !sqlDb->fetchRow()) {
+	if(!sqlDb->existsTable(table + "_auto_increment")) {
 		return((u_int64_t)-1);
 	}
 	SqlDb_row row;
-	if(!sqlDb->query("select auto_increment from " + table + "_auto_increment") ||
+	if(!sqlDb->select(table + "_auto_increment", "auto_increment") ||
 	   !(row = sqlDb->fetchRow())) {
 		return((u_int64_t)-1);
 	}
@@ -7349,13 +7793,12 @@ bool checkMysqlIdCdrChildTables_setAutoIncrement(string table, u_int64_t autoInc
 }
 
 bool _checkMysqlIdCdrChildTables_setAutoIncrement(string table, u_int64_t autoIncrement, SqlDb *sqlDb) {
-	return(sqlDb->query("alter table " + table + " auto_increment = " + intToString(autoIncrement)));
+	return(sqlDb->query("alter table " + sqlDb->escapeTableName(table) + " auto_increment = " + intToString(autoIncrement)));
 }
 
 bool _checkMysqlIdCdrChildTables_setAutoIncrement_v2(string table, u_int64_t autoIncrement, SqlDb *sqlDb) {
 	string lockName = table + "_auto_increment_lock";
-	sqlDb->query("show tables like '" + table + "_auto_increment'");
-	if(!sqlDb->fetchRow()) {
+	if(!sqlDb->existsTable(table + "_auto_increment")) {
 		return(sqlDb->query("CREATE TABLE `" + table + "_auto_increment` (`auto_increment` BIGINT UNSIGNED NULL) ENGINE=InnoDB") &&
 		       sqlDb->query("INSERT INTO `" + table + "_auto_increment` (`auto_increment`) VALUES (" + intToString(autoIncrement) + ");") &&
 		       sqlDb->query("DROP TRIGGER IF EXISTS " + table + "_auto_increment_tr") &&
@@ -7547,3 +7990,130 @@ void cLogSensor::_save() {
 
 string cLogSensor::last_subject_db = "";
 u_int32_t cLogSensor::last_subject_db_at = 0;
+
+
+cSqlDbCodebook::cSqlDbCodebook(const char *table, const char *columnId, const char *columnStringValue, 
+			       unsigned limitTableRows) {
+	this->table = table;
+	this->columnId = columnId;
+	this->columnStringValue = columnStringValue;
+	this->limitTableRows = limitTableRows;
+	autoLoadPeriod = 0;
+	data_overflow = false;
+	_sync_data = 0;
+	_sync_load = 0;
+	lastBeginLoadTime = 0;
+	lastEndLoadTime = 0;
+}
+
+void cSqlDbCodebook::addCond(const char *field, const char *value) {
+	cond.push_back(SqlDb_condField(field, value));
+}
+
+void cSqlDbCodebook::setAutoLoadPeriod(unsigned autoLoadPeriod) {
+	this->autoLoadPeriod = autoLoadPeriod;
+}
+
+unsigned cSqlDbCodebook::getId(const char *stringValue, bool enableInsert, bool enableAutoLoad) {
+	if(data_overflow || sverb.disable_cb_cache) {
+		return(0);
+	}
+	unsigned rslt = 0;
+	lock_data();
+	if(data.size()) {
+		map<string, unsigned>::iterator iter = data.find(stringValue);
+		if(iter != data.end()) {
+			rslt = iter->second;
+		}
+	}
+	if(!rslt && enableInsert) {
+		SqlDb *sqlDb = createSqlObject();
+		list<SqlDb_condField> cond = this->cond;
+		cond.push_back(SqlDb_condField(columnStringValue, stringValue));
+		if(sqlDb->select(table, NULL, &cond, 1)) {
+			SqlDb_row row;
+			if((row = sqlDb->fetchRow())) {
+				rslt = atol(row[columnId].c_str());
+			}
+		}
+		if(!rslt) {
+			SqlDb_row row;
+			row.add(stringValue, columnStringValue);
+			for(list<SqlDb_condField>::iterator iter = this->cond.begin(); iter != this->cond.end(); iter++) {
+				row.add(iter->value, iter->field);
+			}
+			int64_t rsltInsert = sqlDb->insert(table, row);
+			if(rsltInsert > 0) {
+				rslt = rsltInsert;
+			}
+		}
+		delete sqlDb;
+	}
+	unlock_data();
+	if(!rslt && enableAutoLoad && this->autoLoadPeriod && !_sync_load) {
+		u_long actTime = getTimeS();
+		if(lastBeginLoadTime + this->autoLoadPeriod < actTime &&
+		   lastEndLoadTime + this->autoLoadPeriod < actTime) {
+			loadInBackground();
+		}
+	}
+	return(rslt);
+}
+
+void cSqlDbCodebook::load(SqlDb *sqlDb) {
+	if(lock_load(1000000)) {
+		_load(&data, &data_overflow, sqlDb);
+		unlock_load();
+	}
+}
+
+void cSqlDbCodebook::loadInBackground() {
+	if(lock_load(1000000)) {
+		pthread_t thread;
+		vm_pthread_create_autodestroy("cSqlDbCodebook::loadInBackground",
+					      &thread, NULL, cSqlDbCodebook::_loadInBackground, this, __FILE__, __LINE__);
+	}
+}
+
+void cSqlDbCodebook::_load(map<string, unsigned> *data, bool *overflow, SqlDb *sqlDb) {
+	lastBeginLoadTime = getTimeS();
+	data->clear();
+	bool _createSqlObject = false;
+	if(!sqlDb) {
+		sqlDb = createSqlObject();
+		_createSqlObject = true;
+	}
+	sqlDb->setMaxQueryPass(2);
+	if(sqlDb->rowsInTable(table) > this->limitTableRows) {
+		*overflow = true;
+	} else {
+		if(sqlDb->select(table, NULL, &cond)) {
+			SqlDb_rows rows;
+			sqlDb->fetchRows(&rows);
+			SqlDb_row row;
+			while((row = rows.fetchRow())) {
+				(*data)[row[columnStringValue]] = atol(row[columnId].c_str());
+			}
+		}
+		*overflow = false;
+	}
+	if(_createSqlObject) {
+		delete sqlDb;
+	}
+	lastEndLoadTime = getTimeS();
+}
+
+void *cSqlDbCodebook::_loadInBackground(void *arg) {
+	cSqlDbCodebook *me = (cSqlDbCodebook*)arg;
+	map<string, unsigned> data;
+	bool data_overflow;
+	me->_load(&data, &data_overflow);
+	if(data.size() || data_overflow) {
+		me->lock_data();
+		me->data = data;
+		me->data_overflow = data_overflow;
+		me->unlock_data();
+	}
+	me->unlock_load();
+	return(NULL);
+}

@@ -256,6 +256,11 @@ bool is_dir(const char * fileName) {
 	return(false);
 }
 
+bool is_dir(dirent *de, const char *path) {
+	return(de->d_type == DT_DIR ||
+	       (de->d_type == DT_UNKNOWN && is_dir(string(path) + '/' + de->d_name)));
+}
+
 void
 set_mac() {   
 #ifndef FREEBSD
@@ -272,7 +277,7 @@ set_mac() {
 	ioctl(s, SIOCGIFHWADDR, &buffer);
 	close(s);
 
-	sprintf(mac, "%02x:%02x:%02x:%02x:%02x:%02x",
+	snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x",
 		0xff & buffer.ifr_hwaddr.sa_data[0],
 		0xff & buffer.ifr_hwaddr.sa_data[1],
 		0xff & buffer.ifr_hwaddr.sa_data[2],
@@ -935,6 +940,8 @@ string GetStringSHA256(std::string str) {
 	return(outputBuffer);
 }
 
+#pragma GCC push_options
+#pragma GCC optimize ("-O3")
 u_int32_t checksum32buf(char *buf, size_t len) {
 	register u_int16_t cheksum32 = 0;
 	for(size_t i = 0; i < len; i++, buf++) {
@@ -942,6 +949,7 @@ u_int32_t checksum32buf(char *buf, size_t len) {
 	}
 	return(cheksum32);
 }
+#pragma GCC pop_options
 
 void ntoa(char *res, unsigned int addr) {
 	struct in_addr in;                                
@@ -1243,7 +1251,9 @@ void PcapDumper::dump(pcap_pkthdr* header, const u_char *packet, int dlt, bool a
 					ether_header *header_eth = NULL;
 					u_int header_ip_offset = 0;
 					int protocol = 0;
-					if(parseEtherHeader(dlt, (u_char*)packet, header_sll, header_eth, header_ip_offset, protocol) &&
+					if(parseEtherHeader(dlt, (u_char*)packet, 
+							    header_sll, header_eth, NULL,
+							    header_ip_offset, protocol) &&
 					   (header_ip_offset + sizeof(iphdr2) + (istcp ? ((tcphdr2*)(packet + header_ip_offset + sizeof(iphdr2)))->doff * 4 : sizeof(udphdr2)) + datalen) != header->caplen) {
 						pcap_pkthdr *_header;
 						u_char *_packet;
@@ -2446,6 +2456,24 @@ std::vector<std::string> split(const char *s, std::vector<std::string> delim, bo
 	return(elems);
 }
 
+std::vector<int> split2int(const std::string &s, std::vector<std::string> delim, bool enableTrim) {
+    std::vector<std::string> tmpelems = split(s.c_str(), delim, enableTrim);
+    std::vector<int> elems;
+    for (uint i = 0; i < tmpelems.size(); i++) {
+	elems.push_back(atoi(tmpelems.at(i).c_str()));
+    }
+    return elems;
+}
+
+std::vector<int> split2int(const std::string &s, char delim) {
+    std::vector<std::string> tmpelems;
+    split(s, delim, tmpelems);
+    std::vector<int> elems;
+    for (uint i = 0; i < tmpelems.size(); i++) {
+	elems.push_back(atoi(tmpelems.at(i).c_str()));
+    }
+    return elems;
+}
 
 std::string string_size(const char *s, unsigned size) {
 	std::string str(s);
@@ -2455,6 +2483,18 @@ std::string string_size(const char *s, unsigned size) {
 	return(str);
 }
 
+bool string_is_alphanumeric(const char *s) {
+	if(!*s) {
+		return(false);
+	}
+	while(*s) {
+		if(!isdigit(*s) && !isalpha(*s)) {
+			return(false);
+		}
+		++s;
+	}
+	return(true);
+}
 
 bool check_regexp(const char *pattern) {
 	regex_t re;
@@ -2557,7 +2597,7 @@ string reg_replace(const char *str, const char *pattern, const char *replace, co
 		for(int i = match_count - 1; i > 0; i--) {
 			for(int j = 0; j < 2; j++) {
 				char findStr[10];
-				sprintf(findStr, j ? "{$%i}" : "$%i", i);
+				snprintf(findStr, sizeof(findStr), j ? "{$%i}" : "$%i", i);
 				size_t findPos;
 				while((findPos = rslt.find(findStr)) != string::npos) {
 					rslt.replace(findPos, strlen(findStr), string(str).substr(match[i].rm_so, match[i].rm_eo - match[i].rm_so));
@@ -2665,6 +2705,12 @@ bool check_ip_in(u_int32_t ip, vector<u_int32_t> *vect_ip, vector<d_u_int32_t> *
 	return(false);
 }
 
+bool check_ip(u_int32_t ip, u_int32_t net, unsigned mask_length) {
+	return(mask_length == 0 || mask_length == 32 ?
+		ip == net :
+		net == ip >> (32 - mask_length) << (32 - mask_length));
+}
+
 string inet_ntostring(u_int32_t ip) {
 	struct in_addr in;
 	in.s_addr = htonl(ip);
@@ -2732,19 +2778,27 @@ GroupsIP::~GroupsIP() {
 	}
 }
 
-void GroupsIP::load() {
+void GroupsIP::load(SqlDb *sqlDb) {
 	groups.clear();
 	listIP.clear();
 	listNet.clear();
-	SqlDb *sqlDb = createSqlObject();
+	bool _createSqlObject = false;
+	if(!sqlDb) {
+		sqlDb = createSqlObject();
+		_createSqlObject = true;
+	}
 	sqlDb->query("select * from cb_ip_groups");
+	SqlDb_rows rows;
+	sqlDb->fetchRows(&rows);
 	SqlDb_row row;
-	while((row = sqlDb->fetchRow())) {
+	while((row = rows.fetchRow())) {
 		unsigned id = atoi(row["id"].c_str());
 		GroupIP *group = new FILE_LINE(38004) GroupIP(id, row["descr"].c_str(), row["ip"].c_str());
 		groups[id] = group;
 	}
-	delete sqlDb;
+	if(_createSqlObject) {
+		delete sqlDb;
+	}
 	for(map<unsigned, GroupIP*>::iterator it = groups.begin(); it != groups.end(); it++) {
 		std::vector<IP> *src_IP = &it->second->white.listIP;
 		std::vector<IP>::iterator it_src_IP = src_IP->begin();
@@ -2997,6 +3051,7 @@ ParsePacket::ParsePacket() {
 	timeSync_SIP_HEADERfilter = 0;
 	timeSync_custom_headers_cdr = 0;
 	timeSync_custom_headers_message = 0;
+	timeSync_custom_headers_sip_msg = 0;
 }
 
 ParsePacket::~ParsePacket() {
@@ -3045,6 +3100,7 @@ void ParsePacket::setStdParse() {
 	addNode("supported:", typeNode_std);
 	addNode("proxy-authenticate:", typeNode_std);
 	addNode("via:", typeNode_std);
+	addNode("v:", typeNode_std);
 	extern sExistsColumns existsColumns;
 	if(existsColumns.cdr_reason) {
 		addNode("reason:", typeNode_std);
@@ -3099,6 +3155,7 @@ void ParsePacket::setStdParse() {
 
 	extern CustomHeaders *custom_headers_cdr;
 	extern CustomHeaders *custom_headers_message;
+	extern CustomHeaders *custom_headers_sip_msg;
 	if(custom_headers_cdr) {
 		custom_headers_cdr->addToStdParse(this);
 		this->timeSync_custom_headers_cdr = custom_headers_cdr->getLoadTime();
@@ -3106,6 +3163,10 @@ void ParsePacket::setStdParse() {
 	if(custom_headers_message) {
 		custom_headers_message->addToStdParse(this);
 		this->timeSync_custom_headers_message = custom_headers_message->getLoadTime();
+	}
+	if(custom_headers_sip_msg) {
+		custom_headers_sip_msg->addToStdParse(this);
+		this->timeSync_custom_headers_sip_msg = custom_headers_sip_msg->getLoadTime();
 	}
 	
 	/* obsolete
@@ -3115,10 +3176,12 @@ void ParsePacket::setStdParse() {
 		vector<dstring> *_customHeaders = i == 0 ? &opt_custom_headers_cdr : &opt_custom_headers_message;
 		for(size_t iCustHeaders = 0; iCustHeaders < _customHeaders->size(); iCustHeaders++) {
 			string findHeader = (*_customHeaders)[iCustHeaders][0];
-			if(findHeader[findHeader.length() - 1] != ':') {
-				findHeader.append(":");
+			if(findHeader.length()) {
+				if(findHeader[findHeader.length() - 1] != ':') {
+					findHeader.append(":");
+				}
+				addNode(findHeader.c_str());
 			}
-			addNode(findHeader.c_str());
 		}
 	}
 	*/
@@ -3180,12 +3243,14 @@ void ParsePacket::addNodeCheckSip(const char *nodeName) {
 u_int32_t ParsePacket::parseData(char *data, unsigned long datalen, ppContentsX *contents) {
 	extern CustomHeaders *custom_headers_cdr;
 	extern CustomHeaders *custom_headers_message;
+	extern CustomHeaders *custom_headers_sip_msg;
 	if(!this->timeSync_SIP_HEADERfilter) {
 		this->timeSync_SIP_HEADERfilter = SIP_HEADERfilter::getLoadTime();
 	}
 	bool reload_for_sipheaderfilter = false;
 	bool reload_for_custom_headers_cdr = false;
 	bool reload_for_custom_headers_message = false;
+	bool reload_for_custom_headers_sip_msg = false;
 	if(SIP_HEADERfilter::getLoadTime() > this->timeSync_SIP_HEADERfilter) {
 		reload_for_sipheaderfilter = true;
 	}
@@ -3195,9 +3260,13 @@ u_int32_t ParsePacket::parseData(char *data, unsigned long datalen, ppContentsX 
 	if(custom_headers_message && custom_headers_message->getLoadTime() > this->timeSync_custom_headers_message) {
 		reload_for_custom_headers_message = true;
 	}
+	if(custom_headers_sip_msg && custom_headers_sip_msg->getLoadTime() > this->timeSync_custom_headers_sip_msg) {
+		reload_for_custom_headers_sip_msg = true;
+	}
 	if(reload_for_sipheaderfilter ||
 	   reload_for_custom_headers_cdr ||
-	   reload_for_custom_headers_message) {
+	   reload_for_custom_headers_message ||
+	   reload_for_custom_headers_sip_msg) {
 		this->setStdParse();
 		if(reload_for_sipheaderfilter) {
 			this->timeSync_SIP_HEADERfilter = SIP_HEADERfilter::getLoadTime();
@@ -3208,8 +3277,8 @@ u_int32_t ParsePacket::parseData(char *data, unsigned long datalen, ppContentsX 
 		if(reload_for_custom_headers_cdr) {
 			 this->timeSync_custom_headers_cdr = custom_headers_cdr->getLoadTime();
 		}
-		if(reload_for_custom_headers_message) {
-			 this->timeSync_custom_headers_message = custom_headers_message->getLoadTime();
+		if(reload_for_custom_headers_sip_msg) {
+			 this->timeSync_custom_headers_sip_msg = custom_headers_sip_msg->getLoadTime();
 		}
 	}
 	unsigned long rsltDataLen = datalen;
@@ -3535,7 +3604,7 @@ void JsonExport::add(const char *name) {
 	JsonExport_template<string> *item = new FILE_LINE(38011) JsonExport_template<string>;
 	item->setTypeItem(_null);
 	item->setName(name);
-	item->setContent("NULL");
+	item->setContent("null");
 	items.push_back(item);
 }
 
@@ -3574,7 +3643,7 @@ string JsonExport_template<type_item>::getJson(JsonExport *parent) {
 		outStr << '\"' << name << "\":";
 	}
 	if(typeItem == _null) {
-		outStr << "NULL";
+		outStr << "null";
 	} else {
 		if(typeItem == _string) {
 			outStr << '\"';
@@ -3979,8 +4048,8 @@ void FileZipHandler::setError(const char *error) {
 }
 
 FileZipHandler::eTypeCompress FileZipHandler::convTypeCompress(const char *typeCompress) {
-	char _compress_method[10];
-	strncpy(_compress_method, typeCompress, sizeof(_compress_method));
+	char _compress_method[20];
+	strcpy_null_term(_compress_method, typeCompress);
 	strlwr(_compress_method, sizeof(_compress_method));
 	if(yesno(_compress_method)) {
 		return(FileZipHandler::compress_default);
@@ -4257,7 +4326,7 @@ void createSimpleTcpDataPacket(u_int ether_header_length, pcap_pkthdr **header, 
 			       u_char *source_packet, u_char *data, unsigned int datalen,
 			       unsigned int saddr, unsigned int daddr, int source, int dest,
 			       u_int32_t seq, u_int32_t ack_seq, 
-			       u_int32_t time_sec, u_int32_t time_usec) {
+			       u_int32_t time_sec, u_int32_t time_usec, int dlt) {
 	unsigned tcp_options_length = 12;
 	unsigned tcp_doff = (sizeof(tcphdr2) + tcp_options_length) / 4 + ((sizeof(tcphdr2) + tcp_options_length) % 4 ? 1 : 0);
 	u_int32_t packet_length = ether_header_length + sizeof(iphdr2) + tcp_doff * 4 + datalen;
@@ -4295,6 +4364,19 @@ void createSimpleTcpDataPacket(u_int ether_header_length, pcap_pkthdr **header, 
 	(*header)->ts.tv_usec = time_usec;
 	(*header)->caplen = packet_length;
 	(*header)->len = packet_length;
+	if(ether_header_length > sizeof(ether_header)) {
+		sll_header *header_sll;
+		ether_header *header_eth;
+		u_char *header_ppp_o_e = NULL;
+		u_int header_ip_offset;
+		int protocol;
+		if(parseEtherHeader(dlt, (u_char*)*packet, 
+				    header_sll, header_eth, &header_ppp_o_e,
+				    header_ip_offset, protocol) &&
+		   header_ppp_o_e) {
+			*(u_int16_t*)(header_ppp_o_e + 4) = htons(sizeof(iphdr2) + tcp_doff * 4 + datalen + 2);
+		}
+	}
 }
 
 void base64_init(void)
@@ -4363,6 +4445,18 @@ int hexdecode(unsigned char *dst, const char *src, int max)
 		}
 	}
 	return cnt;
+}
+
+string hexencode(unsigned char *src, int src_length)
+{
+	string rslt;
+	for(int i = 0; i < src_length; i++) {
+		for(unsigned j = 0; j < 2; j++) {
+			unsigned char x = j == 0 ? src[i] >> 4 : src[i]  & 15;
+			rslt += x < 10 ? '0' + x : 'A' + x - 10;
+		}
+	}
+	return(rslt);
 }
 
 void find_and_replace(string &source, const string find, string replace) {
@@ -4458,6 +4552,14 @@ string pointerToString(void *p) {
 	snprintf(buff, sizeof(buff), "%p", p);
 	buff[sizeof(buff) - 1] = 0;
 	return(buff);
+}
+
+string boolToString(bool b) {
+	if (b) {
+		return("true");
+	} else  {
+		return("false");
+	}
 }
 
 bool isJsonObject(string str) {
@@ -4955,20 +5057,20 @@ void _base64_encode(const unsigned char *data, size_t input_length, char *encode
 volatile int _tz_sync;
 
 string getGuiTimezone(SqlDb *sqlDb) {
-	bool initSqlDb = false;
+	bool _createSqlObject = false;
 	if(!sqlDb) {
 		sqlDb = createSqlObject();
-		initSqlDb = true;
+		_createSqlObject = true;
 	}
 	string gui_timezone;
 	if(sqlDb->existsTable("system") && sqlDb->existsColumn("system", "content")) {
-		sqlDb->query("select content from system where type = 'gui_timezone'");
+		sqlDb->select("system", "content", "type", "gui_timezone");
 		SqlDb_row row = sqlDb->fetchRow();
 		if(row) {
 			gui_timezone = row["content"];
 		}
 	}
-	if(initSqlDb) {
+	if(_createSqlObject) {
 		delete sqlDb;
 	}
 	return(gui_timezone);
@@ -5014,7 +5116,7 @@ bool vm_pexec(const char *cmdLine, SimpleBuffer *out, SimpleBuffer *err,
 		close(pipe_stderr[1]);
 		if(execvp(exec_args[0], exec_args) == -1) {
 			char errmessage[1000];
-			sprintf(errmessage, "exec failed: %s", exec_args[0]);
+			snprintf(errmessage, sizeof(errmessage), "exec failed: %s", exec_args[0]);
 			write(2, errmessage, strlen(errmessage));
 			kill(getpid(), SIGKILL);
 		}
@@ -5182,25 +5284,23 @@ void SensorsMap::fillSensors(SqlDb *sqlDb) {
 		}
 		_createSqlObject = true;
 	}
-	sqlDb->query("show tables like 'sensors'");
-	if(sqlDb->fetchRow()) {
-		sqlDb->query("show columns from sensors where Field='id'");
-		if(sqlDb->fetchRow()) {
-			sqlDb->query("select id_sensor, id, name from sensors");
-			SqlDb_row row;
-			lock();
-			sensors.clear();
-			while((row = sqlDb->fetchRow())) {
-				int idSensor = atoi(row["id_sensor"].c_str());
-				sSensorData data;
-				data.table_id = atoi(row["id"].c_str());
-				data.name = row["name"];
-				data.name_file = row["name"];
-				prepare_string_to_filename((char*)data.name_file.c_str(), data.name_file.length());
-				sensors[idSensor] = data;
-			}
-			unlock();
+	if(sqlDb->existsTable("sensors") && sqlDb->existsColumn("sensors", "id")) {
+		sqlDb->query("select id_sensor, id, name from sensors");
+		SqlDb_rows rows;
+		sqlDb->fetchRows(&rows);
+		SqlDb_row row;
+		lock();
+		sensors.clear();
+		while((row = rows.fetchRow())) {
+			int idSensor = atoi(row["id_sensor"].c_str());
+			sSensorData data;
+			data.table_id = atoi(row["id"].c_str());
+			data.name = row["name"];
+			data.name_file = row["name"];
+			prepare_string_to_filename((char*)data.name_file.c_str(), data.name_file.length());
+			sensors[idSensor] = data;
 		}
+		unlock();
 	}
 	if(_createSqlObject) {
 		delete sqlDb;
@@ -6652,4 +6752,204 @@ u_int32_t cResolver::resolve_by_system_host(const char *host) {
 		unlink(tmpOut);
 	}
 	return(ipl);
+}
+
+
+cUtfConverter::cUtfConverter() {
+	cnv_utf8 = NULL;
+	init_ok = false;
+	_sync_lock = 0;
+	init();
+}
+
+cUtfConverter::~cUtfConverter() {
+	term();
+}
+
+bool cUtfConverter::check(const char *str) {
+	if(!str || !*str || is_ascii(str)) {
+		return(true);
+	}
+	bool okUtf = false;
+	if(init_ok) {
+		unsigned strLen = strlen(str);
+		unsigned strLimit = strLen * 2 + 10;
+		unsigned strUtfLimit = strLen * 2 + 10;
+		UChar *strUtf = new UChar[strUtfLimit + 1];
+		UErrorCode status = U_ZERO_ERROR;
+		lock();
+		ucnv_toUChars(cnv_utf8, strUtf, strUtfLimit, str, -1, &status);
+		unlock();
+		if(status == U_ZERO_ERROR) {
+			char *str_check = new char[strLimit + 1];
+			lock();
+			ucnv_fromUChars(cnv_utf8, str_check, strLimit, strUtf, -1, &status);
+			unlock();
+			if(status == U_ZERO_ERROR && !strcmp(str, str_check)) {
+				okUtf = true;
+			}
+			delete [] str_check;
+		}
+		delete [] strUtf;
+	}
+	return(okUtf);
+}
+
+string cUtfConverter::reverse(const char *str) {
+	if(!str || !*str) {
+		return("");
+	}
+	string rslt;
+	bool okReverseUtf = false;
+	if(init_ok && !is_ascii(str)) {
+		unsigned strLen = strlen(str);
+		unsigned strLimit = strLen * 2 + 10;
+		unsigned strUtfLimit = strLen * 2 + 10;
+		UChar *strUtf = new UChar[strUtfLimit + 1];
+		UErrorCode status = U_ZERO_ERROR;
+		lock();
+		ucnv_toUChars(cnv_utf8, strUtf, strUtfLimit, str, -1, &status);
+		unlock();
+		if(status == U_ZERO_ERROR) {
+			unsigned len = 0;
+			for(unsigned i = 0; i < strUtfLimit && strUtf[i]; i++) {
+				len++;
+			}
+			UChar *strUtf_r = new UChar[strUtfLimit + 1];
+			for(unsigned i = 0; i < len; i++) {
+				strUtf_r[len - i - 1] = strUtf[i];
+			}
+			strUtf_r[len] = 0;
+			char *str_r = new char[strLimit + 1];
+			lock();
+			ucnv_fromUChars(cnv_utf8, str_r, strLimit, strUtf_r, -1, &status);
+			unlock();
+			if(status == U_ZERO_ERROR && strlen(str_r) == strLen) {
+				rslt = str_r;
+				okReverseUtf = true;
+			}
+			delete [] str_r;
+			delete [] strUtf_r;
+		}
+		delete [] strUtf;
+	}
+	if(!okReverseUtf) {
+		int length = strlen(str);
+		for(int i = length - 1; i >= 0; i--) {
+			rslt += str[i];
+		}
+	}
+	return rslt;
+}
+
+bool cUtfConverter::is_ascii(const char *str) {
+	if(!str) {
+		return(true);
+	}
+	while(*str) {
+		if((unsigned)*str > 127) {
+			return(false);
+		}
+		++str;
+	}
+	return(true);
+}
+
+string cUtfConverter::remove_no_ascii(const char *str, const char subst) {
+	if(!str || !*str) {
+		return("");
+	}
+	string rslt;
+	while(*str) {
+		rslt += (unsigned)*str > 127 ? subst : *str;
+		++str;
+	}
+	return(rslt);
+}
+
+void cUtfConverter::_remove_no_ascii(const char *str, const char subst) {
+	if(!str) {
+		return;
+	}
+	while(*str) {
+		if((unsigned)*str > 127) {
+			*(char*)str = subst;
+		}
+		++str;
+	}
+}
+
+bool cUtfConverter::init() {
+	UErrorCode status = U_ZERO_ERROR;
+	cnv_utf8 = ucnv_open("utf-8", &status);
+	if(status == U_ZERO_ERROR) {
+		init_ok = true;
+	} else {
+		if(cnv_utf8) {
+			ucnv_close(cnv_utf8);
+		}
+	}
+	return(init_ok);
+}
+
+void cUtfConverter::term() {
+	if(cnv_utf8) {
+		ucnv_close(cnv_utf8);
+	}
+	init_ok = false;
+}
+
+bool matchResponseCode(int code, int size, int testCode) {
+	if(testCode > 0) {
+		int lrn = testCode;
+		while(lrn && (log10int(lrn) + 1) > size) {
+			lrn /= 10;
+		}
+		if(lrn == code) {
+			return(true);
+		}
+	} else if(testCode == 0 && code == 0) {
+		return(true);
+	}
+	return(false);
+}
+
+bool matchResponseCodes(std::vector<pair<int, int> > & sipInfoCodes, int testCode) {
+	for (uint i = 0; i < sipInfoCodes.size(); i++) {
+		if (matchResponseCode(sipInfoCodes.at(i).first, sipInfoCodes.at(i).second, testCode)) {
+			return(true);
+		}
+	}
+	return(false);
+}
+
+std::vector<pair<int,int> > getResponseCodeSizes(std::vector<int> & Codes) {
+	std::vector<pair<int, int> > elems;
+	for (uint i = 0; i < Codes.size(); i++) {
+		if (Codes.at(i) > 0) {
+			elems.push_back(make_pair(Codes.at(i), log10int(Codes.at(i)) + 1));
+		} else {
+			elems.push_back(make_pair(Codes.at(i),1));
+		}
+	}
+	return(elems);
+}
+
+int log10int(int v) {
+    return (v >= 1000000000) ? 9 : (v >= 100000000) ? 8 :
+        (v >= 10000000) ? 7 : (v >= 1000000) ? 6 :
+        (v >= 100000) ? 5 : (v >= 10000) ? 4 :
+        (v >= 1000) ? 3 : (v >= 100) ? 2 : (v >= 10) ? 1 : 0;
+}
+
+int log10int(long int v) {
+	if (v <= 0) {
+		return(0);
+	}
+	int l = 0;
+	while(v > 0) {
+		v /= 10;
+		++l;
+	}
+	return(l - 1);
 }

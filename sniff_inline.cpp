@@ -42,6 +42,7 @@ extern unsigned opt_tcp_port_mgcp_callagent;
 extern unsigned opt_udp_port_mgcp_callagent;
 extern int opt_dup_check;
 extern int opt_dup_check_ipheader;
+extern int opt_dup_check_ipheader_ignore_ttl;
 extern char *sipportmatrix;
 extern char *httpportmatrix;
 extern char *webrtcportmatrix;
@@ -135,7 +136,8 @@ iphdr2 *convertHeaderIP_GRE(iphdr2 *header_ip) {
 inline 
 #endif
 bool parseEtherHeader(int pcapLinklayerHeaderType, u_char* packet,
-		      sll_header *&header_sll, ether_header *&header_eth, u_int &header_ip_offset, int &protocol, int *vlan) {
+		      sll_header *&header_sll, ether_header *&header_eth, u_char **header_ppp_o_e,
+		      u_int &header_ip_offset, int &protocol, int *vlan) {
 	if(vlan) {
 		*vlan = -1;
 	}
@@ -187,6 +189,9 @@ bool parseEtherHeader(int pcapLinklayerHeaderType, u_char* packet,
 			case 0x8864:
 				// PPPoE
 				if(htons(*(u_int16_t*)(packet + sizeof(ether_header) + 6)) == 0x0021) { // Point To Point protocol IPv4
+					if(header_ppp_o_e) {
+						*header_ppp_o_e = packet + sizeof(ether_header);
+					}
 					header_ip_offset = 8;
 					protocol = ETHERTYPE_IP;
 				} else {
@@ -219,6 +224,9 @@ bool parseEtherHeader(int pcapLinklayerHeaderType, u_char* packet,
 				} while(_protocol == 0x8100);
 				if(_protocol == 0x8864 && // PPPoE
 				   htons(*(u_int16_t*)(packet + sizeof(ether_header) + header_ip_offset + 6)) == 0x0021) { // Point To Point protocol IPv4
+					if(header_ppp_o_e) {
+						*header_ppp_o_e = packet + header_ip_offset + sizeof(ether_header);
+					}
 					header_ip_offset += 8;
 					protocol = ETHERTYPE_IP;
 				} else {
@@ -235,6 +243,7 @@ bool parseEtherHeader(int pcapLinklayerHeaderType, u_char* packet,
 			header_ip_offset = 52;
 			protocol = ETHERTYPE_IP;
 			break;
+		case DLT_MTP2_WITH_PHDR:
 		case DLT_MTP2:
 			header_ip_offset = 0xFFFFFFFF;
 			protocol = 0;
@@ -347,7 +356,8 @@ int pcapProcess(sHeaderPacket **header_packet, int pushToStack_queue_index,
 			ppd->protocol = (*header_packet)->eth_protocol;
 			ppd->header_ip = (iphdr2*)(HPP(*header_packet) + ppd->header_ip_offset);
 		} else if(parseEtherHeader(pcapLinklayerHeaderType, HPP(*header_packet),
-					   ppd->header_sll, ppd->header_eth, ppd->header_ip_offset, ppd->protocol)) {
+					   ppd->header_sll, ppd->header_eth, NULL,
+					   ppd->header_ip_offset, ppd->protocol)) {
 			(*header_packet)->detect_headers |= 0x01;
 			(*header_packet)->header_ip_first_offset = ppd->header_ip_offset;
 			(*header_packet)->eth_protocol = ppd->protocol;
@@ -394,7 +404,8 @@ int pcapProcess(sHeaderPacket **header_packet, int pushToStack_queue_index,
 			ppd->protocol = pcap_header_plus2->eth_protocol;
 			ppd->header_ip = (iphdr2*)(packet + ppd->header_ip_offset);
 		} else if(parseEtherHeader(pcapLinklayerHeaderType, packet,
-					   ppd->header_sll, ppd->header_eth, ppd->header_ip_offset, ppd->protocol)) {
+					   ppd->header_sll, ppd->header_eth, NULL,
+					   ppd->header_ip_offset, ppd->protocol)) {
 			pcap_header_plus2->detect_headers |= 0x01;
 			pcap_header_plus2->header_ip_first_offset = ppd->header_ip_offset;
 			pcap_header_plus2->eth_protocol = ppd->protocol;
@@ -733,6 +744,8 @@ int pcapProcess(sHeaderPacket **header_packet, int pushToStack_queue_index,
 			}
 			ppd->traillen = (int)(caplen - ((u_char*)ppd->header_ip - packet)) - ntohs(ppd->header_ip->tot_len);
 		} else if(opt_enable_ss7) {
+			ppd->istcp = 0;
+			ppd->isother = 1;
 			ppd->data = (char*)packet;
 			ppd->datalen = caplen;
 		}
@@ -756,6 +769,18 @@ int pcapProcess(sHeaderPacket **header_packet, int pushToStack_queue_index,
 		   !(ppd->istcp && opt_enable_ssl && (isSslIpPort(htonl(ppd->header_ip->saddr), htons(ppd->header_tcp->source)) || isSslIpPort(htonl(ppd->header_ip->daddr), htons(ppd->header_tcp->dest))))) {
 			uint16_t *_md5 = header_packet ? (*header_packet)->md5 : pcap_header_plus2->md5;
 			if(ppf & ppf_calcMD5) {
+				bool header_ip_set_orig = false;
+				u_int8_t header_ip_ttl_orig;
+				u_int8_t header_ip_check_orig;
+				if(opt_dup_check_ipheader_ignore_ttl &&
+				   (((ppf & ppf_defragInPQout) && is_ip_frag == 1) ||
+				    opt_dup_check_ipheader)) {
+					header_ip_ttl_orig = ppd->header_ip->ttl;
+					header_ip_check_orig = ppd->header_ip->check;
+					ppd->header_ip->ttl = 0;
+					ppd->header_ip->check = 0;
+					header_ip_set_orig = true;
+				}
 				MD5_Init(&ppd->ctx);
 				if((ppf & ppf_defragInPQout) && is_ip_frag == 1) {
 					u_int32_t caplen = header_packet ? HPH(*header_packet)->caplen : pcap_header_plus2->get_caplen();
@@ -768,6 +793,10 @@ int pcapProcess(sHeaderPacket **header_packet, int pushToStack_queue_index,
 					MD5_Update(&ppd->ctx, ppd->data, MAX(0, (unsigned long)ppd->datalen - ppd->traillen));
 				}
 				MD5_Final((unsigned char*)_md5, &ppd->ctx);
+				if(header_ip_set_orig) {
+					ppd->header_ip->ttl = header_ip_ttl_orig;
+					ppd->header_ip->check = header_ip_check_orig;
+				}
 				#ifdef DEDUP_DEBUG
 				cout << " " << MD5_String((unsigned char*)_md5);
 				#endif

@@ -1,6 +1,8 @@
 #ifndef TOOLS_H
 #define TOOLS_H
 
+#include "config.h"
+
 #include <pthread.h>
 #include <string>
 #include <vector>
@@ -25,6 +27,8 @@
 #include <map>
 #include <time.h>
 #include <regex.h>
+#include <unicode/ucnv.h> 
+#include <dirent.h>
 
 #include "pstat.h"
 #include "tools_dynamic_buffer.h"
@@ -326,6 +330,7 @@ u_int64_t file_size(string fileName) { return(file_size(fileName.c_str())); }
 bool is_dir(const char * fileName);
 bool is_dir(char * fileName) { return(is_dir((const char*)fileName)); }
 bool is_dir(string fileName) { return(is_dir(fileName.c_str())); }
+bool is_dir(dirent *de, const char *path);
 void set_mac();
 int mkdir_r(std::string, mode_t, unsigned uid = 0, unsigned gid = 0);
 int rmdir_r(const char *dir, bool enableSubdir = false, bool withoutRemoveRoot = false);
@@ -483,7 +488,7 @@ string GetDataMD5(u_char *data, u_int32_t datalen,
 		  u_char *data3 = NULL, u_int32_t data3len = 0);
 string GetStringSHA256(std::string str);
 u_int32_t checksum32buf(char *buf, size_t len);
-u_int32_t checksum32buf(u_char *buf, size_t len) {
+inline u_int32_t checksum32buf(u_char *buf, size_t len) {
 	return(checksum32buf((char*)buf, len));
 }
 void ntoa(char *res, unsigned int addr);
@@ -510,13 +515,30 @@ char *strnchr(const char *haystack, char needle, size_t len);
 char *strncasechr(const char *haystack, char needle, size_t len);
 size_t strCaseEqLengthR(const char *str1, const char *str2, bool *eqMinLength);
 
+inline char* strncpy_null_term(char *dst, const char *src, size_t size) {
+	strncpy(dst, src, size);
+	dst[size - 1] = 0;
+	return(dst);
+}
+#define strcpy_null_term(dst, src) strncpy_null_term(dst, src, sizeof(dst))
+#define strncpy_null_term(dst, src, size) strncpy_null_term(dst, src, size)
+
 std::string &trim(std::string &s, const char *trimChars = NULL);
 std::string trim_str(std::string s, const char *trimChars = NULL);
 std::vector<std::string> &split(const std::string &s, char delim, std::vector<std::string> &elems);
 std::vector<std::string> split(const std::string &s, char delim);
 std::vector<std::string> split(const char *s, const char *delim, bool enableTrim = false, bool useEmptyItems = false);
 std::vector<std::string> split(const char *s, std::vector<std::string> delim, bool enableTrim = false, bool useEmptyItems = false);
+std::vector<int> split2int(const std::string &s, char delim);
+std::vector<int> split2int(const std::string &s, std::vector<std::string> delim, bool enableTrim);
 std::string string_size(const char *s, unsigned size);
+bool string_is_alphanumeric(const char *s);
+
+bool matchResponseCodes(std::vector<pair<int, int> > & sipInfoCodes, int testCode);
+bool matchResponseCode(int code, int size, int testCode);
+std::vector<pair<int,int> > getResponseCodeSizes(std::vector<int> & Codes);
+int log10int(int v);
+int log10int(long int v);
 
 bool check_regexp(const char *pattern);
 int reg_match(const char *string, const char *pattern, const char *file = NULL, int line = 0);
@@ -557,12 +579,14 @@ private:
 };
 
 bool check_ip_in(u_int32_t ip, vector<u_int32_t> *vect_ip, vector<d_u_int32_t> *vect_net, bool trueIfVectEmpty);
+bool check_ip(u_int32_t ip, u_int32_t net, unsigned mask_length);
 string inet_ntostring(u_int32_t ip);
 u_int32_t inet_strington(const char *ip);
 bool ip_is_localhost(u_int32_t ip) { return((ip >> 8) == 0x7F0000); }
 void xorData(u_char *data, size_t dataLen, const char *key, size_t keyLength, size_t initPos);
 void base64_init(void);
 int base64decode(unsigned char *dst, const char *src, int max);
+string hexencode(unsigned char *src, int src_length);
 int hexdecode(unsigned char *dst, const char *src, int max);
 void find_and_replace(string &source, const string find, string replace);
 string find_and_replace(const char *source, const char *find, const char *replace);
@@ -575,6 +599,7 @@ string intToString(u_int32_t i);
 string intToString(u_int64_t i);
 string floatToString(double d);
 string pointerToString(void *p);
+string boolToString(bool b);
 bool isJsonObject(string str);
 
 class CircularBuffer
@@ -760,6 +785,10 @@ inline unsigned long long getTimeUS(timeval &ts) {
     return(ts.tv_sec * 1000000ull + ts.tv_usec);
 }
 
+inline unsigned long long getTimeUS(volatile timeval &ts) {
+    return(ts.tv_sec * 1000000ull + ts.tv_usec);
+}
+
 class FileZipHandler : public CompressStream_baseEv {
 public:
 	enum eMode {
@@ -917,6 +946,9 @@ public:
 	void setStateClose() {
 		this->state = state_close;
 	}
+	string getFileName() {
+		return(fileName);
+	}
 private:
 	eTypeSpoolFile typeSpoolFile;
 	string fileName;
@@ -951,7 +983,7 @@ void createSimpleTcpDataPacket(u_int header_ip_offset, pcap_pkthdr **header, u_c
 			       u_char *source_packet, u_char *data, unsigned int datalen,
 			       unsigned int saddr, unsigned int daddr, int source, int dest,
 			       u_int32_t seq, u_int32_t ack_seq, 
-			       u_int32_t time_sec, u_int32_t time_usec);
+			       u_int32_t time_sec, u_int32_t time_usec, int dlt);
 
 class RtpGraphSaver {
 public:
@@ -1792,7 +1824,7 @@ class GroupsIP {
 public:
 	GroupsIP();
 	~GroupsIP();
-	void load();
+	void load(class SqlDb *sqlDb = NULL);
 	GroupIP *getGroup(uint ip);
 	GroupIP *getGroup(const char *ip) {
 		in_addr ips;
@@ -2297,6 +2329,7 @@ private:
 	unsigned long timeSync_SIP_HEADERfilter;
 	unsigned long timeSync_custom_headers_cdr;
 	unsigned long timeSync_custom_headers_message;
+	unsigned long timeSync_custom_headers_sip_msg;
 };
 
 class SafeAsyncQueue_base {
@@ -2677,7 +2710,7 @@ struct sLocalTimeHourCacheItems {
 	void setTimezone(bool gmt, const char *timezone) {
 		this->gmt = gmt;
 		if(timezone && timezone[0]) {
-			strncpy(this->timezone, timezone, sizeof(this->timezone));
+			strcpy_null_term(this->timezone, timezone);
 		} else {
 			this->timezone[0] = 0;
 		}
@@ -2703,7 +2736,7 @@ struct sLocalTimeHourCacheItems {
 			if(timezone[0]) {
 				const char *_oldTZ = getenv("TZ");
 				if(_oldTZ) {
-					strncpy(oldTZ, _oldTZ, sizeof(oldTZ));
+					strcpy_null_term(oldTZ, _oldTZ);
 				} else {
 					oldTZ[0] = 0;
 				}
@@ -2744,7 +2777,7 @@ struct sLocalTimeHourCacheItems {
 		if(timezone[0]) {
 			const char *_oldTZ = getenv("TZ");
 			if(_oldTZ) {
-				strncpy(oldTZ, _oldTZ, sizeof(oldTZ));
+				strcpy_null_term(oldTZ, _oldTZ);
 			} else {
 				oldTZ[0] = 0;
 			}
@@ -2905,6 +2938,12 @@ inline long int mktime(tm* time, const char *timezone) {
 	} else {
 		return(mktime(time));
 	}
+}
+inline long int mktime(const char *str_time, const char *timezone) {
+	struct tm time;
+	memset(&time, 0, sizeof(struct tm));
+	strptime(str_time, "%Y-%m-%d %H:%M:%S", &time);
+	return(mktime(&time, timezone));
 }
 
 string getGuiTimezone(class SqlDb *sqlDb = NULL);
@@ -3751,6 +3790,33 @@ private:
 	bool use_lock;
 	bool res_timeout;
 	map<string, sIP_time> res_table;
+	volatile int _sync_lock;
+};
+
+
+class cUtfConverter {
+public:
+	cUtfConverter();
+	~cUtfConverter();
+	bool check(const char *str);
+	string reverse(const char *str);
+	bool is_ascii(const char *str);
+	string remove_no_ascii(const char *str, const char subst = '_');
+	void _remove_no_ascii(const char *str, const char subst = '_');
+private:
+	bool init();
+	void term();
+	void lock() {
+		while(__sync_lock_test_and_set(&_sync_lock, 1)) {
+			usleep(100);
+		}
+	}
+	void unlock() {
+		__sync_lock_release(&_sync_lock);
+	}
+private:
+	UConverter *cnv_utf8;
+	bool init_ok;
 	volatile int _sync_lock;
 };
 

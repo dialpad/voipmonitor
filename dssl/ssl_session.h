@@ -124,6 +124,8 @@ struct DSSL_Session_
 	
 	int (*gener_master_secret)(u_char *client_random, u_char *master_secret, DSSL_Session *session);
 	void *gener_master_secret_data[2];
+	
+	int ignore_error_invalid_mac;
 };
 
 
@@ -174,6 +176,7 @@ int ssls_store_new_ticket(DSSL_Session* sess, u_char* ticket, uint32_t len);
 
 void ssls_handshake_data_append(DSSL_Session* sess, u_char* data, uint32_t len);
 void ssls_handshake_data_free(DSSL_Session* sess);
+void ssls_handshake_queue_free(DSSL_Session* sess);
 
 #ifdef  __cplusplus
 }

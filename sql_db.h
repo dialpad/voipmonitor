@@ -22,6 +22,52 @@ using namespace std;
 
 class SqlDb;
 
+class SqlDb_field {
+public:
+	SqlDb_field(const char *field, const char *alias = NULL, bool needEscapeField = true) {
+		this->field = field;
+		if(alias) {
+			this->alias = alias;
+		}
+		this->needEscapeField = needEscapeField;
+	}
+	SqlDb_field(string field, string alias, bool needEscapeField = true) {
+		this->field = field;
+		this->alias = alias;
+		this->needEscapeField = needEscapeField;
+	}
+public:
+	string field;
+	string alias;
+	bool needEscapeField;
+};
+
+class SqlDb_condField {
+public:
+	SqlDb_condField(const char *field, const char *value, bool needEscapeField = true, bool needEscapeValue = true) {
+		this->field = field;
+		this->value = value;
+		this->needEscapeField = needEscapeField;
+		this->needEscapeValue = needEscapeValue;
+	}
+	SqlDb_condField(string field, string value, bool needEscapeField = true, bool needEscapeValue = true) {
+		this->field = field;
+		this->value = value;
+		this->needEscapeField = needEscapeField;
+		this->needEscapeValue = needEscapeValue;
+	}
+	SqlDb_condField &setOper(const char *oper) {
+		this->oper = oper;
+		return(*this);
+	}
+public:
+	string field;
+	string value;
+	string oper;
+	bool needEscapeField;
+	bool needEscapeValue;
+};
+
 class SqlDb_row {
 public:
 	struct SqlDb_rowField {
@@ -67,9 +113,25 @@ public:
 	string keyvalList(string separator);
 	size_t getCountFields();
 	void removeFieldsIfNotContainIn(map<string, int> *fields);
+	void clearSqlDb();
 private:
 	SqlDb *sqlDb;
 	vector<SqlDb_rowField> row;
+};
+
+class SqlDb_rows {
+public:
+	SqlDb_rows();
+	~SqlDb_rows();
+	SqlDb_row &fetchRow();
+	void initFetch();
+	unsigned countRow();
+	operator unsigned();
+	void clear();
+private:
+	list<SqlDb_row> rows;
+	list<SqlDb_row>::iterator *iter_rows;
+friend class SqlDb;
 };
 
 class SqlDb {
@@ -108,13 +170,23 @@ public:
 	int _queryByRemoteSocket(string query, unsigned int pass);
 	int processResponseFromQueryBy(const char *response, unsigned pass);
 	virtual string prepareQuery(string query, bool nextPass);
-	virtual SqlDb_row fetchRow(bool assoc = false) = 0;
+	virtual SqlDb_row fetchRow() = 0;
+	unsigned fetchRows(SqlDb_rows *rows);
 	virtual string getJsonResult() { return(""); }
 	virtual string getJsonError() { return(""); }
-	virtual string insertQuery(string table, SqlDb_row row, bool enableSqlStringInContent = false, bool escapeAll = false, bool insertIgnore = false);
+	virtual string getFieldsStr(list<SqlDb_field> *fields);
+	virtual string getCondStr(list<SqlDb_condField> *cond);
+	virtual string selectQuery(string table, list<SqlDb_field> *fields = NULL, list<SqlDb_condField> *cond = NULL, unsigned limit = 0);
+	virtual string selectQuery(string table, const char *field, const char *condField = NULL, const char *condValue = NULL, unsigned limit = 0);
+	virtual string insertQuery(string table, SqlDb_row row, bool enableSqlStringInContent = false, bool escapeAll = false, bool insertIgnore = false, SqlDb_row *row_on_duplicate = NULL);
+	virtual string insertOrUpdateQuery(string table, SqlDb_row row, SqlDb_row row_on_duplicate, bool enableSqlStringInContent = false, bool escapeAll = false, bool insertIgnore = false);
 	virtual string insertQuery(string table, vector<SqlDb_row> *rows, bool enableSqlStringInContent = false, bool escapeAll = false, bool insertIgnore = false);
+	virtual string insertQueryWithLimitMultiInsert(string table, vector<SqlDb_row> *rows, unsigned limitMultiInsert, const char *queriesSeparator = NULL,
+						       bool enableSqlStringInContent = false, bool escapeAll = false, bool insertIgnore = false);
 	virtual string updateQuery(string table, SqlDb_row row, const char *whereCond, bool enableSqlStringInContent = false, bool escapeAll = false);
 	virtual string updateQuery(string table, SqlDb_row row, SqlDb_row whereCond, bool enableSqlStringInContent = false, bool escapeAll = false);
+	virtual bool select(string table, list<SqlDb_field> *fields = NULL, list<SqlDb_condField> *cond = NULL, unsigned limit = 0);
+	virtual bool select(string table, const char *field, const char *condField = NULL, const char *condValue = NULL, unsigned limit = 0);
 	virtual int64_t insert(string table, SqlDb_row row);
 	virtual int64_t insert(string table, vector<SqlDb_row> *rows);
 	virtual bool update(string table, SqlDb_row row, const char *whereCond);
@@ -126,13 +198,26 @@ public:
 	bool existsTable(string table) { return(existsTable(table.c_str())); }
 	virtual bool existsColumn(const char *table, const char *column) = 0;
 	bool existsColumn(string table, string column) { return(existsColumn(table.c_str(), column.c_str())); }
+	void startExistsColumnCache();
+	void stopExistsColumnCache();
+	void suspendExistsColumnCache();
+	void resumeExistsColumnCache();
+	bool isEnableExistColumnCache();
+	int existsColumnInCache(const char *table, const char *column);
+	void addColumnToCache(const char *table, const char *column);
 	virtual string getTypeColumn(const char *table, const char *column, bool toLower = true) = 0;
 	string getTypeColumn(string table, string column, bool toLower = true) { return(getTypeColumn(table.c_str(), column.c_str(), toLower)); }
+	virtual int getPartitions(const char *table, list<string> *partitions = NULL, bool useCache = true) = 0;
+	int getPartitions(string table, list<string> *partitions, bool useCache) { return(getPartitions(table.c_str(), partitions, useCache)); }
+	int getPartitions(const char *table, vector<string> *partitions, bool useCache = true);
+	int getPartitions(string table, vector<string> *partitions, bool useCache) { return(getPartitions(table.c_str(), partitions, useCache)); }
 	virtual bool existsPartition(const char *table, const char *partition, bool useCache = true) = 0;
 	bool existsPartition(string table, string partition, bool useCache) { return(existsPartition(table.c_str(), partition.c_str(), useCache)); }
 	bool existsDayPartition(string table, unsigned addDaysToNow, bool useCache = true);
 	virtual bool emptyTable(const char *table) = 0;
 	bool emptyTable(string table) { return(emptyTable(table.c_str())); }
+	virtual int64_t rowsInTable(const char *table) = 0;
+	int64_t rowsInTable(string table) { return(rowsInTable(table.c_str())); }
 	virtual bool isOldVerPartition(const char *table) { return(false); }
 	bool isOldVerPartition(string table) { return(isOldVerPartition(table.c_str())); }
 	virtual int getIndexField(string fieldName);
@@ -150,8 +235,13 @@ public:
 	virtual string getContentSeparator() {
 		return(",");
 	} 
+	virtual string escapeTableName(string tableName) {
+		return(tableName);
+	}
 	virtual bool checkLastError(string /*prefixError*/, bool /*sysLog*/ = false, bool /*clearLastError*/ = false) {
 		return(false);
+	}
+	virtual void evError(int pass) {
 	}
 	void setLastError(unsigned int lastError, const char *lastErrorString, bool sysLog = false) {
 		this->lastError = lastError;
@@ -274,6 +364,9 @@ private:
 	static volatile u_int64_t delayQuery_sum_ms;
 	static volatile u_int32_t delayQuery_count;
 	cSocketBlock *remote_socket;
+	map<string, list<string> > existsColumnCache;
+	bool existsColumnCache_enable;
+	bool existsColumnCache_suspend;
 friend class MySqlStore_process;
 };
 
@@ -290,17 +383,25 @@ public:
 		tt_all   = 7
 	};
 	enum eTypeTables2 {
-		tt2_na = 0,
-		tt2_cdr_static = 1,
-		tt2_cdr_dynamic = 2,
-		tt2_cdr = 3,
-		tt2_message_static = 4,
-		tt2_message_dynamic = 8,
-		tt2_message = 12,
-		tt2_register = 16,
-		tt2_http_enum = 32,
-		tt2_webrtc = 64,
-		tt2_static = tt2_cdr_static | tt2_message_static | tt2_register | tt2_http_enum | tt2_webrtc
+		tt2_na			= 0,
+		tt2_cdr_static		= 1 << 0,
+		tt2_cdr_dynamic		= 1 << 1,
+		tt2_cdr			= (1 << 0) | (1 << 1),
+		tt2_message_static	= 1 << 2,
+		tt2_message_dynamic	= 1 << 3,
+		tt2_message		= (1 << 2) | (1 << 3),
+		tt2_register		= 1 << 4,
+		tt2_sip_msg_static	= 1 << 5,
+		tt2_sip_msg_dynamic	= 1 << 6,
+		tt2_sip_msg		= (1 << 5) | (1 << 6),
+		tt2_http_enum		= (1 << 7),
+		tt2_webrtc		= (1 << 8),
+		tt2_static = tt2_cdr_static | 
+			     tt2_message_static | 
+			     tt2_register | 
+			     tt2_sip_msg_static |
+			     tt2_http_enum | 
+			     tt2_webrtc
 	};
 public:
 	SqlDb_mysql();
@@ -309,7 +410,7 @@ public:
 	void disconnect();
 	bool connected();
 	bool query(string query, bool callFromStoreProcessWithFixDeadlock = false, const char *dropProcQuery = NULL);
-	SqlDb_row fetchRow(bool assoc = false);
+	SqlDb_row fetchRow();
 	bool fetchQueryResult(vector<string> *fields, vector<map<string, string_null> > *rows);
 	string getJsonResult(vector<string> *fields, vector<map<string, string_null> > *rows);
 	string getJsonResult();
@@ -317,16 +418,22 @@ public:
 	int64_t getInsertId();
 	bool existsDatabase();
 	bool existsTable(const char *table);
+	bool existsTable(string table) { return(existsTable(table.c_str())); }
 	bool existsColumn(const char *table, const char *column);
 	string getTypeColumn(const char *table, const char *column, bool toLower = true);
+	int getPartitions(const char *table, list<string> *partitions = NULL, bool useCache = true);
 	bool existsPartition(const char *table, const char *partition, bool useCache = true);
 	bool emptyTable(const char *table);
+	int64_t rowsInTable(const char *table);
 	bool isOldVerPartition(const char *table);
 	string escape(const char *inputString, int length = 0);
 	string getFieldBorder() {
 		return("`");
 	}
+	string escapeTableName(string tableName);
+	bool isReservedWord(string word);
 	bool checkLastError(string prefixError, bool sysLog = false,bool clearLastError = false);
+	void evError(int pass);
 	void clean();
 	bool createSchema(int connectId = 0);
 	bool createSchema_tables_other(int connectId);
@@ -338,7 +445,7 @@ public:
 	bool createSchema_procedures_other(int connectId);
 	bool createSchema_procedure_partition(int connectId, bool abortIfFailed = true);
 	bool createSchema_init_cdr_partitions(int connectId);
-	string getPartDayName(string &limitDay_str);
+	string getPartDayName(string &limitDay_str, bool enableOldPartition = true);
 	void saveTimezoneInformation();
 	void createTable(const char *tableName);
 	void checkDbMode();
@@ -396,8 +503,8 @@ private:
 	MYSQL_RES *hMysqlRes;
 	string dbVersion;
 	unsigned long mysqlThreadId;
-	map<string, string> exists_partition_cache;
-	volatile int exists_partition_cache_sync;
+	map<string, list<string> > partitions_cache;
+	volatile int partitions_cache_sync;
 };
 
 class SqlDb_odbc_bindBufferItem {
@@ -439,17 +546,20 @@ public:
 	void disconnect();
 	bool connected();
 	bool query(string query, bool callFromStoreProcessWithFixDeadlock = false, const char *dropProcQuery = NULL);
-	SqlDb_row fetchRow(bool assoc = false);
+	SqlDb_row fetchRow();
 	int64_t getInsertId();
 	bool existsDatabase();
 	bool existsTable(const char *table);
 	bool existsColumn(const char *table, const char *column);
 	string getTypeColumn(const char *table, const char *column, bool toLower = true);
+	int getPartitions(const char *table, list<string> *partitions = NULL, bool useCache = true);
 	bool existsPartition(const char *table, const char *partition, bool useCache = true);
 	bool emptyTable(const char *table);
+	int64_t rowsInTable(const char *table);
 	int getIndexField(string fieldName);
 	string escape(const char *inputString, int length = 0);
 	bool checkLastError(string prefixError, bool sysLog = false,bool clearLastError = false);
+	void evError(int pass);
 	void cleanFields();
 	void clean();
 	bool createSchema(int connectId = 0);
@@ -680,6 +790,7 @@ public:
 	void addFileFromINotify(const char *filename);
 	QFileData parseQFilename(const char *filename);
 	string getLoadFromQFilesStat(bool processes = false);
+	unsigned getLoadFromQFilesCount();
 	//
 	void lock(int id);
 	void unlock(int id);
@@ -763,7 +874,7 @@ string sqlEscapeString(string inputStr, const char *typeDb = NULL, SqlDb_mysql *
 string sqlEscapeString(const char *inputStr, int length = 0, const char *typeDb = NULL, SqlDb_mysql *sqlDbMysql = NULL);
 void fillEscTables();
 string _sqlEscapeString(const char *inputString, int length, const char *typeDb);
-void _sqlEscapeString(const char *inputStr, int length, char *outputStr, const char *typeDb);
+void _sqlEscapeString(const char *inputStr, int length, char *outputStr, const char *typeDb, bool checkUtf = false);
 string sqlEscapeStringBorder(string inputStr, char borderChar = '\'', const char *typeDb = NULL, SqlDb_mysql *sqlDbMysql = NULL);
 string sqlEscapeStringBorder(const char *inputStr, char borderChar = '\'', const char *typeDb = NULL, SqlDb_mysql *sqlDbMysql = NULL);
 bool isSqlDriver(const char *sqlDriver, const char *checkSqlDriver = NULL);
@@ -779,7 +890,7 @@ void _createMysqlPartitionsCdr(int day, int connectId, SqlDb *sqlDb);
 void createMysqlPartitionsSs7();
 void createMysqlPartitionsRtpStat();
 void createMysqlPartitionsLogSensor();
-void createMysqlPartitionsBillingAgregation();
+void createMysqlPartitionsBillingAgregation(SqlDb *sqlDb = NULL);
 void createMysqlPartitionsTable(const char* table, bool partition_oldver);
 void createMysqlPartitionsIpacc();
 void dropMysqlPartitionsCdr();
@@ -832,6 +943,9 @@ struct sExistsColumns {
 	bool message_response_time;
 	bool message_spool_index;
 	bool register_rrd_count;
+	bool register_state_spool_index;
+	bool register_failed_spool_index;
+	bool register_state_flags;
 };
 
 
@@ -883,6 +997,56 @@ private:
 	list<sItem> items;
 	static string last_subject_db;
 	static u_int32_t last_subject_db_at;
+};
+
+
+class cSqlDbCodebook {
+public:
+	cSqlDbCodebook(const char *table, const char *columnId, const char *columnStringValue, 
+		       unsigned limitTableRows = 100000);
+	void addCond(const char *field, const char *value);
+	void setAutoLoadPeriod(unsigned autoLoadPeriod);
+	unsigned getId(const char *stringValue, bool enableInsert = false, bool enableAutoLoad = false);
+	void load(SqlDb *sqlDb = NULL);
+	void loadInBackground();
+private:
+	void _load(map<string, unsigned> *data, bool *overflow, SqlDb *sqlDb = NULL);
+	static void *_loadInBackground(void *arg);
+	void lock_data() {
+		while(__sync_lock_test_and_set(&_sync_data, 1));
+	}
+	void unlock_data() {
+		__sync_lock_release(&_sync_data);
+	}
+	void lock_load() {
+		while(__sync_lock_test_and_set(&_sync_load, 1));
+	}
+	bool lock_load(int timeout_us) {
+		while(__sync_lock_test_and_set(&_sync_load, 1)) {
+			timeout_us -= 100;
+			if(timeout_us < 0) {
+				return(false);
+			}
+			usleep(100);
+		}
+		return(true);
+	}
+	void unlock_load() {
+		__sync_lock_release(&_sync_load);
+	}
+private:
+	string table;
+	string columnId;
+	string columnStringValue;
+	unsigned limitTableRows;
+	list<SqlDb_condField> cond;
+	unsigned autoLoadPeriod;
+	map<string, unsigned> data;
+	bool data_overflow;
+	volatile int _sync_data;
+	volatile int _sync_load;
+	u_long lastBeginLoadTime;
+	u_long lastEndLoadTime;
 };
 
 

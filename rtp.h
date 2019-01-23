@@ -165,6 +165,24 @@ struct UDPTLFixedHeader {
 #endif
 
 
+struct RTPMAP {
+	inline RTPMAP() {
+		clear();
+	}
+	inline bool is_set() {
+		return(payload || codec);
+	}
+	inline void clear() {
+		payload = 0;
+		codec = 0;
+		frame_size = 0;
+	}
+	u_int16_t payload;
+	u_int16_t codec;
+	u_int16_t frame_size;
+};
+
+
 /**
  * This class implements operations on RTP strem
  */
@@ -203,6 +221,8 @@ public:
 	char lastcng;		//!< last packet sequence number
 	u_int16_t seq;		//!< current sequence number
 	int last_seq;		//!< last packet sequence number
+	u_int16_t channel_record_seq_ringbuffer[50];
+	u_int16_t channel_record_seq_ringbuffer_pos;
 	int packetization;	//!< packetization in millisenocds
 	int last_packetization;	//!< last packetization in millisenocds
 	int last_ts;		//!< last timestamp 
@@ -214,7 +234,9 @@ public:
 	int payload2;
 	int first_codec;
 	int codec;
-	int rtpmap[MAX_RTPMAP];
+	int frame_size;
+	RTPMAP rtpmap[MAX_RTPMAP];
+	RTPMAP rtpmap_other_side[MAX_RTPMAP];
 	unsigned char* data;    //!< pointer to UDP payload
 	int len;		//!< lenght of UDP payload
 	unsigned char* payload_data;    //!< pointer to RTP payload
@@ -234,6 +256,9 @@ public:
 	char lastdtmf;
 	bool forcemark;
 	bool forcemark2;
+	bool forcemark_by_owner;
+	bool forcemark_by_owner_set;
+	unsigned forcemark_owner_used;
 	char ignore;
 	uint8_t dscp;
 	bool skip;
@@ -531,6 +556,24 @@ public:
 	}
 	bool eqAddrPort(RTP *rtp) {
 		return(eqAddrPort(rtp->saddr, rtp->daddr, rtp->sport, rtp->dport));
+	}
+	
+	bool checkDuplChannelRecordSeq(u_int16_t seq) {
+		extern int opt_saveaudio_dedup_seq;
+		if(opt_saveaudio_dedup_seq) {
+			unsigned ringbuffer_length = sizeof(channel_record_seq_ringbuffer) / sizeof(channel_record_seq_ringbuffer[0]);
+			for(unsigned i = 0; i < ringbuffer_length; i++) {
+				if(seq == channel_record_seq_ringbuffer[i]) {
+					return(false);
+				}
+			}
+			channel_record_seq_ringbuffer[channel_record_seq_ringbuffer_pos] = seq;
+			++channel_record_seq_ringbuffer_pos;
+			if(channel_record_seq_ringbuffer_pos >= ringbuffer_length) {
+				channel_record_seq_ringbuffer_pos = 0;
+			}
+		}
+		return(true);
 	}
 
 private: 

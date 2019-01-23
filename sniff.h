@@ -309,7 +309,7 @@ struct packet_s_process : public packet_s_process_0 {
 	char callid[128];
 	char *callid_long;
 	int sip_method;
-	bool is_register;
+	sCseq cseq;
 	bool sip_response;
 	int lastSIPresponseNum;
 	char lastSIPresponse[128];
@@ -317,7 +317,6 @@ struct packet_s_process : public packet_s_process_0 {
 	Call *call;
 	int merged;
 	Call *call_created;
-	bool is_sip_other;
 	bool _getCallID;
 	bool _getSipMethod;
 	bool _getLastSipResponse;
@@ -338,7 +337,7 @@ struct packet_s_process : public packet_s_process_0 {
 		callid[0] = 0;
 		callid_long = NULL;
 		sip_method = -1;
-		is_register = false;
+		cseq.null();
 		sip_response = false;
 		lastSIPresponseNum = -1;
 		lastSIPresponse[0] = 0;
@@ -346,7 +345,6 @@ struct packet_s_process : public packet_s_process_0 {
 		call = NULL;
 		merged = 0;
 		call_created = NULL;
-		is_sip_other = false;
 		_getCallID = false;
 		_getSipMethod = false;
 		_getLastSipResponse = false;
@@ -375,6 +373,21 @@ struct packet_s_process : public packet_s_process_0 {
 	inline char *get_callid() {
 		return(callid_long ? callid_long : callid);
 	}
+	inline bool is_message() {
+		return(sip_method == MESSAGE || cseq.method == MESSAGE);
+	}
+	inline bool is_register() {
+		return(sip_method == REGISTER || cseq.method == REGISTER);
+	}
+	inline bool is_options() {
+		return(sip_method == OPTIONS || cseq.method == OPTIONS);
+	}
+	inline bool is_notify() {
+		return(sip_method == NOTIFY || cseq.method == NOTIFY);
+	}
+	inline bool is_subscribe() {
+		return(sip_method == SUBSCRIBE || cseq.method == SUBSCRIBE);
+	}
 };
 
 
@@ -384,16 +397,6 @@ void save_packet(Call *call, packet_s_process *packetS, int type, bool forceVirt
 
 typedef struct {
 	Call *call;
-	packet_s packet;
-	int8_t iscaller;
-	char find_by_dest;
-	char is_rtcp;
-	char stream_in_multiple_calls;
-	char is_fax;
-	char save_packet;
-} rtp_packet_pcap_queue;
-typedef struct {
-	Call *call;
 	packet_s_process_0 *packet;
 	int8_t iscaller;
 	char find_by_dest;
@@ -401,7 +404,7 @@ typedef struct {
 	char stream_in_multiple_calls;
 	char is_fax;
 	char save_packet;
-} rtp_packet_pt_pcap_queue;
+} rtp_packet_pcap_queue;
 
 class rtp_read_thread {
 public:
@@ -415,31 +418,17 @@ public:
 	#endif
 	struct batch_packet_rtp_base {
 		batch_packet_rtp_base(unsigned max_count) {
-			extern bool opt_t2_boost;
-			if(!opt_t2_boost) {
-				batch.c = new FILE_LINE(27003) rtp_packet_pcap_queue[max_count];
-				memset(batch.c, 0, sizeof(rtp_packet_pcap_queue) * max_count);
-			} else {
-				batch.pt = new FILE_LINE(27004) rtp_packet_pt_pcap_queue[max_count];
-				memset(batch.pt, 0, sizeof(rtp_packet_pt_pcap_queue) * max_count);
-			}
+			batch = new FILE_LINE(0) rtp_packet_pcap_queue[max_count];
+			memset(CAST_OBJ_TO_VOID(batch), 0, sizeof(rtp_packet_pcap_queue) * max_count);
 			this->max_count = max_count;
 		}
 		virtual ~batch_packet_rtp_base() {
 			for(unsigned i = 0; i < max_count; i++) {
 				// unlock item
 			}
-			extern bool opt_t2_boost;
-			if(!opt_t2_boost) {
-				delete [] batch.c;
-			} else {
-				delete [] batch.pt;
-			}
+			delete [] batch;
 		}
-		union batch_u {
-			rtp_packet_pcap_queue *c;
-			rtp_packet_pt_pcap_queue *pt;
-		} batch;
+		rtp_packet_pcap_queue *batch;
 		unsigned max_count;
 	};
 	struct batch_packet_rtp : public batch_packet_rtp_base {
@@ -515,7 +504,7 @@ public:
 						usleepCounter > 2 ? 5 : 1));
 					++usleepCounter;
 				}
-				memcpy(current_batch->batch.pt, thread_buffer->batch.pt, sizeof(rtp_packet_pt_pcap_queue) * thread_buffer->count);
+				memcpy(current_batch->batch, thread_buffer->batch, sizeof(rtp_packet_pcap_queue) * thread_buffer->count);
 				#if RQUEUE_SAFE
 					__SYNC_SET_TO_LOCK(current_batch->count, thread_buffer->count, this->count_lock_sync);
 					__SYNC_SET(current_batch->used);
@@ -539,7 +528,7 @@ public:
 				thread_buffer->count = 0;
 				__sync_lock_release(&this->push_lock_sync);
 			}
-			rtp_packet_pt_pcap_queue *rtpp_pq = &thread_buffer->batch.pt[thread_buffer->count];
+			rtp_packet_pcap_queue *rtpp_pq = &thread_buffer->batch[thread_buffer->count];
 			rtpp_pq->call = call;
 			rtpp_pq->packet = packet;
 			rtpp_pq->iscaller = iscaller;
@@ -579,9 +568,9 @@ public:
 				qring_push_index_count = 0;
 				qring_active_push_item = this->qring[qring_push_index - 1];
 			}
-			rtp_packet_pcap_queue *rtpp_pq = &qring_active_push_item->batch.c[qring_push_index_count];
+			rtp_packet_pcap_queue *rtpp_pq = &qring_active_push_item->batch[qring_push_index_count];
 			rtpp_pq->call = call;
-			rtpp_pq->packet = *packet;
+			rtpp_pq->packet = packet;
 			rtpp_pq->iscaller = iscaller;
 			rtpp_pq->find_by_dest = find_by_dest;
 			rtpp_pq->is_rtcp = is_rtcp;
@@ -674,7 +663,7 @@ public:
 					usleepCounter > 2 ? 5 : 1));
 				++usleepCounter;
 			}
-			memcpy(current_batch->batch.pt, thread_buffer->batch.pt, sizeof(rtp_packet_pt_pcap_queue) * thread_buffer->count);
+			memcpy(current_batch->batch, thread_buffer->batch, sizeof(rtp_packet_pcap_queue) * thread_buffer->count);
 			#if RQUEUE_SAFE
 				__SYNC_SET_TO_LOCK(current_batch->count, thread_buffer->count, this->count_lock_sync);
 				__SYNC_SET(current_batch->used);

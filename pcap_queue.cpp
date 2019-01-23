@@ -73,6 +73,7 @@
 		(opt_enable_http || opt_enable_webrtc || opt_enable_ssl ? 6000 : 3200))
 
 #define TRACE_INVITE_BYE 0
+#define TRACE_MASTER_SECRET 0
 
 
 using namespace std;
@@ -131,6 +132,7 @@ extern int opt_pb_read_from_file_acttime;
 extern int opt_pb_read_from_file_acttime_diff_days;
 extern unsigned int opt_pb_read_from_file_max_packets;
 extern bool opt_continue_after_read;
+extern int opt_time_to_terminate;
 extern char opt_scanpcapdir[2048];
 extern int global_pcap_dlink;
 extern char opt_cachedir[1024];
@@ -496,7 +498,7 @@ void pcap_block_store::restoreFromSaveBuffer(u_char *saveBuffer) {
 	this->count = header->count;
 	this->dlink = header->dlink;
 	this->sensor_id = header->sensor_id;
-	strncpy(this->ifname, header->ifname, sizeof(header->ifname));
+	strcpy_null_term(this->ifname, header->ifname);
 	this->block_counter = header->counter;
 	this->require_confirmation = header->require_confirmation;
 	if(this->offsets) {
@@ -571,9 +573,11 @@ int pcap_block_store::addRestoreChunk(u_char *buffer, size_t size, size_t *offse
 	if(offset) {
 		*offset = size - (this->restoreBufferSize - sizeRestoreBuffer);
 	}
-	if(((pcap_block_store_header*)this->restoreBuffer)->checksum &&
-	   ((pcap_block_store_header*)this->restoreBuffer)->checksum != max(checksum32buf(this->restoreBuffer + sizeof(pcap_block_store_header), sizeRestoreBuffer - sizeof(pcap_block_store_header)), (u_int32_t)1)) {
-		return(-5);
+	if(((pcap_block_store_header*)this->restoreBuffer)->checksum) {
+		u_int32_t checksum = checksum32buf(this->restoreBuffer + sizeof(pcap_block_store_header), sizeRestoreBuffer - sizeof(pcap_block_store_header));
+		if(((pcap_block_store_header*)this->restoreBuffer)->checksum != max(checksum, (u_int32_t)1)) {
+			return(-5);
+		}
 	}
 	if(autoRestore) {
 		this->restoreFromSaveBuffer(this->restoreBuffer);
@@ -973,7 +977,7 @@ pcap_store_queue::pcap_store_queue(const char *fileStoreFolder) {
 	this->cleanupFileStoreCounter = 0;
 	this->lastTimeLogErrDiskIsFull = 0;
 	this->lastTimeLogErrMemoryIsFull = 0;
-	if(access(fileStoreFolder, F_OK ) == -1) {
+	if(fileStoreFolder && fileStoreFolder[0] && access(fileStoreFolder, F_OK ) == -1) {
 		mkdir_r(fileStoreFolder, 0700);
 	}
 }
@@ -1312,7 +1316,8 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 	uint64_t rrdPS_R = 0;
 	uint64_t rrdPS_A = 0;
 //rrd SQL file 2db-SQL.rrd
-	signed int rrdSQLf_D = 0;	//here is zero alowed
+	signed int rrdSQLf_D = 0;	//avg query duration 
+	signed int rrdSQLf_C = 0;	//count queue files
 	signed int rrdSQLq_C = -1;
 	signed int rrdSQLq_M = -1;
 	signed int rrdSQLq_R = -1;
@@ -1566,6 +1571,7 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 				string stat = loadFromQFiles->getLoadFromQFilesStat();
 				string stat_proc = sverb.qfiles ? loadFromQFiles->getLoadFromQFilesStat(true) : "";
 				u_int32_t avgDelayQuery = SqlDb::getAvgDelayQuery();
+				u_int32_t countFilesQuery = loadFromQFiles->getLoadFromQFilesCount();
 				SqlDb::resetDelayQuery();
 				if(!stat.empty() || avgDelayQuery || !stat_proc.empty()) {
 					outStr << "SQLf[";
@@ -1581,6 +1587,7 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 					outStr << setprecision(3) << (double)avgDelayQuery / 1000 << "s";
 					fill = true;
 					if (opt_rrd) rrdSQLf_D = (signed int)avgDelayQuery;
+					if (opt_rrd) rrdSQLf_C = (signed int)countFilesQuery;
 				}
 				if(!stat_proc.empty()) {
 					if(fill) {
@@ -1941,7 +1948,8 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 			last_t2cpu_preprocess_packet_out_thread_check_next_level = t2cpu;
 			last_t2cpu_preprocess_packet_out_thread_rtp = t2cpu;
 			for(int i = 0; i < PreProcessPacket::ppt_end; i++) {
-				double t2cpu_preprocess_packet_out_thread = preProcessPacket[i]->getCpuUsagePerc(true);
+				double percFullQring;
+				double t2cpu_preprocess_packet_out_thread = preProcessPacket[i]->getCpuUsagePerc(true, &percFullQring);
 				if(t2cpu_preprocess_packet_out_thread >= 0) {
 					outStrStat << "/" 
 						   << preProcessPacket[i]->getShortcatTypeThread()
@@ -1951,6 +1959,9 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 						if(qringFillingPerc > 0) {
 							outStrStat << "r" << qringFillingPerc;
 						}
+					}
+					if(sverb.qring_full && percFullQring > sverb.qring_full) {
+						outStrStat << "#" << percFullQring;
 					}
 					if(i == 0 && sverb.alloc_stat) {
 						if(preProcessPacket[i]->getAllocCounter(1) || preProcessPacket[i]->getAllocStackCounter(1)) {
@@ -1991,7 +2002,8 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 			if(processRtpPacketHash) {
 				for(int i = 0; i < 1 + MAX_PROCESS_RTP_PACKET_HASH_NEXT_THREADS; i++) {
 					if(i == 0 || processRtpPacketHash->existsNextThread(i - 1)) {
-						double t2cpu_process_rtp_packet_out_thread = processRtpPacketHash->getCpuUsagePerc(true, i);
+						double percFullQring;
+						double t2cpu_process_rtp_packet_out_thread = processRtpPacketHash->getCpuUsagePerc(true, i, i == 0 ? &percFullQring : NULL);
 						if(t2cpu_process_rtp_packet_out_thread >= 0) {
 							outStrStat << "/" << (i == 0 ? "rm:" : "rh:")
 								   << setprecision(1) << t2cpu_process_rtp_packet_out_thread;
@@ -2000,6 +2012,9 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 								if(qringFillingPerc > 0) {
 									outStrStat << "r" << qringFillingPerc;
 								}
+							}
+							if(i == 0 && sverb.qring_full && percFullQring > sverb.qring_full) {
+								outStrStat << "#" << percFullQring;
 							}
 							++count_t2cpu;
 							sum_t2cpu += t2cpu_process_rtp_packet_out_thread;
@@ -2014,7 +2029,8 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 				}
 				for(int i = 0; i < MAX_PROCESS_RTP_PACKET_THREADS; i++) {
 					if(processRtpPacketDistribute[i]) {
-						double t2cpu_process_rtp_packet_out_thread = processRtpPacketDistribute[i]->getCpuUsagePerc(true);
+						double percFullQring;
+						double t2cpu_process_rtp_packet_out_thread = processRtpPacketDistribute[i]->getCpuUsagePerc(true,0, &percFullQring);
 						if(t2cpu_process_rtp_packet_out_thread >= 0) {
 							outStrStat << "/" << "rd:" << setprecision(1) << t2cpu_process_rtp_packet_out_thread;
 							if(sverb.qring_stat) {
@@ -2022,6 +2038,9 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 								if(qringFillingPerc > 0) {
 									outStrStat << "r" << qringFillingPerc;
 								}
+							}
+							if(sverb.qring_full && percFullQring > sverb.qring_full) {
+								outStrStat << "#" << percFullQring;
 							}
 						}
 						++countRtpRdThreads;
@@ -2044,11 +2063,15 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 			if(last_t2cpu_preprocess_packet_out_thread_rtp > opt_cpu_limit_new_thread) {
 				ProcessRtpPacket::autoStartProcessRtpPacket();
 			}
+			extern int opt_process_rtp_packets_hash_next_thread_max;
 			if(countRtpRhThreads < MAX_PROCESS_RTP_PACKET_HASH_NEXT_THREADS &&
+			   (opt_process_rtp_packets_hash_next_thread_max <= 0 || countRtpRhThreads < opt_process_rtp_packets_hash_next_thread_max) &&
 			   needAddRtpRhThreads) {
 				processRtpPacketHash->addRtpRhThread();
 			}
+			extern int opt_enable_process_rtp_packet_max;
 			if(countRtpRdThreads < MAX_PROCESS_RTP_PACKET_THREADS &&
+			   (opt_enable_process_rtp_packet_max <= 0 || countRtpRdThreads < opt_enable_process_rtp_packet_max) &&
 			   needAddRtpRdThreads) {
 				ProcessRtpPacket::addRtpRdThread();
 			}
@@ -2289,27 +2312,27 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 		if (opt_rrd == 1) {
 			//CREATE rrd files:
 			char filename[1000];
-			sprintf(filename, "%s/rrd/" , getRrdDir());
+			snprintf(filename, sizeof(filename), "%s/rrd/" , getRrdDir());
 			spooldir_mkdir(filename);
-			sprintf(filename, "%s/rrd/2db-drop.rrd", getRrdDir());
+			snprintf(filename, sizeof(filename), "%s/rrd/2db-drop.rrd", getRrdDir());
 			vm_rrd_create_rrddrop(filename);
-			sprintf(filename, "%s/rrd/2db-heap.rrd", getRrdDir());
+			snprintf(filename, sizeof(filename), "%s/rrd/2db-heap.rrd", getRrdDir());
 			vm_rrd_create_rrdheap(filename);
-			sprintf(filename, "%s/rrd/2db-PS.rrd", getRrdDir());
+			snprintf(filename, sizeof(filename), "%s/rrd/2db-PS.rrd", getRrdDir());
 			vm_rrd_create_rrdPS(filename);
-			sprintf(filename, "%s/rrd/2db-SQL.rrd", getRrdDir());
+			snprintf(filename, sizeof(filename), "%s/rrd/3db-SQL.rrd", getRrdDir());
 			vm_rrd_create_rrdSQL(filename);
-			sprintf(filename, "%s/rrd/2db-tCPU.rrd", getRrdDir());
+			snprintf(filename, sizeof(filename), "%s/rrd/2db-tCPU.rrd", getRrdDir());
 			vm_rrd_create_rrdtCPU(filename);
-			sprintf(filename, "%s/rrd/2db-tacCPU.rrd", getRrdDir());
+			snprintf(filename, sizeof(filename), "%s/rrd/2db-tacCPU.rrd", getRrdDir());
 			vm_rrd_create_rrdtacCPU(filename);
-			sprintf(filename, "%s/rrd/db-memusage.rrd", getRrdDir());
+			snprintf(filename, sizeof(filename), "%s/rrd/db-memusage.rrd", getRrdDir());
 			vm_rrd_create_rrdmemusage(filename);
-			sprintf(filename, "%s/rrd/2db-speedmbs.rrd", getRrdDir());
+			snprintf(filename, sizeof(filename), "%s/rrd/2db-speedmbs.rrd", getRrdDir());
 			vm_rrd_create_rrdspeedmbs(filename);
-			sprintf(filename, "%s/rrd/3db-callscounter.rrd", getRrdDir());
+			snprintf(filename, sizeof(filename), "%s/rrd/3db-callscounter.rrd", getRrdDir());
 			vm_rrd_create_rrdcallscounter(filename);
-			sprintf(filename, "%s/rrd/db-LA.rrd", getRrdDir());
+			snprintf(filename, sizeof(filename), "%s/rrd/db-LA.rrd", getRrdDir());
 			vm_rrd_create_rrdloadaverages(filename);
 			opt_rrd ++;
 		}
@@ -2319,14 +2342,14 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 		//update rrddrop
 		cmdUpdate << "N:" << rrddrop_exceeded;
 		cmdUpdate <<  ":" << rrddrop_packets;
-		sprintf(filename, "%s/rrd/2db-drop.rrd", getRrdDir());
+		snprintf(filename, sizeof(filename), "%s/rrd/2db-drop.rrd", getRrdDir());
 		vm_rrd_update(filename, cmdUpdate.str().c_str());
 
 		//update rrdheap;
 		cmdUpdate.str(std::string());
 		cmdUpdate << "N:" << rrdheap_buffer;
 		cmdUpdate <<  ":" << rrdheap_ratio;
-		sprintf(filename, "%s/rrd/2db-heap.rrd", getRrdDir());
+		snprintf(filename, sizeof(filename), "%s/rrd/2db-heap.rrd", getRrdDir());
 		vm_rrd_update(filename, cmdUpdate.str().c_str());
 
 		//update rrdPS;
@@ -2338,13 +2361,15 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 		cmdUpdate <<  ":" << rrdPS_SM;
 		cmdUpdate <<  ":" << rrdPS_R;
 		cmdUpdate <<  ":" << rrdPS_A;
-		sprintf(filename, "%s/rrd/2db-PS.rrd", getRrdDir());
+		snprintf(filename, sizeof(filename), "%s/rrd/2db-PS.rrd", getRrdDir());
 		vm_rrd_update(filename, cmdUpdate.str().c_str());
 
 		//update rrdSQL;
 		cmdUpdate.str(std::string());
 		if (rrdSQLf_D < 0) cmdUpdate << "N:0";
 		 else cmdUpdate << "N:" << rrdSQLf_D;
+		if (rrdSQLf_C < 0) cmdUpdate << ":0";
+		 else cmdUpdate << ":" << rrdSQLf_C;
 		if (rrdSQLq_C < 0) cmdUpdate <<  ":U";
 		 else cmdUpdate <<  ":" << rrdSQLq_C;
 		if (rrdSQLq_M < 0) cmdUpdate <<  ":U";
@@ -2355,7 +2380,7 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 		 else cmdUpdate <<  ":" << rrdSQLq_Cl;
 		if (rrdSQLq_H < 0) cmdUpdate <<  ":U";
 		 else cmdUpdate <<  ":" << rrdSQLq_H;
-		sprintf(filename, "%s/rrd/2db-SQL.rrd", getRrdDir());
+		snprintf(filename, sizeof(filename), "%s/rrd/3db-SQL.rrd", getRrdDir());
 		vm_rrd_update(filename, cmdUpdate.str().c_str());
 
 		//update rrdtCPU;
@@ -2363,33 +2388,33 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 		cmdUpdate << "N:" << rrdtCPU_t0;
 		cmdUpdate <<  ":" << rrdtCPU_t1;
 		cmdUpdate <<  ":" << rrdtCPU_t2;
-		sprintf(filename, "%s/rrd/2db-tCPU.rrd", getRrdDir());
+		snprintf(filename, sizeof(filename), "%s/rrd/2db-tCPU.rrd", getRrdDir());
 		vm_rrd_update(filename, cmdUpdate.str().c_str());
 
 		//update rrdtacCPU;
 		cmdUpdate.str(std::string());
 		cmdUpdate << "N:" << rrdtacCPU_zip;
 		cmdUpdate <<  ":" << rrdtacCPU_tar;
-		sprintf(filename, "%s/rrd/2db-tacCPU.rrd", getRrdDir());
+		snprintf(filename, sizeof(filename), "%s/rrd/2db-tacCPU.rrd", getRrdDir());
 		vm_rrd_update(filename, cmdUpdate.str().c_str());
 
 		//update rrdmem;
 		cmdUpdate.str(std::string());
 		cmdUpdate << "N:" << rrdmem_rss;
-		sprintf(filename, "%s/rrd/db-memusage.rrd", getRrdDir());
+		snprintf(filename, sizeof(filename), "%s/rrd/db-memusage.rrd", getRrdDir());
 		vm_rrd_update(filename, cmdUpdate.str().c_str());
 
 		//update rrdspeedmbs;
 		cmdUpdate.str(std::string());
 		cmdUpdate << "N:" << rrdspeedmbs;
-		sprintf(filename, "%s/rrd/2db-speedmbs.rrd", getRrdDir());
+		snprintf(filename, sizeof(filename), "%s/rrd/2db-speedmbs.rrd", getRrdDir());
 		vm_rrd_update(filename, cmdUpdate.str().c_str());
 
 		//update rrdcallscounter;
 		cmdUpdate.str(std::string());
 		cmdUpdate << "N:" << rrdcalls_inv_counter;
 		cmdUpdate << ":" << rrdcalls_reg_counter;
-		sprintf(filename, "%s/rrd/3db-callscounter.rrd", getRrdDir());
+		snprintf(filename, sizeof(filename), "%s/rrd/3db-callscounter.rrd", getRrdDir());
 		vm_rrd_update(filename, cmdUpdate.str().c_str());
 
 		//update rrdLA;
@@ -2397,7 +2422,7 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 		cmdUpdate << "N:" << rrdLA_1;
 		cmdUpdate <<  ":" << rrdLA_5;
 		cmdUpdate <<  ":" << rrdLA_15;
-		sprintf(filename, "%s/rrd/db-LA.rrd", getRrdDir());
+		snprintf(filename, sizeof(filename), "%s/rrd/db-LA.rrd", getRrdDir());
 		vm_rrd_update(filename, cmdUpdate.str().c_str());
 	}
 }
@@ -2754,7 +2779,7 @@ bool PcapQueue_readFromInterface_base::startCapture(string *error) {
 			this->pcapHandle = pcap_open_offline_zip(opt_pb_read_from_file, errbuf);
 		}
 		if(!this->pcapHandle) {
-			sprintf(errorstr, "pcap_open_offline %s failed: %s", opt_pb_read_from_file, errbuf); 
+			snprintf(errorstr, sizeof(errorstr), "pcap_open_offline %s failed: %s", opt_pb_read_from_file, errbuf); 
 			syslog(LOG_ERR, "%s", errorstr);
 			*error = errorstr;
 			__sync_lock_release(&_sync_start_capture);
@@ -2775,7 +2800,7 @@ bool PcapQueue_readFromInterface_base::startCapture(string *error) {
 		this->interfaceMask = PCAP_NETMASK_UNKNOWN;
 	}
 	if((this->pcapHandle = pcap_create(this->interfaceName.c_str(), errbuf)) == NULL) {
-		sprintf(errorstr, "packetbuffer - %s: pcap_create failed: %s", this->getInterfaceName().c_str(), errbuf); 
+		snprintf(errorstr, sizeof(errorstr), "packetbuffer - %s: pcap_create failed: %s", this->getInterfaceName().c_str(), errbuf); 
 		goto failed;
 	}
 	this->pcapHandleIndex = register_pcap_handle(this->pcapHandle);
@@ -2783,24 +2808,24 @@ bool PcapQueue_readFromInterface_base::startCapture(string *error) {
 	global_pcap_handle_index = this->pcapHandleIndex;
 	int status;
 	if((status = pcap_set_snaplen(this->pcapHandle, this->pcap_snaplen)) != 0) {
-		sprintf(errorstr, "packetbuffer - %s: pcap_snaplen failed", this->getInterfaceName().c_str()); 
+		snprintf(errorstr, sizeof(errorstr), "packetbuffer - %s: pcap_snaplen failed", this->getInterfaceName().c_str()); 
 		goto failed;
 	}
 	if((status = pcap_set_promisc(this->pcapHandle, this->pcap_promisc)) != 0) {
-		sprintf(errorstr, "packetbuffer - %s: pcap_set_promisc failed", this->getInterfaceName().c_str()); 
+		snprintf(errorstr, sizeof(errorstr), "packetbuffer - %s: pcap_set_promisc failed", this->getInterfaceName().c_str()); 
 		goto failed;
 	}
 	if((status = pcap_set_timeout(this->pcapHandle, this->pcap_timeout)) != 0) {
-		sprintf(errorstr, "packetbuffer - %s: pcap_set_timeout failed", this->getInterfaceName().c_str()); 
+		snprintf(errorstr, sizeof(errorstr), "packetbuffer - %s: pcap_set_timeout failed", this->getInterfaceName().c_str()); 
 		goto failed;
 	}
 	if((status = pcap_set_buffer_size(this->pcapHandle, this->pcap_buffer_size)) != 0) {
-		sprintf(errorstr, "packetbuffer - %s: pcap_set_buffer_size failed", this->getInterfaceName().c_str()); 
+		snprintf(errorstr, sizeof(errorstr), "packetbuffer - %s: pcap_set_buffer_size failed", this->getInterfaceName().c_str()); 
 		goto failed;
 	}
 	rssBeforeActivate = getRss() / 1024 / 1024;
 	if((status = pcap_activate(this->pcapHandle)) != 0) {
-		sprintf(errorstr, "packetbuffer - %s: libpcap error: %s", this->getInterfaceName().c_str(), pcap_geterr(this->pcapHandle)); 
+		snprintf(errorstr, sizeof(errorstr), "packetbuffer - %s: libpcap error: %s", this->getInterfaceName().c_str(), pcap_geterr(this->pcapHandle)); 
 		if(opt_fork) {
 			ostringstream outStr;
 			outStr << this->getInterfaceName() << ": libpcap error: " << pcap_geterr(this->pcapHandle);
@@ -2842,7 +2867,7 @@ bool PcapQueue_readFromInterface_base::startCapture(string *error) {
 		// Compile and apply the filter
 		struct bpf_program fp;
 		if (pcap_compile(this->pcapHandle, &fp, filter_exp, 0, this->interfaceMask) == -1) {
-			sprintf(errorstr, "packetbuffer - %s: can not parse filter %s: %s", this->getInterfaceName().c_str(), filter_exp, pcap_geterr(this->pcapHandle));
+			snprintf(errorstr, sizeof(errorstr), "packetbuffer - %s: can not parse filter %s: %s", this->getInterfaceName().c_str(), filter_exp, pcap_geterr(this->pcapHandle));
 			if(opt_fork) {
 				ostringstream outStr;
 				outStr << this->getInterfaceName() << ": can not parse filter " << filter_exp << ": " << pcap_geterr(this->pcapHandle);
@@ -2851,7 +2876,7 @@ bool PcapQueue_readFromInterface_base::startCapture(string *error) {
 			goto failed;
 		}
 		if (pcap_setfilter(this->pcapHandle, &fp) == -1) {
-			sprintf(errorstr, "packetbuffer - %s: can not install filter %s: %s", this->getInterfaceName().c_str(), filter_exp, pcap_geterr(this->pcapHandle));
+			snprintf(errorstr, sizeof(errorstr), "packetbuffer - %s: can not install filter %s: %s", this->getInterfaceName().c_str(), filter_exp, pcap_geterr(this->pcapHandle));
 			if(opt_fork) {
 				ostringstream outStr;
 				outStr << this->getInterfaceName() << ": can not install filter " << filter_exp << ": " << pcap_geterr(this->pcapHandle);
@@ -2862,14 +2887,14 @@ bool PcapQueue_readFromInterface_base::startCapture(string *error) {
 	}
 	this->pcapLinklayerHeaderType = pcap_datalink(this->pcapHandle);
 	if(!this->pcapLinklayerHeaderType) {
-		sprintf(errorstr, "packetbuffer - %s: pcap_datalink failed", this->getInterfaceName().c_str()); 
+		snprintf(errorstr, sizeof(errorstr), "packetbuffer - %s: pcap_datalink failed", this->getInterfaceName().c_str()); 
 		goto failed;
 	}
 	global_pcap_dlink = this->pcapLinklayerHeaderType;
 //	syslog(LOG_NOTICE, "DLT - %s: %i", this->getInterfaceName().c_str(), this->pcapLinklayerHeaderType);
 	if(opt_pcapdump) {
 		char pname[1024];
-		sprintf(pname, "/var/spool/voipmonitor/voipmonitordump-%s-%u.pcap", this->interfaceName.c_str(), (unsigned int)time(NULL));
+		snprintf(pname, sizeof(pname), "/var/spool/voipmonitor/voipmonitordump-%s-%u.pcap", this->interfaceName.c_str(), (unsigned int)time(NULL));
 		this->pcapDumpHandle = pcap_dump_open(this->pcapHandle, pname);
 	}
 	__sync_lock_release(&_sync_start_capture);
@@ -3060,7 +3085,8 @@ inline int PcapQueue_readFromInterface_base::pcap_next_ex_iface(pcap_t *pcapHand
 			checkProtocolData = &_checkProtocolData;
 		}
 		if(!parseEtherHeader(pcapLinklayerHeaderType, *packet,
-				     checkProtocolData->header_sll, checkProtocolData->header_eth, checkProtocolData->header_ip_offset, checkProtocolData->protocol) ||
+				     checkProtocolData->header_sll, checkProtocolData->header_eth, NULL,
+				     checkProtocolData->header_ip_offset, checkProtocolData->protocol) ||
 		   checkProtocolData->protocol != ETHERTYPE_IP ||
 		   ((iphdr2*)(*packet + checkProtocolData->header_ip_offset))->version != 4 ||
 		   htons(((iphdr2*)(*packet + checkProtocolData->header_ip_offset))->tot_len) + checkProtocolData->header_ip_offset > (*header)->len) {
@@ -3210,9 +3236,9 @@ void PcapQueue_readFromInterface_base::terminatingAtEndOfReadPcap() {
 		while(!is_terminating()) {
 			this->tryForcePush();
 			if(sleepCounter > 10 && sleepCounter <= 15) {
-				calltable->cleanup_calls(0);
-				calltable->cleanup_registers(0);
-				calltable->cleanup_ss7(0);
+				calltable->cleanup_calls(NULL);
+				calltable->cleanup_registers(NULL);
+				calltable->cleanup_ss7(NULL);
 				extern int opt_sip_register;
 				if(opt_sip_register == 1) {
 					extern Registers registers;
@@ -3236,9 +3262,11 @@ void PcapQueue_readFromInterface_base::terminatingAtEndOfReadPcap() {
 			syslog(LOG_NOTICE, "wait for processing packetbuffer (%.1lf%%)", buffersControl.getPercUsePBwithouttrash());
 			sleep(1);
 		}
-		int sleepTimeBeforeCleanup = opt_enable_ssl ? 10 :
+		int sleepTimeBeforeCleanup = opt_time_to_terminate > 0 ? (opt_time_to_terminate / 2) :
+					     opt_enable_ssl ? 10 :
 					     sverb.chunk_buffer ? 20 : 5;
-		int sleepTimeAfterCleanup = 4;
+		int sleepTimeAfterCleanup = opt_time_to_terminate > 0 ? (opt_time_to_terminate / 2) :
+					    4;
 		while((sleepTimeBeforeCleanup + sleepTimeAfterCleanup) && !is_terminating()) {
 			syslog(LOG_NOTICE, "time to terminating: %u", sleepTimeBeforeCleanup + sleepTimeAfterCleanup);
 			this->tryForcePush();
@@ -3246,9 +3274,12 @@ void PcapQueue_readFromInterface_base::terminatingAtEndOfReadPcap() {
 			if(sleepTimeBeforeCleanup) {
 				--sleepTimeBeforeCleanup;
 				if(!sleepTimeBeforeCleanup) {
-					calltable->cleanup_calls(0);
-					calltable->cleanup_registers(0);
-					calltable->cleanup_ss7(0);
+					if(calltable->cleanup_calls(NULL)) {
+						syslog(LOG_NOTICE, "add time to cleanup calls");
+						++sleepTimeBeforeCleanup;
+					}
+					calltable->cleanup_registers(NULL);
+					calltable->cleanup_ss7(NULL);
 					extern int opt_sip_register;
 					if(opt_sip_register == 1) {
 						extern Registers registers;
@@ -3441,6 +3472,13 @@ inline void PcapQueue_readFromInterfaceThread::push(sHeaderPacket **header_packe
 		cout << "push INVITE " << typeThread << endl;
 	} else if(memmem(HPP(*header_packet), HPH(*header_packet)->caplen, "BYE sip", 7)) {
 		cout << "push BYE " << typeThread << endl;
+	} else if(memmem(HPP(*header_packet), HPH(*header_packet)->caplen, "REGISTER sip", 12)) {
+		cout << "push REGISTER " << typeThread << endl;
+	}
+	#endif
+	#if TRACE_MASTER_SECRET
+	if(memmem(HPP(*header_packet), HPH(*header_packet)->caplen, "mastersecret", 12)) {
+		cout << "push MASTERSECRET " << typeThread << endl;
 	}
 	#endif
 	unsigned int _writeIndex;
@@ -3571,6 +3609,13 @@ inline PcapQueue_readFromInterfaceThread::hpi PcapQueue_readFromInterfaceThread:
 		cout << "pop INVITE " << typeThread << endl;
 	} else if(memmem(HPP(rslt_hpi.header_packet), HPH(rslt_hpi.header_packet)->caplen, "BYE sip", 7)) {
 		cout << "pop BYE " << typeThread << endl;
+	} else if(memmem(HPP(rslt_hpi.header_packet), HPH(rslt_hpi.header_packet)->caplen, "REGISTER sip", 12)) {
+		cout << "pop REGISTER " << typeThread << endl;
+	}
+	#endif
+	#if TRACE_MASTER_SECRET
+	if(memmem(HPP(rslt_hpi.header_packet), HPH(rslt_hpi.header_packet)->caplen, "mastersecret", 12)) {
+		cout << "pop MASTERSECRET " << typeThread << endl;
 	}
 	#endif
 	++readIndexPos;
@@ -3835,9 +3880,16 @@ void *PcapQueue_readFromInterfaceThread::threadFunction(void */*arg*/, unsigned 
 					sumPacketsSize[0] += pcap_next_ex_header->caplen;
 					#if TRACE_INVITE_BYE
 					if(memmem(pcap_next_ex_packet, pcap_next_ex_header->caplen, "INVITE sip", 10)) {
-						cout << "get INVITE " << typeThread << endl;
+						cout << "get INVITE (1) " << typeThread << endl;
 					} else if(memmem(pcap_next_ex_packet, pcap_next_ex_header->caplen, "BYE sip", 7)) {
-						cout << "get BYE " << typeThread << endl;
+						cout << "get BYE (1) " << typeThread << endl;
+					} else if(memmem(pcap_next_ex_packet, pcap_next_ex_header->caplen, "REGISTER sip", 12)) {
+						cout << "get REGISTER (1) " << typeThread << endl;
+					}
+					#endif
+					#if TRACE_MASTER_SECRET
+					if(memmem(pcap_next_ex_packet, pcap_next_ex_header->caplen, "mastersecret", 12)) {
+						cout << "get MASTERSECRET (1) " << typeThread << endl;
 					}
 					#endif
 					memcpy((u_char*)this->activeDetachBuffer + this->detachBufferWritePos,
@@ -3911,9 +3963,16 @@ void *PcapQueue_readFromInterfaceThread::threadFunction(void */*arg*/, unsigned 
 				res = this->pcap_next_ex_iface(this->pcapHandle, &pcap_next_ex_header, &pcap_next_ex_packet);
 				#if TRACE_INVITE_BYE
 				if(memmem(pcap_next_ex_packet, pcap_next_ex_header->caplen, "INVITE sip", 10)) {
-					cout << "get INVITE " << typeThread << endl;
+					cout << "get INVITE (2) " << typeThread << endl;
 				} else if(memmem(pcap_next_ex_packet, pcap_next_ex_header->caplen, "BYE sip", 7)) {
-					cout << "get BYE " << typeThread << endl;
+					cout << "get BYE (2) " << typeThread << endl;
+				} else if(memmem(pcap_next_ex_packet, pcap_next_ex_header->caplen, "REGISTER sip", 12)) {
+					cout << "get REGISTER (2) " << typeThread << endl;
+				}
+				#endif
+				#if TRACE_MASTER_SECRET
+				if(memmem(pcap_next_ex_packet, pcap_next_ex_header->caplen, "mastersecret", 12)) {
+					cout << "get MASTERSECRET (2) " << typeThread << endl;
 				}
 				#endif
 				if(res == -1) {
@@ -4024,6 +4083,13 @@ void *PcapQueue_readFromInterfaceThread::threadFunction(void */*arg*/, unsigned 
 						cout << "detach INVITE " << typeThread << endl;
 					} else if(memmem(HPP(header_packet_read), detach_buffer_header->caplen, "BYE sip", 7)) {
 						cout << "detach BYE " << typeThread << endl;
+					} else if(memmem(HPP(header_packet_read), detach_buffer_header->caplen, "REGISTER sip", 12)) {
+						cout << "detach REGISTER " << typeThread << endl;
+					}
+					#endif
+					#if TRACE_MASTER_SECRET
+					if(memmem(HPP(header_packet_read), detach_buffer_header->caplen, "mastersecret", 12)) {
+						cout << "detach MASTERSECRET " << typeThread << endl;
 					}
 					#endif
 					this->push(&header_packet_read);
@@ -4052,10 +4118,10 @@ void *PcapQueue_readFromInterfaceThread::threadFunction(void */*arg*/, unsigned 
 				}
 				if(!this->pcapDumpHandle) {
 					char pname[1024];
-					sprintf(pname, "%s/voipmonitordump-%s-%s.pcap", 
-						opt_pcapdump_all_path[0] ? opt_pcapdump_all_path : getPcapdumpDir(),
-						this->interfaceName.c_str(), 
-						sqlDateTimeString(time(NULL)).c_str());
+					snprintf(pname, sizeof(pname ), "%s/voipmonitordump-%s-%s.pcap", 
+						 opt_pcapdump_all_path[0] ? opt_pcapdump_all_path : getPcapdumpDir(),
+						 this->interfaceName.c_str(), 
+						 sqlDateTimeString(time(NULL)).c_str());
 					this->pcapDumpHandle = pcap_dump_open(global_pcap_handle, pname);
 				}
 				pcap_dump((u_char*)this->pcapDumpHandle, HPH(hpii.header_packet), HPP(hpii.header_packet));
@@ -4217,9 +4283,16 @@ void PcapQueue_readFromInterfaceThread::threadFunction_blocks() {
 			}
 			#if TRACE_INVITE_BYE
 			if(memmem(pcap_next_ex_packet, pcap_next_ex_header->caplen, "INVITE sip", 10)) {
-				cout << "get INVITE " << typeThread << endl;
+				cout << "get INVITE (3) " << typeThread << endl;
 			} else if(memmem(pcap_next_ex_packet, pcap_next_ex_header->caplen, "BYE sip", 7)) {
-				cout << "get BYE " << typeThread << endl;
+				cout << "get BYE (3) " << typeThread << endl;
+			} else if(memmem(pcap_next_ex_packet, pcap_next_ex_header->caplen, "REGISTER sip", 12)) {
+				cout << "get REGISTER (3) " << typeThread << endl;
+			}
+			#endif
+			#if TRACE_MASTER_SECRET
+			if(memmem(pcap_next_ex_packet, pcap_next_ex_header->caplen, "mastersecret", 12)) {
+				cout << "get MASTERSECRET (3) " << typeThread << endl;
 			}
 			#endif
 			sumPacketsSize[0] += pcap_next_ex_header->caplen;
@@ -4276,6 +4349,13 @@ void PcapQueue_readFromInterfaceThread::processBlock(pcap_block_store *block) {
 			cout << "process INVITE " << typeThread << endl;
 		} else if(memmem(block->get_packet(i), block->get_header(i)->header_fix_size.caplen, "BYE sip", 7)) {
 			cout << "process BYE " << typeThread << endl;
+		} else if(memmem(block->get_packet(i), block->get_header(i)->header_fix_size.caplen, "REGISTER sip", 12)) {
+			cout << "process REGISTER " << typeThread << endl;
+		}
+		#endif
+		#if TRACE_MASTER_SECRET
+		if(memmem(block->get_packet(i), block->get_header(i)->header_fix_size.caplen, "mastersecret", 12)) {
+			cout << "process MASTERSECRET " << typeThread << endl;
 		}
 		#endif
 		switch(this->typeThread) {
@@ -4532,9 +4612,10 @@ void* PcapQueue_readFromInterface::threadFunction(void *arg, unsigned int arg2) 
 				this->getInterfaceName(true).c_str(), 
 			sizeof(blockStore[i]->ifname) - 1);
 	}
-	unsigned int counter_pop_usleep = 0;
+	unsigned int counter_pop = 0;
 	unsigned long counter = 0;
 	pcap_pkthdr_plus pcap_header_plus;
+	u_char existsThreadTimeFlags[1000];
 	while(!TERMINATING) {
 		bool fetchPacketOk = false;
 		int minThreadTimeIndex = -1;
@@ -4552,6 +4633,9 @@ void* PcapQueue_readFromInterface::threadFunction(void *arg, unsigned int arg2) 
 							minThreadTimeIndex = i;
 							minThreadTime = threadTime;
 						}
+					}
+					if(i < (int)sizeof(existsThreadTimeFlags)) {
+						existsThreadTimeFlags[i] = threadTime > 0;
 					}
 				}
 			}
@@ -4571,13 +4655,13 @@ void* PcapQueue_readFromInterface::threadFunction(void *arg, unsigned int arg2) 
 					fetchPacketOk = true;
 				}
 			}
-			if(fetchPacketOk) {
-				counter_pop_usleep = 0;
-			} else {
+			if(!fetchPacketOk) {
 				usleep(100);
-				++counter_pop_usleep;
-				if(!(counter_pop_usleep % 2000)) {
-					for(int i = 0; i < this->readThreadsCount; i++) {
+			}
+			if(!(++counter_pop % 1000)) {
+				int checkReadThreadsCount = min(this->readThreadsCount, (int)sizeof(existsThreadTimeFlags));
+				for(int i = 0; i < checkReadThreadsCount; i++) {
+					if(!existsThreadTimeFlags[i]) {
 						this->readThreads[i]->setForcePUSH();
 					}
 				}
@@ -4676,6 +4760,13 @@ void* PcapQueue_readFromInterface::threadFunction(void *arg, unsigned int arg2) 
 				cout << "add INVITE" << endl;
 			} else if(memmem(HPP(*header_packet_fetch), HPH(*header_packet_fetch)->caplen, "BYE sip", 7)) {
 				cout << "add BYE " << endl;
+			} else if(memmem(HPP(*header_packet_fetch), HPH(*header_packet_fetch)->caplen, "REGISTER sip", 12)) {
+				cout << "add REGISTER " << endl;
+			}
+			#endif
+			#if TRACE_MASTER_SECRET
+			if(memmem(HPP(*header_packet_fetch), HPH(*header_packet_fetch)->caplen, "mastersecret", 12)) {
+				cout << "add MASTERSECRET" << endl;
 			}
 			#endif
 			++sumPacketsCounterIn[0];
@@ -6759,7 +6850,8 @@ int PcapQueue_readFromFifo::processPacket(sHeaderPacketPQout *hp, eHeaderPacketP
 	}
 	
 	if(!this->_last_ts.tv_sec) {
-		this->_last_ts = header->ts;
+		this->_last_ts.tv_sec = header->ts.tv_sec;
+		this->_last_ts.tv_usec = header->ts.tv_usec;
 	} else if(this->_last_ts.tv_sec * 1000000ull + this->_last_ts.tv_usec > header->ts.tv_sec * 1000000ull + header->ts.tv_usec + 1000) {
 		if(verbosity > 1 || enable_bad_packet_order_warning) {
 			static u_long lastTimeSyslog = 0;
@@ -6771,7 +6863,8 @@ int PcapQueue_readFromFifo::processPacket(sHeaderPacketPQout *hp, eHeaderPacketP
 			}
 		}
 	} else {
-		this->_last_ts = header->ts;
+		this->_last_ts.tv_sec = header->ts.tv_sec;
+		this->_last_ts.tv_usec = header->ts.tv_usec;
 	}
 	
 	iphdr2 *header_ip = hp->header->header_ip_offset == (u_int16_t)0xFFFFFFFF ?
@@ -7180,7 +7273,8 @@ void PcapQueue_outputThread::processDefrag(sHeaderPacketPQout *hp) {
 		u_int header_ip_offset;
 		int protocol;
 		parseEtherHeader(hp->dlt, hp->packet,
-				 header_sll, header_eth, header_ip_offset, protocol);
+				 header_sll, header_eth, NULL,
+				 header_ip_offset, protocol);
 		hp->header->header_ip_offset = header_ip_offset;
 	}
 	iphdr2 *header_ip = (iphdr2*)(hp->packet + hp->header->header_ip_offset);
@@ -7347,7 +7441,19 @@ void PcapQueue_outputThread::processDedup(sHeaderPacketPQout *hp) {
 				MD5_CTX md5_ctx;
 				MD5_Init(&md5_ctx);
 				if(opt_dup_check_ipheader) {
+					u_int8_t header_ip_ttl_orig;
+					u_int8_t header_ip_check_orig;
+					if(opt_dup_check_ipheader_ignore_ttl) {
+						header_ip_ttl_orig = header_ip->ttl;
+						header_ip_check_orig = header_ip->check;
+						header_ip->ttl = 0;
+						header_ip->check = 0;
+					}
 					MD5_Update(&md5_ctx, header_ip, MIN(datalen + (data - (char*)header_ip), ntohs(header_ip->tot_len)));
+					if(opt_dup_check_ipheader_ignore_ttl) {
+						header_ip->ttl = header_ip_ttl_orig;
+						header_ip->check = header_ip_check_orig;
+					}
 				} else {
 					MD5_Update(&md5_ctx, data, datalen);
 				}

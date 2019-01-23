@@ -13,6 +13,7 @@
 
 #define NEW_REGISTER_MAX_STATES 3
 
+#define REG_SIPALG_DETECTED	(1 << 0)
 
 using namespace std;
 
@@ -48,6 +49,8 @@ enum eRegisterField {
 	rf_state,
 	rf_ua,
 	rf_rrd_avg,
+	rf_spool_index,
+	rf_is_sipalg_detected,
 	rf__max
 };
 
@@ -80,12 +83,14 @@ public:
 	char *from_domain;
 	char *digest_realm;
 	char *ua;
+	int8_t spool_index;
 	u_int64_t fname;
 	u_int32_t expires;
 	int id_sensor;
 	u_int64_t db_id;
 	u_int32_t save_at;
 	u_int32_t save_at_counter;
+	bool is_sipalg_detected;
 };
 
 
@@ -98,6 +103,7 @@ public:
 	inline void shiftStates();
 	inline void expire(bool need_lock_states = true, bool use_state_prev_last = false);
 	inline void updateLastState(Call *call);
+	inline void updateLastStateItem(char *callItem, char *registerItem, char **stateItem);
 	inline bool eqLastState(Call *call);
 	inline void clean_all();
 	inline void saveStateToDb(RegisterState *state, bool enableBatchIfPossible = true);
@@ -122,6 +128,14 @@ public:
 	}
 	void unlock_id() {
 		__sync_lock_release(&_sync_id);
+	}
+	inline bool getSipAlgState () {
+		for (int i = 0; i < countStates; i++) {
+			if (states[i]->is_sipalg_detected) {
+				return(true);
+			}
+		}
+		return(false);
 	}
 public:
 	u_int64_t id;
@@ -151,11 +165,12 @@ class Registers {
 public: 
 	Registers();
 	~Registers();
-	void add(Call *call, time_t currtime, int expires_add = 0);
-	void cleanup(u_int32_t act_time, bool force = false, int expires_add = 0);
+	void add(Call *call);
+	void cleanup(struct timeval *act_time, bool force = false, int expires_add = 0);
 	void clean_all();
 	inline u_int64_t getNewRegisterFailedId(int sensorId);
 	string getDataTableJson(char *params, bool *zip = NULL);
+	int getCount();
 	void cleanupByJson(char *params);
 	void lock_registers() {
 		while(__sync_lock_test_and_set(&_sync_registers, 1));
@@ -193,7 +208,9 @@ eRegisterField convRegisterFieldToFieldId(const char *field);
 #define REG_NEW_STR(src)		((src) == EQ_REG ? EQ_REG : (src) && *(src) ? (tmp_str = new FILE_LINE(0) char[strlen(src) + 1], strcpy(tmp_str, src), tmp_str) : NULL)
 #define REG_FREE_STR(str)		((str) && (str) != EQ_REG ? (delete [] (str), str = NULL, true) : (str = NULL, false))
 #define REG_EQ_STR(str1, str2)		((!(str1) || !*(str1)) && (!(str2) || !*(str2)) ? true : (!(str1) || !*(str1)) || (!(str2) || !*(str2)) ? false : !strcasecmp(str1, str2))
+#define REG_EQ0_STR(str1, str2)		((!(str1) || !*(str1)) || (!(str2) || !*(str2)) ? true : !strcasecmp(str1, str2))
 #define REG_CMP_STR(str1, str2)		((!(str1) || !*(str1)) && (!(str2) || !*(str2)) ? 0 : (!(str1) || !*(str1)) ? -1 : (!(str2) || !*(str2)) ? 1 : strcasecmp(str1, str2))
+#define REG_CMP0_STR(str1, str2)	((!(str1) || !*(str1)) || (!(str2) || !*(str2)) ? 0 : strcasecmp(str1, str2))
 #define REG_CONV_STR(str)		((str) && (str) != EQ_REG ? string(str) : string())
 
 
