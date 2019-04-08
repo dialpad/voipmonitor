@@ -132,6 +132,7 @@ extern int opt_printinsertid;
 extern int opt_cdronlyanswered;
 extern int opt_cdronlyrtp;
 extern int opt_newdir;
+extern int opt_video_recording;
 extern char opt_keycheck[1024];
 extern char opt_vmcodecs_path[1024];
 extern int opt_norecord_dtmf;
@@ -2101,6 +2102,7 @@ bool Call::_read_rtp(CallBranch *c_branch, packet_s_process_0 *packetS, int isca
 	
 	*record_dtmf = false;
 	*disable_save = false;
+	*is_video = false;
 	
 	if(opt_vlan_siprtpsame && VLAN_IS_SET(c_branch->vlan) &&
 	   packetS->pid.vlan != c_branch->vlan) {
@@ -2184,7 +2186,7 @@ bool Call::_read_rtp(CallBranch *c_branch, packet_s_process_0 *packetS, int isca
 			}
 			if(rtp_i->eqAddrPort(packetS->saddr_(), packetS->daddr_(), packetS->source_(), packetS->dest_())) {
 				//if(verbosity > 1) printf("found seq[%u] saddr[%u] dport[%u]\n", tmprtp.getSeqNum(), packetS->saddr_(), packetS->dest_());
-				// found 
+				// found
 			 
 				if(rtp_i->iscaller) {
 					last_rtp_a_packet_time_us = packetS->getTimeUS();
@@ -2196,7 +2198,7 @@ bool Call::_read_rtp(CallBranch *c_branch, packet_s_process_0 *packetS, int isca
 					*disable_save = true;
 					return(false);
 				}
-			 
+
 				if(opt_dscp) {
 					rtp_i->dscp = packetS->header_ip_()->get_tos() >> 2;
 					if(sverb.dscp) {
@@ -2600,7 +2602,7 @@ read:
 					}
 				}
 			}
-                }
+    }
 		
 		if(iscaller) {
 			lastcallerrtp = rtp_new;
