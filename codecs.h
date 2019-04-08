@@ -56,6 +56,7 @@
 #define PAYLOAD_AAL2_G72624 356
 #define PAYLOAD_AAL2_G72632 357
 #define PAYLOAD_AAL2_G72640 358
+#define PAYLOAD_VP8 359
 #define PAYLOAD_TELEVENT 400
 
 #define PAYLOAD_VIDEO 10000
@@ -122,6 +123,8 @@ inline const char *codec2text(int codec) {
 	case PAYLOAD_VXOPUS24:
 	case PAYLOAD_VXOPUS48:
 		return "VXOPUS";
+	case PAYLOAD_VP8:
+		return "VP8";
 	case PAYLOAD_TELEVENT:
 		return "TELEPHONE EVENT";
 	case PAYLOAD_MP4ALATM128:
