@@ -108,6 +108,7 @@ extern int opt_printinsertid;
 extern int opt_cdronlyanswered;
 extern int opt_cdronlyrtp;
 extern int opt_newdir;
+extern int opt_video_recording;
 extern char opt_keycheck[1024];
 extern char opt_convert_char[256];
 extern int opt_norecord_dtmf;
@@ -1278,16 +1279,17 @@ Call::read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_i
 	}
 	bool record_dtmf = false;
 	bool disable_save = false;
+	bool is_video = false;
 	unsigned datalen_orig = packetS->datalen;
-	bool rtp_read_rslt = _read_rtp(packetS, iscaller, find_by_dest, stream_in_multiple_calls, ifname, &record_dtmf, &disable_save);
+	bool rtp_read_rslt = _read_rtp(packetS, iscaller, find_by_dest, stream_in_multiple_calls, ifname, &record_dtmf, &disable_save, &is_video);
 	if(!disable_save) {
-		_save_rtp(packetS, is_fax, enable_save_packet, record_dtmf, packetS->datalen != datalen_orig);
+		_save_rtp(packetS, is_fax, enable_save_packet, record_dtmf, is_video, packetS->datalen != datalen_orig);
 	}
 	return(rtp_read_rslt);
 }
  
 bool
-Call::_read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_in_multiple_calls, char *ifname, bool *record_dtmf, bool *disable_save) {
+Call::_read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_in_multiple_calls, char *ifname, bool *record_dtmf, bool *disable_save, bool *is_video) {
  
 	if(iscaller < 0) {
 		if(this->is_sipcaller(packetS->saddr, packetS->source, packetS->daddr, packetS->dest) || 
@@ -1308,6 +1310,7 @@ Call::_read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_
 	
 	*record_dtmf = false;
 	*disable_save = false;
+	*is_video = false;
 	
 	if(packetS->datalen <= 12 && !sverb.process_rtp_header) {
 		//Ignoring RTP packets without data
@@ -1378,6 +1381,10 @@ Call::_read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_
 			if(rtp[i]->eqAddrPort(packetS->saddr, packetS->daddr, packetS->source, packetS->dest)) {
 				//if(verbosity > 1) printf("found seq[%u] saddr[%u] dport[%u]\n", tmprtp.getSeqNum(), packetS->saddr, packetS->dest);
 				// found 
+
+				if(this->ip_port[rtp[i]->index_call_ip_port].type_addr == ip_port_call_info::_ta_base_video) {
+					*is_video = true;
+				}
 				if(opt_dscp) {
 					rtp[i]->dscp = packetS->header_ip_()->tos >> 2;
 					if(sverb.dscp) {
@@ -1643,7 +1650,7 @@ read:
 					}
 				}
 			}
-                }
+    }
 		
 		if(iscaller) {
 			lastcallerrtp = rtp[ssrc_n];
@@ -1691,7 +1698,7 @@ Call::read_dtls(struct packet_s *packetS) {
 }
 
 void
-Call::_save_rtp(packet_s *packetS, char is_fax, char enable_save_packet, bool record_dtmf, bool forceVirtualUdp) {
+Call::_save_rtp(packet_s *packetS, char is_fax, char enable_save_packet, bool record_dtmf, bool is_video, bool forceVirtualUdp) {
 	extern int opt_fax_create_udptl_streams;
 	extern int opt_fax_dup_seq_check;
 	if(opt_fax_create_udptl_streams) {
@@ -1780,7 +1787,7 @@ Call::_save_rtp(packet_s *packetS, char is_fax, char enable_save_packet, bool re
 		}
 	}
 	if(enable_save_packet) {
-		if((this->silencerecording || (this->flags & FLAG_SAVERTPHEADER)) && !this->isfax && !record_dtmf) {
+		if((this->silencerecording || (is_video && !opt_video_recording) || (this->flags & FLAG_SAVERTPHEADER)) && !this->isfax && !record_dtmf) {
 			if(packetS->datalen >= RTP_FIXED_HEADERLEN &&
 			   packetS->header_pt->caplen > (unsigned)(packetS->datalen - RTP_FIXED_HEADERLEN)) {
 				unsigned int tmp_u32 = packetS->header_pt->caplen;

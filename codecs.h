@@ -46,6 +46,7 @@
 #define PAYLOAD_VXOPUS16 346
 #define PAYLOAD_VXOPUS24 347
 #define PAYLOAD_VXOPUS48 348
+#define PAYLOAD_VP8 349
 #define PAYLOAD_TELEVENT 400
 
 inline const char *codec2text(int codec) {
@@ -110,6 +111,8 @@ inline const char *codec2text(int codec) {
 	case PAYLOAD_VXOPUS24:
 	case PAYLOAD_VXOPUS48:
 		return "VXOPUS";
+	case PAYLOAD_VP8:
+		return "VP8";
 	case PAYLOAD_TELEVENT:
 		return "TELEPHONE EVENT";
 	default:

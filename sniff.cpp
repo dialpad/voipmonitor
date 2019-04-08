@@ -1864,6 +1864,8 @@ int mimeSubtypeToInt(char *mimeSubtype) {
 	       return PAYLOAD_AMR;
        else if(strcasecmp(mimeSubtype,"AMR-WB") == 0)
 	       return PAYLOAD_AMRWB;
+			 else if(strcasecmp(mimeSubtype,"VP8") == 0)
+	       return PAYLOAD_VP8;
        else if(strcasecmp(mimeSubtype,"telephone-event") == 0)
 	       return PAYLOAD_TELEVENT;
        else
