@@ -148,7 +148,7 @@ fi
 HAVE_LIBSSH_T=no
 if test "x$HAVE_LIBSSH" = "x1"; then 
 	AC_DEFINE([HAVE_LIBSSH], [1], [Define if using libss])
-	AC_SUBST([LIBSSH],["-lssh -lssh_threads"])
+	AC_SUBST([LIBSSH],["-lssh"])
 	HAVE_LIBSSH_T=yes
 fi
 
