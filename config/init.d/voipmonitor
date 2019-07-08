@@ -64,6 +64,11 @@ case "$1" in
 	;;
   stop)
   	if [ -f $PIDFILE ]; then
+    	WDPID=$(ps -C voipmonitor_watchdog_voipmonitor -o pid=)
+		if [ $WDPID ]; then
+ 			echo "Terminating watchdog."
+ 			kill -9 $WDPID
+		fi
 		PID=`cat $PIDFILE`
 		NAME=`ps -o comm= $PID`
 		if [ "$NAME" = "voipmonitor" ]; then
