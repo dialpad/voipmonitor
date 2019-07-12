@@ -4286,18 +4286,26 @@ inline int process_packet__rtp_call_info(packet_s_process_rtp_call_info *call_in
 	int count_use = 0;
 	packet_s_process_rtp_call_info call_info_temp[MAX_LENGTH_CALL_INFO];
 	size_t call_info_temp_length = 0;
+
+	// Both RTP and RTCP packets should have version=2
+	if(!(u_char)packetS->data_()[0] & 0x80) {
+		syslog(LOG_DEBUG, "Invalid RTP/RTCP\n");
+		return 0;
+	}
+
 	for(call_info_index = 0; call_info_index < call_info_length; call_info_index++) {
 		if(threadIndex &&
 		   call_info[call_info_index].call->thread_num_rd != (threadIndex - 1)) {
 			continue;
 		}
-		
+
 		packetS->blockstore_addflag(52 /*pb lock flag*/);
 		
 		call = call_info[call_info_index].call;
 		iscaller = call_info[call_info_index].iscaller;
 		sdp_flags = call_info[call_info_index].sdp_flags;
-		is_rtcp = call_info[call_info_index].is_rtcp || (sdp_flags.rtcp_mux && packetS->datalen > 1 && (u_char)packetS->data_()[1] == 0xC8);
+		is_rtcp = call_info[call_info_index].is_rtcp || (sdp_flags.rtcp_mux && packetS->datalen > 1 &&
+		    ((u_char)packetS->data_()[1] == 0xC8 || (u_char)packetS->data_()[1] == 0xC9));
 		stream_in_multiple_calls = call_info[call_info_index].multiple_calls;
 		
 		if(!find_by_dest && iscaller_is_set(iscaller)) {

@@ -1351,7 +1351,9 @@ Call::_read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_
 	if (curSSRC == 0) {
 		is_zerossrc_detected = true;
 	}
-	okRTP = (curSSRC != 0 || opt_allow_zerossrc) && tmprtp.getVersion() == 2;
+
+	// RFC5761(section 4): RTP payloads must not be in the range of 64-95
+	okRTP = (curSSRC != 0 || opt_allow_zerossrc) && tmprtp.getVersion() == 2 && (curpayload < 64 || curpayload > 95);
 	if(okRTP || this->seenudptl || this->isfax) {
 		if(iscaller) {
 			last_rtp_a_packet_time = packetS->header_pt->ts.tv_sec;
