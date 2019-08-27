@@ -117,6 +117,12 @@ AC_CHECK_LIB([gnutls], [gnutls_init], HAVE_LIBGNUTLS=1, AC_MSG_NOTICE([Unable to
 AC_CHECK_LIB([gcrypt], [gcry_check_version], HAVE_LIBGCRYPT=1, AC_MSG_NOTICE([Unable to find libgcrypt - disabling SIP TLS decoder. apt-get install libgcrypt-dev | yum install libgcrypt-devel]))
 AC_CHECK_LIB([tcmalloc_minimal], [tc_malloc], HAVE_LIBTCMALLOC=1, AC_MSG_NOTICE([Unable to find tcmalloc_minimal library which speeds up threads by 10%. The library is optional: apt-get install libgoogle-perftools-dev | yum install gperftools-devel.x86_64 | or compile from source https://code.google.com/p/gperftools/]))
 
+LIBSSH_8=1
+LIBSSH_VERSION=`dpkg -s libssh-dev | grep Version | cut -d ' ' -f 2 | cut -d '.' -f 2`
+if  test $LIBSSH_VERSION -lt 8; then
+    LIBSSH_8=0
+fi
+
 HAVE_LIBPNG_T=no
 if test "x$HAVE_LIBPNG" = "x1"; then 
 	AC_DEFINE([HAVE_LIBPNG], [1], [Define if using liblpng])
@@ -149,6 +155,9 @@ HAVE_LIBSSH_T=no
 if test "x$HAVE_LIBSSH" = "x1"; then 
 	AC_DEFINE([HAVE_LIBSSH], [1], [Define if using libss])
 	AC_SUBST([LIBSSH],["-lssh -lssh_threads"])
+	if test "x$LIBSSH_8" = "x1"; then
+		AC_SUBST([LIBSSH],["-lssh"])
+	fi
 	HAVE_LIBSSH_T=yes
 fi
 
