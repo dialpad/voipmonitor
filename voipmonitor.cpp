@@ -2158,12 +2158,20 @@ static void daemonize(void)
 		if (f) {
 		       fprintf(f, "%ld\n", (long)vmon_pid);
 		       fclose(f);
+<<<<<<< HEAD
 		       // Making pid file writable only to owner (TEL-10545)
 		       int result = chmod(opt_pidfile, S_IRUSR|S_IRGRP|S_IROTH|S_IWUSR);
 		       if(result != 0){
                            syslog(LOG_WARNING,"Permissions for pid file %s could not be set [Error: %d]\n", opt_pidfile, result);
 		       }
   
+=======
+               // # Making pid file writable only to owner (TEL-10545)
+               int result = chmod(opt_pidfile, S_IRUSR|S_IRGRP|S_IROTH|S_IWUSR);
+               if(result != 0){
+                   syslog(LOG_WARNING,"Permissions for pid file %s could not be set [Error: %d]\n", opt_pidfile, result);
+               }  
+>>>>>>> d7462b824277586d0a7974fdf9b46cd6d0c9d67a
 		} else {
 		    syslog(LOG_ERR,"Error occurs while writing pid file to %s\n", opt_pidfile);
 		}
