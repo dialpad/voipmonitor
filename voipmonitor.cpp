@@ -2160,7 +2160,7 @@ static void daemonize(void)
 		       fclose(f);
                // # Making pid file writable only to owner (TEL-10545)
                int result = chmod(opt_pidfile, S_IROTH|S_IWUSR);
-               if(restult != 0){
+               if(result != 0){
                    syslog(LOG_WARNING,"Permissions for pid file %s could not be set [Error: %d]\n", opt_pidfile, result);
                }  
 		} else {
