@@ -1801,6 +1801,9 @@ Call::_save_rtp(packet_s *packetS, char is_fax, char enable_save_packet, bool re
 			save_packet(this, packetS, TYPE_RTP, forceVirtualUdp);
 		}
 	}
+	else {
+		syslog(LOG_ERR,"zzzZZZ enable_save_packet disabled for saddr:%d|src:%d|daddr:%d|dst:%d, isRTP? %d", packetS->saddr, packetS->source, packetS->daddr, packetS->dest, packetS->isRtp());
+	}
 }
 
 void Call::stoprecording() {
