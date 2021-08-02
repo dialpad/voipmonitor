@@ -3,6 +3,8 @@
 
 #include "config.h"
 
+#include "tools_global.h"
+
 #include <pthread.h>
 #include <string>
 #include <vector>
@@ -27,7 +29,6 @@
 #include <map>
 #include <time.h>
 #include <regex.h>
-#include <unicode/ucnv.h> 
 #include <dirent.h>
 
 #include "pstat.h"
@@ -38,31 +39,30 @@
 #include "voipmonitor.h"
 #include "tar_data.h"
 
-#include "tools_inline.h"
-
 using namespace std;
-
-
-#if defined(__i386__)
-__inline__ unsigned long long rdtsc(void)
-{
-    unsigned long long int x;
-    __asm__ volatile (".byte 0x0f, 0x31" : "=A" (x));
-    return x;
-}
-#elif defined(__x86_64__)
-__inline__ unsigned long long rdtsc(void)
-{
-    unsigned hi, lo;
-    __asm__ __volatile__ ("rdtsc" : "=a"(lo), "=d"(hi));
-    return ( (unsigned long long)lo)|( ((unsigned long long)hi)<<32 );
-}
-#endif
-
 
 struct TfileListElem {
     string filename;
     time_t mtime;
+};
+
+struct string_icase : public string
+{
+	string_icase() {
+	}
+	string_icase(std::string str) {
+		this->str = str;
+	}
+	string_icase(const char *str) {
+		this->str = str;
+	}
+	bool operator == (const string_icase& other) const { 
+		return(!strcasecmp(this->str.c_str(), other.str.c_str())); 
+	}
+	bool operator < (const string_icase& other) const { 
+		return(strcasecmp(this->str.c_str(), other.str.c_str()) < 0); 
+	}
+	string str;
 };
 
 struct dstring
@@ -157,26 +157,12 @@ struct d_item2
 	type_item2 item2;
 };
 
-struct string_null
-{
-	string_null(const char *str = NULL) {
-		if(str) {
-			this->str = str;
-			is_null = false;
-		} else {
-			is_null = true;
-		}
-	}
-	string str;
-	bool is_null;
-};
-
 struct sStreamId {
-	sStreamId(u_int32_t sip, u_int16_t sport, u_int32_t cip, u_int16_t cport, bool sortSc = false) {
-		s = d_u_int32_t(sip, sport);
-		c = d_u_int32_t(cip, cport);
+	sStreamId(vmIP sip, vmPort sport, vmIP cip, vmPort cport, bool sortSc = false) {
+		s = vmIPport(sip, sport);
+		c = vmIPport(cip, cport);
 		if(sortSc && c < s) {
-			d_u_int32_t t = s;
+			vmIPport t = s;
 			s = c;
 			c = t;
 		}
@@ -189,16 +175,16 @@ struct sStreamId {
 		return(this->s < other.s ||
 		       (this->s == other.s && this->c < other.c)); 
 	}
-	d_u_int32_t s;
-	d_u_int32_t c;
+	vmIPport s;
+	vmIPport c;
 };
 
 struct sStreamId2 {
-	sStreamId2(u_int32_t sip, u_int16_t sport, u_int32_t cip, u_int16_t cport, u_int64_t id, bool sortSc = false) {
-		s = d_u_int32_t(sip, sport);
-		c = d_u_int32_t(cip, cport);
+	sStreamId2(vmIP sip, vmPort sport, vmIP cip, vmPort cport, u_int64_t id, bool sortSc = false) {
+		s = vmIPport(sip, sport);
+		c = vmIPport(cip, cport);
 		if(sortSc && c < s) {
-			d_u_int32_t t = s;
+			vmIPport t = s;
 			s = c;
 			c = t;
 		}
@@ -214,27 +200,27 @@ struct sStreamId2 {
 		       (this->c < other.c) ? true : !(this->c == other.c) ? false :
 		       (this->id < other.id)); 
 	}
-	d_u_int32_t s;
-	d_u_int32_t c;
+	vmIPport s;
+	vmIPport c;
 	u_int64_t id;
 };
 
 struct sStreamIds2 {
-	sStreamIds2(u_int32_t sip, u_int16_t sport, u_int32_t cip, u_int16_t cport, const char *ids, bool sortSc = false) {
-		s = d_u_int32_t(sip, sport);
-		c = d_u_int32_t(cip, cport);
+	sStreamIds2(vmIP sip, vmPort sport, vmIP cip, vmPort cport, const char *ids, bool sortSc = false) {
+		s = vmIPport(sip, sport);
+		c = vmIPport(cip, cport);
 		if(sortSc && c < s) {
-			d_u_int32_t t = s;
+			vmIPport t = s;
 			s = c;
 			c = t;
 		}
 		this->ids = ids;
 	}
-	sStreamIds2(u_int32_t sip, u_int16_t sport, u_int32_t cip, u_int16_t cport, u_int64_t id, bool sortSc = false) {
-		s = d_u_int32_t(sip, sport);
-		c = d_u_int32_t(cip, cport);
+	sStreamIds2(vmIP sip, vmPort sport, vmIP cip, vmPort cport, u_int64_t id, bool sortSc = false) {
+		s = vmIPport(sip, sport);
+		c = vmIPport(cip, cport);
 		if(sortSc && c < s) {
-			d_u_int32_t t = s;
+			vmIPport t = s;
 			s = c;
 			c = t;
 		}
@@ -250,8 +236,8 @@ struct sStreamIds2 {
 		       (this->c < other.c) ? true : !(this->c == other.c) ? false :
 		       (this->ids < other.ids)); 
 	}
-	d_u_int32_t s;
-	d_u_int32_t c;
+	vmIPport s;
+	vmIPport c;
 	string ids;
 };
 
@@ -303,7 +289,7 @@ public:
 private:
 	void lock() {
 		while(__sync_lock_test_and_set(&this->_sync, 1)) {
-			usleep(10);
+			USLEEP(10);
 		}
 	}
 	void unlock() {
@@ -318,6 +304,8 @@ queue<string> listFilesDir(char * dir);
 vector<string> listDir(string path, bool withDir = false);
 vector<string> explode(const char *, const char);
 vector<string> explode(const string&, const char);
+string implode(vector<string> vect, const char *sep);
+string implode(list<u_int64_t> *items, const char *sep);
 int getUpdDifTime(struct timeval *before);
 int getDifTime(struct timeval *before);
 int msleep(long msec);
@@ -331,7 +319,11 @@ bool is_dir(const char * fileName);
 bool is_dir(char * fileName) { return(is_dir((const char*)fileName)); }
 bool is_dir(string fileName) { return(is_dir(fileName.c_str())); }
 bool is_dir(dirent *de, const char *path);
+bool isPSrightVersion(void);
+bool isBashPresent(void);
 void set_mac();
+bool existsAnotherInstance();
+bool existsPidProcess(int pid);
 int mkdir_r(std::string, mode_t, unsigned uid = 0, unsigned gid = 0);
 int rmdir_r(const char *dir, bool enableSubdir = false, bool withoutRemoveRoot = false);
 int rmdir_r(std::string dir, bool enableSubdir = false, bool withoutRemoveRoot = false);
@@ -342,6 +334,11 @@ unsigned long long copy_file(const char *src, const char *dst, bool move = false
 inline unsigned long long move_file(const char *src, const char *dst, bool auto_create_dst_dir = false) { return(copy_file(src, dst, true, auto_create_dst_dir)); }
 bool get_url_file(const char *url, const char *toFile, string *error = NULL);
 //uint64_t convert_srcmac_ll(ether_header *header_eth);
+void handleInterfaceOptions(void);
+void checkSwapUsage(void);
+void checkMysqlSwapUsage(void);
+
+/* obsolete
 void cloud_activecheck_success();
 void cloud_activecheck_start();
 void cloud_activecheck_stop();
@@ -349,130 +346,24 @@ void cloud_activecheck_set();
 bool cloud_now_activecheck();
 bool cloud_now_timeout();
 //void cloud_activecheck_start();
-class SimpleBuffer {
-public:
-	SimpleBuffer(u_int32_t capacityReserve = 0) {
-		buffer = NULL;
-		bufferLength = 0;
-		bufferCapacity = 0;
-		this->capacityReserve = capacityReserve;
+*/
+
+struct s_get_url_response_params {
+	unsigned timeout_sec;
+	string *auth_user;
+	string *auth_password;
+	vector<dstring> *headers;
+	bool suppress_parameters_encoding;
+	s_get_url_response_params() {
+		timeout_sec = 0;
+		auth_user = NULL;
+		auth_password = NULL;
+		headers = NULL;
+		suppress_parameters_encoding = false;
 	}
-	SimpleBuffer(void *data, u_int32_t dataLength, u_int32_t capacityReserve = 0) {
-		buffer = NULL;
-		bufferLength = 0;
-		bufferCapacity = 0;
-		this->capacityReserve = capacityReserve;
-		add(data, dataLength);
-	}
-	SimpleBuffer(const SimpleBuffer &other) {
-		this->bufferLength = other.bufferLength;
-		this->bufferCapacity = other.bufferCapacity;
-		this->capacityReserve = other.capacityReserve;
-		if(this->bufferLength) {
-			this->buffer = new FILE_LINE(39001) u_char[this->bufferCapacity];
-			memcpy(this->buffer, other.buffer, this->bufferLength);
-		} else { 
-			this->buffer = NULL;
-		}
-	}
-	~SimpleBuffer() {
-		destroy();
-	}
-	void add(const char *data) {
-		add((void*)data, strlen(data));
-	}
-	void add(void *data, u_int32_t dataLength) {
-		if(!data || !dataLength) {
-			return;
-		}
-		if(!buffer) {
-			buffer = new FILE_LINE(39002) u_char[dataLength + capacityReserve + 1];
-			bufferCapacity = dataLength + capacityReserve + 1;
-		} else if(bufferLength + dataLength + 1 > capacityReserve) {
-			u_char *bufferNew = new FILE_LINE(39003) u_char[bufferLength + dataLength + capacityReserve + 1];
-			memcpy(bufferNew, buffer, bufferLength);
-			delete [] buffer;
-			buffer = bufferNew;
-			bufferCapacity = bufferLength + dataLength + capacityReserve + 1;
-		}
-		memcpy(buffer + bufferLength, data, dataLength);
-		bufferLength += dataLength;
-	}
-	u_char *data() {
-		return(buffer);
-	}
-	u_int32_t size() {
-		return(bufferLength);
-	}
-	void clear() {
-		bufferLength = 0;
-	}
-	void destroy() {
-		if(buffer) {
-			delete [] buffer;
-			buffer = NULL;
-		}
-		bufferLength = 0;
-		bufferCapacity = 0;
-	}
-	bool empty() {
-		return(bufferLength == 0);
-	}
-	bool removeDataFromLeft(u_int32_t removeSize) {
-		if(removeSize > bufferLength) {
-			return(false);
-		} else if(removeSize == bufferLength) {
-			destroy();
-		} else {
-			u_char *bufferNew = new FILE_LINE(39004) u_char[bufferCapacity];
-			bufferLength -= removeSize;
-			memcpy(bufferNew, buffer + removeSize, bufferLength);
-			delete [] buffer;
-			buffer = bufferNew;
-		}
-		return(true);
-	}
-	SimpleBuffer& operator = (const SimpleBuffer &other) {
-		destroy();
-		this->bufferLength = other.bufferLength;
-		this->bufferCapacity = other.bufferCapacity;
-		this->capacityReserve = other.capacityReserve;
-		if(this->bufferLength) {
-			this->buffer = new FILE_LINE(39005) u_char[this->bufferCapacity];
-			memcpy(this->buffer, other.buffer, this->bufferLength);
-		} else { 
-			this->buffer = NULL;
-		}
-		return(*this);
-	}
-	operator char*() {
-		if(bufferLength == 0) {
-			return((char*)"");
-		} else {
-			if(bufferCapacity <= bufferLength) {
-				u_char *newBuffer = new FILE_LINE(39006) u_char[bufferLength + 1];
-				memcpy(newBuffer, buffer, bufferLength);
-				delete [] buffer;
-				buffer = newBuffer;
-				bufferCapacity = bufferLength + 1;
-			}
-			buffer[bufferLength] = 0;
-			return((char*)buffer);
-		}
-		return((char*)"");
-	}
-	bool isJsonObject() {
-		return(bufferLength && buffer[0] == '{' && buffer[bufferLength - 1] == '}');
-	}
-private:
-	u_char *buffer;
-	u_int32_t bufferLength;
-	u_int32_t bufferCapacity;
-	u_int32_t capacityReserve;
 };
-bool get_url_response_wt(unsigned int timeout_sec, const char *url, SimpleBuffer *response, vector<dstring> *postData, string *error = NULL);
-bool get_url_response(const char *url, SimpleBuffer *response, vector<dstring> *postData, string *error = NULL);
-double ts2double(unsigned int sec, unsigned int usec);
+bool get_url_response(const char *url, SimpleBuffer *response, vector<dstring> *postData, string *error = NULL,
+		      s_get_url_response_params *params = NULL);
 long long GetFileSize(std::string filename);
 time_t GetFileCreateTime(std::string filename);
 long long GetFileSizeDU(std::string filename, eTypeSpoolFile typeSpoolFile, int spool_index, int dirItemSize = -1);
@@ -480,6 +371,7 @@ long long GetDirSizeDU(unsigned countFiles);
 long long GetDU(long long fileSize, eTypeSpoolFile typeSpoolFile, int spool_index, int dirItemSize = -1);
 long long GetFreeDiskSpace(const char* absoluteFilePath, bool percent_mult_100 = false);
 long long GetTotalDiskSpace(const char* absoluteFilePath);
+bool lseek(int fd, u_int64_t seekPos);
 string GetStringMD5(std::string str);
 string GetFileMD5(std::string filename);
 string GetDataMD5(u_char *data, u_int32_t datalen);
@@ -491,10 +383,9 @@ u_int32_t checksum32buf(char *buf, size_t len);
 inline u_int32_t checksum32buf(u_char *buf, size_t len) {
 	return(checksum32buf((char*)buf, len));
 }
-void ntoa(char *res, unsigned int addr);
 string escapeShellArgument(string str);
 tm stringToTm(const char *timeStr);
-time_t stringToTime(const char *timeStr);
+time_t stringToTime(const char *timeStr, bool useGlobalTimeCache = false);
 struct tm getDateTime(u_int64_t us);
 struct tm getDateTime(time_t time);
 struct tm getDateTime(const char *timeStr);
@@ -503,8 +394,10 @@ int getNumberOfHourToNow(const char *date, int hour);
 string getActDateTimeF(bool useT_symbol = false);
 tm getEasterMondayDate(unsigned year, int decDays = 0, const char *timezone = NULL);
 bool isEasterMondayDate(tm &date, int decDays = 0, const char *timezone = NULL);
+tm getBeginDate(tm dateTime, const char *timezone = NULL);
 tm getNextBeginDate(tm dateTime, const char *timezone = NULL);
 tm getPrevBeginDate(tm dateTime, const char *timezone = NULL);
+tm getNextBeginHour(tm dateTime, const char *timezone = NULL);
 tm dateTimeAdd(tm dateTime, unsigned add_s, const char *timezone = NULL);
 double diffTime(tm time1, tm time0, const char *timezone = NULL);
 unsigned long getUptime();
@@ -513,26 +406,34 @@ char *strnstr(const char *haystack, const char *needle, size_t len);
 char *strncasestr(const char *haystack, const char *needle, size_t len);
 char *strnchr(const char *haystack, char needle, size_t len);
 char *strncasechr(const char *haystack, char needle, size_t len);
+int strcasecmp_wildcard(const char *str, const char *pattern, const char *wildcard);
+int strncasecmp_wildcard(const char *str, const char *pattern, size_t len, const char *wildcard);
 size_t strCaseEqLengthR(const char *str1, const char *str2, bool *eqMinLength);
 
 inline char* strncpy_null_term(char *dst, const char *src, size_t size) {
-	strncpy(dst, src, size);
-	dst[size - 1] = 0;
+	if(src) {
+		#if __GNUC__ >= 8
+		#pragma GCC diagnostic push
+		#pragma GCC diagnostic ignored "-Wstringop-truncation"
+		#endif
+		strncpy(dst, src, size - 1);
+		#if __GNUC__ >= 8
+		#pragma GCC diagnostic pop
+		#endif
+		dst[size - 1] = 0;
+	} else {
+		dst[0] = 0;
+	}
 	return(dst);
 }
 #define strcpy_null_term(dst, src) strncpy_null_term(dst, src, sizeof(dst))
 #define strncpy_null_term(dst, src, size) strncpy_null_term(dst, src, size)
 
-std::string &trim(std::string &s, const char *trimChars = NULL);
-std::string trim_str(std::string s, const char *trimChars = NULL);
-std::vector<std::string> &split(const std::string &s, char delim, std::vector<std::string> &elems);
-std::vector<std::string> split(const std::string &s, char delim);
-std::vector<std::string> split(const char *s, const char *delim, bool enableTrim = false, bool useEmptyItems = false);
-std::vector<std::string> split(const char *s, std::vector<std::string> delim, bool enableTrim = false, bool useEmptyItems = false);
-std::vector<int> split2int(const std::string &s, char delim);
-std::vector<int> split2int(const std::string &s, std::vector<std::string> delim, bool enableTrim);
 std::string string_size(const char *s, unsigned size);
+bool string_is_numeric(const char *s);
 bool string_is_alphanumeric(const char *s);
+
+bool str_like(const char *str, const char *pattern);
 
 bool matchResponseCodes(std::vector<pair<int, int> > & sipInfoCodes, int testCode);
 bool matchResponseCode(int code, int size, int testCode);
@@ -540,66 +441,13 @@ std::vector<pair<int,int> > getResponseCodeSizes(std::vector<int> & Codes);
 int log10int(int v);
 int log10int(long int v);
 
-bool check_regexp(const char *pattern);
-int reg_match(const char *string, const char *pattern, const char *file = NULL, int line = 0);
-int reg_match(const char *str, const char *pattern, vector<string> *matches, bool ignoreCase, const char *file = NULL, int line = 0);
-string reg_replace(const char *string, const char *pattern, const char *replace, const char *file = NULL, int line = 0);
-
-class cRegExp {
-public:
-	enum eFlags {
-		_regexp_icase = 1,
-		_regexp_sub = 2,
-		_regexp_matches = 2,
-		_regexp_icase_mathes = 3
-	};
-public:
-	cRegExp(const char *pattern, eFlags flags = _regexp_icase,
-		const char *file = NULL, int line = 0);
-	~cRegExp();
-	bool regex_create();
-	void regex_delete();
-	int match(const char *subject, vector<string> *matches = NULL);
-	string replace(const char *subject, const char *replace);
-	bool isOK() {
-		return(regex_init);
-	}
-	bool isError() {
-		return(regex_error);
-	}
-	const char *getPattern() {
-		return(pattern.c_str());
-	}
-private:
-	string pattern;
-	eFlags flags;
-	regex_t regex;
-	bool regex_init;
-	bool regex_error;
-};
-
-bool check_ip_in(u_int32_t ip, vector<u_int32_t> *vect_ip, vector<d_u_int32_t> *vect_net, bool trueIfVectEmpty);
-bool check_ip(u_int32_t ip, u_int32_t net, unsigned mask_length);
-string inet_ntostring(u_int32_t ip);
-u_int32_t inet_strington(const char *ip);
-bool ip_is_localhost(u_int32_t ip) { return((ip >> 8) == 0x7F0000); }
-void xorData(u_char *data, size_t dataLen, const char *key, size_t keyLength, size_t initPos);
-void base64_init(void);
-int base64decode(unsigned char *dst, const char *src, int max);
+bool check_ip_in(vmIP ip, vector<vmIP> *vect_ip, vector<vmIPmask> *vect_net, bool trueIfVectEmpty);
+bool check_ip(vmIP ip, vmIP net, unsigned mask_length);
+inline bool ip_is_localhost(vmIP ip) { return(ip.isLocalhost()); }
 string hexencode(unsigned char *src, int src_length);
 int hexdecode(unsigned char *dst, const char *src, int max);
-void find_and_replace(string &source, const string find, string replace);
-string find_and_replace(const char *source, const char *find, const char *replace);
-bool isLocalIP(u_int32_t ip);
 char *strlwr(char *string, u_int32_t maxLength = 0);
-string intToString(int i);
-string intToString(long long i);
-string intToString(u_int16_t i);
-string intToString(u_int32_t i);
-string intToString(u_int64_t i);
-string floatToString(double d);
-string pointerToString(void *p);
-string boolToString(bool b);
+string strlwr(string str);
 bool isJsonObject(string str);
 
 class CircularBuffer
@@ -660,133 +508,11 @@ struct ip_port
 	int port;
 };
 
-struct ipn_port
-{
-	ipn_port() {
-		ip = 0;
-		port = 0;
-	}
-	ipn_port(u_int32_t ip, u_int16_t port) {
-		this->ip = ip;
-		this->port = port;
-	}
-	void set_ip(u_int32_t ip) {
-		this->ip = ip;
-	}
-	void set_ip(const char *ip) {
-		this->ip = inet_strington(ip);
-	}
-	void set_ip(string ip) {
-		this->ip = inet_strington(ip.c_str());
-	}
-	void set_port(u_int16_t port) {
-		this->port = port;
-	}
-	u_int32_t get_ip() {
-		return(ip);
-	}
-	u_int16_t get_port() {
-		return(port);
-	}
-	void clear() {
-		ip = 0;
-		port = 0;
-	}
-	operator int() {
-		return(ip && port);
-	}
-	bool operator == (const ipn_port& other) const { 
-		return(this->ip == other.ip &&
-		       this->port == other.port); 
-	}
-	bool operator < (const ipn_port& other) const { 
-		return(this->ip < other.ip ||
-		       (this->ip == other.ip && this->port < other.port)); 
-	}
-	u_int32_t ip;
-	u_int16_t port;
-};
-
-inline u_long getTimeS(pcap_pkthdr* header = NULL) {
-    if(header) {
-         return(header->ts.tv_sec);
-    }
-    timespec time;
-    clock_gettime(CLOCK_REALTIME, &time);
-    return(time.tv_sec);
-}
-
-inline u_long getTimeMS(pcap_pkthdr* header = NULL) {
-    if(header) {
-         return(header->ts.tv_sec * 1000ul + header->ts.tv_usec / 1000);
-    }
-    timespec time;
-    clock_gettime(CLOCK_REALTIME, &time);
-    return(time.tv_sec * 1000ul + time.tv_nsec / 1000000);
-}
-
-inline u_long getTimeMS(struct timeval *ts) {
-    return(ts->tv_sec * 1000ul + ts->tv_usec / 1000);
-}
-
-extern u_int64_t rdtsc_by_100ms;
-inline u_long getTimeMS_rdtsc(pcap_pkthdr* header = NULL) {
-    if(header) {
-         return(header->ts.tv_sec * 1000ul + header->ts.tv_usec / 1000);
-    }
-    static u_long last_time;
-    #if defined(__i386__) or defined(__x86_64__)
-    static u_int32_t counter = 0;
-    static u_int64_t last_rdtsc = 0;
-    ++counter;
-    if(rdtsc_by_100ms) {
-         u_int64_t act_rdtsc = rdtsc();
-         if(counter % 100 && last_rdtsc && last_time) {
-             u_int64_t diff_rdtsc = act_rdtsc - last_rdtsc;
-             if(diff_rdtsc < rdtsc_by_100ms / 10) {
-                  last_rdtsc = act_rdtsc;
-                  last_time = last_time + diff_rdtsc * 100 / rdtsc_by_100ms;
-                  return(last_time);
-             }
-         }
-         last_rdtsc = act_rdtsc;
-    }
-    #endif
-    timespec time;
-    clock_gettime(CLOCK_REALTIME, &time);
-    last_time = time.tv_sec * 1000ul + time.tv_nsec / 1000000;
-    return(last_time);
-}
-
-inline unsigned long long getTimeUS() {
-    timespec time;
-    clock_gettime(CLOCK_REALTIME, &time);
-    return(time.tv_sec * 1000000ull + time.tv_nsec / 1000);
-}
-
-inline unsigned long long getTimeNS() {
-    timespec time;
-    clock_gettime(CLOCK_REALTIME, &time);
-    return(time.tv_sec * 1000000000ull + time.tv_nsec);
-}
-
 inline u_long getGlobalPacketTimeS() {
 	extern volatile unsigned int glob_last_packet_time;
 	return(is_read_from_file() ?
 		getTimeMS_rdtsc() / 1000 :
 		glob_last_packet_time);
-}
-
-inline unsigned long long getTimeUS(pcap_pkthdr *pkthdr) {
-    return(pkthdr->ts.tv_sec * 1000000ull + pkthdr->ts.tv_usec);
-}
-
-inline unsigned long long getTimeUS(timeval &ts) {
-    return(ts.tv_sec * 1000000ull + ts.tv_usec);
-}
-
-inline unsigned long long getTimeUS(volatile timeval &ts) {
-    return(ts.tv_sec * 1000000ull + ts.tv_usec);
 }
 
 class FileZipHandler : public CompressStream_baseEv {
@@ -816,7 +542,7 @@ public:
 public:
 	FileZipHandler(int bufferLength = 0, int enableAsyncWrite = 0, eTypeCompress typeCompress = compress_na,
 		       bool dumpHandler = false, class Call_abstract *call = NULL,
-		       eTypeFile typeFile = na);
+		       eTypeFile typeFile = na, unsigned indexFile = 0);
 	virtual ~FileZipHandler();
 	bool open(eTypeSpoolFile typeSpoolFile, const char *fileName, 
 		  int permission_file = 0, int permission_dir = 0, unsigned uid = 0, unsigned gid = 0);
@@ -859,10 +585,12 @@ public:
 	static const char *convTypeCompress(eTypeCompress typeCompress);
 	static string getConfigMenuString();
 	bool getLineFromReadBuffer(string *line);
+	bool needTarPos();
 private:
 	virtual bool compress_ev(char *data, u_int32_t len, u_int32_t decompress_len, bool format_data = false);
 	virtual bool decompress_ev(char *data, u_int32_t len);
 	void setTypeCompressDefault();
+	eTypeCompress getTypeCompressDefault();
 	void addReadBuffer(char *data, u_int32_t len);
 public:
 	eMode mode;
@@ -893,6 +621,7 @@ public:
 	static u_int64_t scounter;
 	u_int32_t userData;
 	eTypeFile typeFile;
+	unsigned indexFile;
 	deque<sReadBufferItem> readBuffer;
 	uint32_t readBufferBeginPos;
 	bool eof;
@@ -923,14 +652,14 @@ public:
 	void setTypeCompress(FileZipHandler::eTypeCompress typeCompress) {
 		_typeCompress = typeCompress;
 	}
-	bool open(eTypeSpoolFile typeSpoolFile, const char *fileName, pcap_t *useHandle, int useDlt);
+	bool open(eTypeSpoolFile typeSpoolFile, const char *fileName, pcap_t *useHandle, int useDlt, string *error = NULL);
 	bool open(eTypeSpoolFile typeSpoolFile, const char *fileName, int dlt) {
 		return(this->open(typeSpoolFile, fileName, NULL, dlt));
 	}
 	void dump(pcap_pkthdr* header, const u_char *packet, int dlt, bool allPackets = false, 
 		  u_char *data = NULL, unsigned int datalen = 0,
-		  unsigned int saddr = 0, unsigned int daddr = 0, int source = 0, int dest = 0,
-		  bool istcp = false, bool forceVirtualUdp = false);
+		  vmIP saddr = 0, vmIP daddr = 0, vmPort source = 0, vmPort dest = 0,
+		  bool istcp = false, u_int8_t forceVirtualUdp = false, timeval *ts = NULL);
 	void close(bool updateFilesQueue = true);
 	void flush();
 	void remove();
@@ -943,11 +672,36 @@ public:
 	bool isExistsContent() {
 		return(this->existsContent);
 	}
-	void setStateClose() {
-		this->state = state_close;
+	void setStateClose();
+	eState getState() {
+		return(this->state);
 	}
 	string getFileName() {
 		return(fileName);
+	}
+	static inline bool enable_convert_dlt_sll_to_en10(int dlt) {
+		extern int opt_convert_dlt_sll_to_en10;
+		extern pcap_t *global_pcap_handle_dead_EN10MB;
+		return(dlt == DLT_LINUX_SLL && opt_convert_dlt_sll_to_en10 && global_pcap_handle_dead_EN10MB);
+	}
+	static inline int convert_dlt_sll_to_en10(int dlt) {
+		return(enable_convert_dlt_sll_to_en10(dlt) ? DLT_EN10MB : dlt);
+	}
+	static inline void packet_convert_dlt_sll_to_en10(const u_char *packet_src, u_char *packet_dest, 
+							  const pcap_pkthdr *header_src, pcap_pkthdr *header_dest,
+							  u_int32_t packet_dst_maxlen = 0) {
+		memset(packet_dest, 0, 6); // clear destination mac
+		memcpy(packet_dest + 6, packet_src + 6, 6); // copy source mac
+		memcpy(packet_dest + 12, packet_src + 14, 2); // copy type
+		memcpy(packet_dest + 14, packet_src + 16, 
+		       packet_dst_maxlen ? 
+			(header_src ? min(packet_dst_maxlen - 14, header_src->caplen - 16) :  packet_dst_maxlen - 14) :
+			(header_src ? header_src->caplen - 16 : 0));
+		if(header_src && header_dest) {
+			memcpy(header_dest, header_src, sizeof(pcap_pkthdr));
+			header_dest->caplen -= 2;
+			header_dest->len -= 2;
+		}
 	}
 private:
 	eTypeSpoolFile typeSpoolFile;
@@ -959,10 +713,10 @@ private:
 	pcap_dumper_t *handle;
 	bool openError;
 	int openAttempts;
-	eState state;
+	volatile eState state;
 	bool existsContent;
 	int dlt;
-	u_long lastTimeSyslog;
+	u_int64_t lastTimeSyslog;
 	int _bufflength;
 	int _asyncwrite;
 	FileZipHandler::eTypeCompress _typeCompress;
@@ -977,15 +731,27 @@ void __pcap_dump_flush(pcap_dumper_t *p);
 char *__pcap_geterr(pcap_t *p, pcap_dumper_t *pd = NULL);
 void createSimpleUdpDataPacket(u_int header_ip_offset, pcap_pkthdr **header, u_char **packet,
 			       u_char *source_packet, u_char *data, unsigned int datalen,
-			       unsigned int saddr, unsigned int daddr, int source, int dest,
+			       vmIP saddr, vmIP daddr, vmPort source, vmPort dest,
 			       u_int32_t time_sec, u_int32_t time_usec);
 void createSimpleTcpDataPacket(u_int header_ip_offset, pcap_pkthdr **header, u_char **packet,
 			       u_char *source_packet, u_char *data, unsigned int datalen,
-			       unsigned int saddr, unsigned int daddr, int source, int dest,
+			       vmIP saddr, vmIP daddr, vmPort source, vmPort dest,
 			       u_int32_t seq, u_int32_t ack_seq, 
 			       u_int32_t time_sec, u_int32_t time_usec, int dlt);
+void convertIPsInPacket(struct sHeaderPacket *header_packet, struct pcapProcessData *ppd, 
+			pcap_pkthdr **header, u_char **packet,
+			void *net_map);
+bool convertIPs_sip(u_char *sip_src, u_char **sip_dst, unsigned *sip_dst_length, void *_net_map);
+bool convertIPs_string(string &src, string *dst, void *_net_map);
+int convertIPs_header_ip(iphdr2 *src, iphdr2 **dst, void *_net_map, bool force_create = false);
 
 class RtpGraphSaver {
+public:
+	enum eStateAsyncClose {
+		_sac_na,
+		_sac_sent,
+		_sac_completed
+	};
 public:
 	RtpGraphSaver(class RTP *rtp);
 	~RtpGraphSaver();
@@ -997,11 +763,14 @@ public:
 	bool isOpen() {
 		return(this->handle != NULL);
 	}
+	bool isClose() {
+		return(!this->enableAutoOpen && this->handle == NULL && state_async_close != _sac_sent);
+	}
+	void setCompleteAsyncClose() {
+		state_async_close = _sac_completed;
+	}
 	bool isOpenOrEnableAutoOpen() {
 		return(isOpen() || this->enableAutoOpen);
-	}
-	bool isClose() {
-		return(!this->enableAutoOpen && this->handle == NULL);
 	}
 	bool isExistsContent() {
 		return(this->existsContent);
@@ -1014,6 +783,7 @@ private:
 	bool existsContent;
 	bool enableAutoOpen;
 	int _asyncwrite;
+	volatile eStateAsyncClose state_async_close;
 };
 
 #define AsyncClose_maxPcapThreads 32
@@ -1022,7 +792,7 @@ class AsyncClose {
 public:
 	class AsyncCloseItem {
 	public:
-		AsyncCloseItem(Call_abstract *call = NULL, PcapDumper *pcapDumper = NULL, 
+		AsyncCloseItem(Call_abstract *call = NULL, PcapDumper *pcapDumper = NULL, RtpGraphSaver *graphSaver = NULL,
 			       eTypeSpoolFile typeSpoolFile = tsf_na, const char *file = NULL,
 			       long long writeBytes = 0);
 		virtual ~AsyncCloseItem() {}
@@ -1038,6 +808,7 @@ public:
 		int call_spoolindex;
 		string call_spooldir;
 		PcapDumper *pcapDumper;
+		RtpGraphSaver *graphSaver;
 		eTypeSpoolFile typeSpoolFile;
 		string file;
 		long long writeBytes;
@@ -1050,7 +821,7 @@ public:
 				    Call_abstract *call = NULL, PcapDumper *pcapDumper = NULL, 
 				    eTypeSpoolFile typeSpoolFile = tsf_na, const char *file = NULL,
 				    long long writeBytes = 0)
-		 : AsyncCloseItem(call, pcapDumper, 
+		 : AsyncCloseItem(call, pcapDumper, NULL,
 				  typeSpoolFile, file, 
 				  writeBytes) {
 			this->handle = handle;
@@ -1110,10 +881,10 @@ public:
 	class AsyncCloseItem_fileZipHandler  : public AsyncCloseItem{
 	public:
 		AsyncCloseItem_fileZipHandler(FileZipHandler *handle, bool updateFilesQueue = false,
-					      Call_abstract *call = NULL, 
+					      Call_abstract *call = NULL, RtpGraphSaver *graphSaver = NULL,
 					      eTypeSpoolFile typeSpoolFile = tsf_na, const char *file = NULL,
 					      long long writeBytes = 0)
-		 : AsyncCloseItem(call, NULL, 
+		 : AsyncCloseItem(call, NULL, graphSaver,
 				  typeSpoolFile, file, 
 				  writeBytes) {
 			this->handle = handle;
@@ -1125,6 +896,9 @@ public:
 			delete handle;
 			if(this->updateFilesQueue) {
 				this->addtofilesqueue();
+			}
+			if(graphSaver) {
+				graphSaver->setCompleteAsyncClose();
 			}
 		}
 		bool process_ready() {
@@ -1248,7 +1022,7 @@ public:
 		}
 	}
 	void add(FileZipHandler *handle, bool updateFilesQueue = false,
-		 Call_abstract *call = NULL, 
+		 Call_abstract *call = NULL, RtpGraphSaver *graphSaver = NULL,
 		 eTypeSpoolFile typeSpoolFile = tsf_na, const char *file = NULL,
 		 long long writeBytes = 0) {
 		for(int pass = 0; pass < 2; pass++) {
@@ -1271,7 +1045,7 @@ public:
 				}
 				handle->userData = minSizeIndex + 1;
 			}
-			if(add(new FILE_LINE(39011) AsyncCloseItem_fileZipHandler(handle, updateFilesQueue, call, 
+			if(add(new FILE_LINE(39011) AsyncCloseItem_fileZipHandler(handle, updateFilesQueue, call, graphSaver,
 										  typeSpoolFile, file, 
 										  writeBytes),
 			       handle->userData - 1,
@@ -1311,7 +1085,7 @@ public:
 	bool add(AsyncCloseItem *item, int threadIndex, int useThreadOper = 0) {
 		extern cBuffersControl buffersControl;
 		while(!buffersControl.check__AsyncClose__add(item->dataLength) && !is_terminating()) {
-			usleep(1000);
+			USLEEP(1000);
 		}
 		lock(threadIndex);
 		if(!activeThread[threadIndex]) {
@@ -1342,7 +1116,7 @@ public:
 private:
 	void lock(int threadIndex) {
 		while(__sync_lock_test_and_set(&this->_sync[threadIndex], 1)) {
-			usleep(10);
+			USLEEP(10);
 		}
 	}
 	void unlock(int threadIndex) {
@@ -1433,17 +1207,15 @@ private:
 	pid_t pid;
 };
 
-std::string getCmdLine();
-
 std::string pexec(char*, int *exitCode = NULL);
 
 class IP {
 public:
-	IP(uint ip, uint mask_length = 32) {
+	IP(vmIP ip, uint mask_length = 0) {
 		this->ip = ip;
 		this->mask_length = mask_length;
-		if(mask_length > 0 && mask_length < 32) {
-			this->ip = this->ip & (0xFFFFFFFF << (32 - mask_length));
+		if(mask_length > 0 && mask_length < ip.bits()) {
+			this->ip = this->ip.network(mask_length);
 		}
 	}
 	IP(const char *ip) {
@@ -1451,45 +1223,41 @@ public:
 		if(maskSeparator) {
 			mask_length = atoi(maskSeparator + 1);
 			*maskSeparator = 0;
-			in_addr ips;
-			inet_aton(ip, &ips);
-			this->ip = htonl(ips.s_addr);
-			if(mask_length > 0 && mask_length < 32) {
-				 this->ip = this->ip & (0xFFFFFFFF << (32 - mask_length));
+			this->ip.setFromString(ip);
+			if(mask_length > 0 && mask_length < this->ip.bits()) {
+				 this->ip = this->ip.network(mask_length);
 			}
 			*maskSeparator = '/';
 		} else {
-			in_addr ips;
-			inet_aton(ip, &ips);
-			this->ip = htonl(ips.s_addr);
-			mask_length = 32;
-			for(int i = 8; i <= 24; i += 8) {
-				if(this->ip == (this->ip & (0xFFFFFFFF << i))) {
-					mask_length = 32 - i;
+			this->ip.setFromString(ip);
+			mask_length = 0;
+			for(int i = 8; i <= this->ip.bits() - 8; i += 8) {
+				if(this->ip == this->ip.network(i)) {
+					mask_length = i;
+					break;
 				}
 			}
 		}
 	}
-	bool checkIP(uint check_ip) {
-		if(!mask_length || mask_length == 32) {
+	bool checkIP(vmIP check_ip) {
+		if(!mask_length || mask_length == this->ip.bits()) {
 			return(check_ip == ip);
 		} else {
-			return(ip == check_ip >> (32 - mask_length) << (32 - mask_length));
+			return(ip == check_ip.network(mask_length));
 		}
+		return(false);
 	}
 	bool checkIP(const char *check_ip) {
-		in_addr ips;
-		inet_aton(check_ip, &ips);
-		return(checkIP(htonl(ips.s_addr)));
+		return(checkIP(str_2_vmIP(check_ip)));
 	}
 	bool isNet() {
-		return(mask_length > 0 && mask_length < 32);
+		return(this->ip.is_net_mask(mask_length));
 	}
 	bool operator < (const IP &ip) const {
 		return(this->ip < ip.ip);
 	}
 public:
-	u_int32_t ip;
+	vmIP ip;
 	u_int16_t mask_length;
 };
 
@@ -1572,6 +1340,9 @@ public:
 	CheckString(const char *checkString) {
 		this->checkString = checkString;
 		this->checkString_length = this->checkString.length();
+		boundLeft = false;
+		boundRight = false;
+		wildcard = false;
 		interval = false;
 		interval_num_length = -1;
 		interval_from = -1;
@@ -1634,6 +1405,7 @@ public:
 		} else {
 			this->boundRight = true;
 		}
+		this->wildcard = this->checkString.find('_') != string::npos;
 	}
 	bool check(const char *checkString) {
 		if(!this->checkString_length) {
@@ -1677,13 +1449,19 @@ public:
 			return(true);
 		}
 		if(this->boundLeft && this->boundRight) {
-			return(!strcasecmp(checkString, this->checkString.c_str()));
+			return(this->wildcard ?
+				!strcasecmp_wildcard(checkString, this->checkString.c_str(), "_") :
+				!strcasecmp(checkString, this->checkString.c_str()));
 		} else if(this->boundLeft) {
-			return(!strncasecmp(checkString, this->checkString.c_str(), this->checkString_length));
+			return(this->wildcard ?
+				!strncasecmp_wildcard(checkString, this->checkString.c_str(), this->checkString_length, "_") :
+				!strncasecmp(checkString, this->checkString.c_str(), this->checkString_length));
 		} else if(this->boundRight) {
 			uint length = strlen(checkString);
 			if(length >= this->checkString_length) {
-				return(!strcasecmp(checkString + length - this->checkString_length, this->checkString.c_str()));
+				return(this->wildcard ?
+					!strcasecmp_wildcard(checkString + length - this->checkString_length, this->checkString.c_str(), "_") :
+					!strcasecmp(checkString + length - this->checkString_length, this->checkString.c_str()));
 			} else {
 				return(false);
 			}
@@ -1696,6 +1474,7 @@ public:
 	uint checkString_length;
 	bool boundLeft;
 	bool boundRight;
+	bool wildcard;
 	bool interval;
 	std::string interval_eq;
 	int interval_num_length;
@@ -1711,7 +1490,7 @@ public:
 		_listIP_sorted = 0;
 		_listNet_sorted = 0;
 	}
-	void add(uint ip, uint mask_length = 32) {
+	void add(vmIP ip, uint mask_length = 32) {
 		if(autoLock) lock();
 		IP _ip(ip, mask_length);
 		if(!_ip.isNet()) {
@@ -1733,9 +1512,9 @@ public:
 	}
 	void addComb(string &ip, ListIP *negList = NULL);
 	void addComb(const char *ip, ListIP *negList = NULL);
-	void add(vector<u_int32_t> *ip);
-	void add(vector<d_u_int32_t> *net);
-	bool checkIP(uint check_ip) {
+	void add(vector<vmIP> *ip);
+	void add(vector<vmIPmask> *net);
+	bool checkIP(vmIP check_ip) {
 		bool rslt =  false;
 		if(autoLock) lock();
 		if(listIP.size()) {
@@ -1759,7 +1538,8 @@ public:
 			} else {
 				while(it_net != listNet.begin()) {
 					--it_net;
-					if(!(it_net->ip & check_ip)) {
+					if(!(!it_net->ip.isSet() && it_net->mask_length) &&
+					   !it_net->ip.mask(check_ip).isSet()) {
 						break;
 					}
 					if(it_net->checkIP(check_ip)) {
@@ -1773,9 +1553,7 @@ public:
 		return(rslt);
 	}
 	bool checkIP(const char *check_ip) {
-		in_addr ips;
-		inet_aton(check_ip, &ips);
-		return(checkIP(htonl(ips.s_addr)));
+		return(checkIP(str_2_vmIP(check_ip)));
 	}
 	void clear() {
 		if(autoLock) lock();
@@ -1791,6 +1569,9 @@ public:
 	}
 	void unlock() {
 		__sync_lock_release(&this->_sync);
+	}
+	std::vector<IP> *get_list_ip() {
+		return(&listIP);
 	}
 private:
 	std::vector<IP> listIP;
@@ -1825,20 +1606,16 @@ public:
 	GroupsIP();
 	~GroupsIP();
 	void load(class SqlDb *sqlDb = NULL);
-	GroupIP *getGroup(uint ip);
+	GroupIP *getGroup(vmIP ip);
 	GroupIP *getGroup(const char *ip) {
-		in_addr ips;
-		inet_aton(ip, &ips);
-		return(getGroup(htonl(ips.s_addr)));
+		return(getGroup(str_2_vmIP(ip)));
 	}
-	unsigned getGroupId(uint ip) {
+	unsigned getGroupId(vmIP ip) {
 		GroupIP *group = getGroup(ip);
 		return(group ? group->id : 0);
 	}
 	unsigned getGroupId(const char *ip) {
-		in_addr ips;
-		inet_aton(ip, &ips);
-		return(getGroupId(htonl(ips.s_addr)));
+		return(getGroupId(str_2_vmIP(ip)));
 	}
 	string getGroupName(uint id) {
 		map<unsigned, GroupIP*>::iterator it = groups.find(id);
@@ -1861,9 +1638,19 @@ public:
 		_listPhoneNumber_sorted = 0;
 		_listPrefixes_sorted = 0;
 	}
+	~ListPhoneNumber() {
+		for(std::list<cRegExp*>::iterator iter = listRegExp.begin(); iter != listRegExp.end(); iter++) {
+			delete *iter;
+		}
+	}
 	void add(const char *number, bool prefix = true) {
 		if(autoLock) lock();
-		if(!prefix) {
+		if(number[0] == 'R' && number[1] == '(' && number[strlen(number) - 1] == ')') {
+			if(check_regexp(number)) {
+				cRegExp *regexp = new FILE_LINE(0) cRegExp(string(number).substr(2, strlen(number) - 3).c_str());
+				listRegExp.push_back(regexp);
+			}
+		} else if(!prefix) {
 			listPhoneNumber.push_back(PhoneNumber(number, false));
 		} else {
 			listPrefixes.push_back(PhoneNumber(number, true));
@@ -1900,6 +1687,14 @@ public:
 				}
 			}
 		}
+		if(!rslt && listRegExp.size()) {
+			for(std::list<cRegExp*>::iterator iter = listRegExp.begin(); iter != listRegExp.end(); iter++) {
+				if((*iter)->match(check_number)) {
+					rslt = true;
+					break;
+				}
+			}
+		}
 		if(autoLock) unlock();
 		return(rslt);
 	}
@@ -1907,10 +1702,14 @@ public:
 		if(autoLock) lock();
 		listPhoneNumber.clear();
 		listPrefixes.clear();
+		for(std::list<cRegExp*>::iterator iter = listRegExp.begin(); iter != listRegExp.end(); iter++) {
+			delete *iter;
+		}
+		listRegExp.clear();
 		if(autoLock) unlock();
 	}
 	bool is_empty() {
-		return(!listPhoneNumber.size() && !listPrefixes.size());
+		return(!listPhoneNumber.size() && !listPrefixes.size() && !listRegExp.size());
 	}
 	void lock() {
 		while(__sync_lock_test_and_set(&this->_sync, 1));
@@ -1921,6 +1720,7 @@ public:
 private:
 	std::vector<PhoneNumber> listPhoneNumber;
 	std::vector<PhoneNumber> listPrefixes;
+	std::list<cRegExp*> listRegExp;
 	bool autoLock;
 	volatile int _sync;
 	volatile int _listPhoneNumber_sorted;
@@ -2030,7 +1830,7 @@ public:
 	void addWhite(const char *ip);
 	void addBlack(string &ip);
 	void addBlack(const char *ip);
-	bool checkIP(uint check_ip, bool *findInBlackList = NULL) {
+	bool checkIP(vmIP check_ip, bool *findInBlackList = NULL) {
 		if(findInBlackList) {
 			*findInBlackList = false;
 		}
@@ -2046,9 +1846,7 @@ public:
 		return(true);
 	}
 	bool checkIP(const char *check_ip) {
-		in_addr ips;
-		inet_aton(check_ip, &ips);
-		return(checkIP(htonl(ips.s_addr)));
+		return(checkIP(str_2_vmIP(check_ip)));
 	}
 	bool is_empty() {
 		return(white.is_empty() && black.is_empty());
@@ -2365,10 +2163,25 @@ public:
 	~SafeAsyncQueue();
 	void push(type_queue_item &item);
 	bool pop(type_queue_item *item, bool remove = true);
+	u_int32_t getSize() {
+		return(size);
+	}
 protected:
 	void timerEv(unsigned long long timerCounter);
 private:
 	void shiftPush();
+	void incSize() {
+		lock_size();
+		__sync_add_and_fetch(&size, 1);
+		unlock_size();
+	}
+	void decSize() {
+		lock_size();
+		if(size > 0) {
+			__sync_sub_and_fetch(&size, 1);
+		}
+		unlock_size();
+	}
 	void lock_queue() {
 		while(__sync_lock_test_and_set(&_sync_queue, 1));
 	}
@@ -2387,15 +2200,23 @@ private:
 	void unlock_pop_queue() {
 		__sync_lock_release(&_sync_pop_queue);
 	}
+	void lock_size() {
+		while(__sync_lock_test_and_set(&_sync_size, 1));
+	}
+	void unlock_size() {
+		__sync_lock_release(&_sync_size);
+	}
 private:
 	deque<type_queue_item> *push_queue;
 	deque<type_queue_item> *pop_queue;
 	deque<deque<type_queue_item>*> queueItems;
 	int shiftIntervalMult10S;
 	unsigned long long lastShiftTimerCounter;
+	volatile u_int32_t size;
 	volatile int _sync_queue;
 	volatile int _sync_push_queue;
 	volatile int _sync_pop_queue;
+	volatile int _sync_size;
 };
 
 template<class type_queue_item>
@@ -2404,9 +2225,11 @@ SafeAsyncQueue<type_queue_item>::SafeAsyncQueue(int shiftIntervalMult10S) {
 	pop_queue = NULL;
 	this->shiftIntervalMult10S = shiftIntervalMult10S;
 	lastShiftTimerCounter = 0;
+	size = 0;
 	_sync_queue = 0;
 	_sync_push_queue = 0;
 	_sync_pop_queue = 0;
+	_sync_size = 0;
 }
 
 template<class type_queue_item>
@@ -2433,6 +2256,7 @@ void SafeAsyncQueue<type_queue_item>::push(type_queue_item &item) {
 		push_queue = new FILE_LINE(39013) deque<type_queue_item>;
 	}
 	push_queue->push_back(item);
+	incSize();
 	unlock_push_queue();
 }
 
@@ -2461,6 +2285,7 @@ bool SafeAsyncQueue<type_queue_item>::pop(type_queue_item *item, bool remove) {
 				delete pop_queue;
 				pop_queue = NULL;
 			}
+			decSize();
 		}
 	}
 	unlock_pop_queue();
@@ -2488,77 +2313,6 @@ void SafeAsyncQueue<type_queue_item>::shiftPush() {
 	}
 }
 
-class JsonItem {
-public:
-	JsonItem(string name = "", string value = "", bool null = false);
-	void parse(string valStr);
-	JsonItem *getItem(string path, int index = -1);
-	string getValue(string path, int index = -1);
-	int getCount(string path);
-	string getLocalName() { return(this->name); }
-	string getLocalValue() { return(this->value); }
-	bool localValueIsNull() { return(this->null); }
-	JsonItem *getLocalItem(int index = -1) { return(index == -1 ? this : &this->items[index]); }
-	size_t getLocalCount() { return(this->items.size()); }
-private:
-	JsonItem *getPathItem(string path);
-	string getPathItemName(string path);
-	string name;
-	string value;
-	bool null;
-	vector<JsonItem> items;
-};
-
-class JsonExport {
-public:
-	enum eTypeItem {
-		_object,
-		_array,
-		_number,
-		_string,
-		_null,
-		_json
-	};
-public:
-	JsonExport();
-	virtual ~JsonExport();
-	void setTypeItem(eTypeItem typeItem) {
-		this->typeItem = typeItem;
-	}
-	eTypeItem getTypeItem() {
-		return(typeItem);
-	}
-	void setName(const char *name) {
-		if(name) {
-			this->name = name;
-		}
-	}
-	void add(const char *name, string content);
-	void add(const char *name, const char *content);
-	void add(const char *name, int64_t content);
-	void add(const char *name);
-	JsonExport *addArray(const char *name);
-	JsonExport *addObject(const char *name);
-	void addJson(const char *name, const string &content);
-	void addJson(const char *name, const char *content);
-	virtual string getJson(JsonExport *parent = NULL);
-protected:
-	eTypeItem typeItem;
-	string name;
-	vector<JsonExport*> items;
-};
-
-template <class type_item>
-class JsonExport_template : public JsonExport {
-public:
-	void setContent(type_item content) {
-		this->content = content;
-	}
-	string getJson(JsonExport *parent = NULL);
-private:
-	type_item content;
-};
-
 
 class AutoDeleteAtExit {
 public:
@@ -2568,8 +2322,8 @@ private:
 	vector<string> files;
 };
 
-pcap_t* pcap_open_offline_zip(const char *filename, char *errbuff);
-string gunzipToTemp(const char *zipFilename, string *error, bool autoDeleteAtExit);
+pcap_t* pcap_open_offline_zip(const char *filename, char *errbuff, string *tempFileName = NULL);
+string gunzipToTemp(const char *zipFilename, string *error, bool autoDeleteAtExit, string *tempFileName = NULL);
 string _gunzip_s(const char *zipFilename, const char *unzipFilename);
 string __gunzip_s(FILE *zip, FILE *unzip);
 int __gunzip(FILE *zip, FILE *unzip);
@@ -2582,6 +2336,10 @@ string json_encode(const string &value);
 char * gettag_json(const char *data, const char *tag, unsigned *contentlen, char *dest, unsigned destlen);
 char * gettag_json(const char *data, const char *tag, string *dest);
 char * gettag_json(const char *data, const char *tag, unsigned *dest, unsigned dest_not_exists = 0);
+
+int getbranch_xml(const char *branch, const char *str, list<string> *rslt);
+string gettag_xml(const char *tag, const char *str);
+string getvalue_xml(const char *branch, const char *str);
 
 class SocketSimpleBufferWrite {
 public:
@@ -2616,12 +2374,12 @@ private:
 	bool udp;
 	u_int64_t maxSize;
 	queue<SimpleBuffer*> data;
-	u_int32_t socketHostIPl;
+	vmIP socketHostIP;
 	int socketHandle;
 	pthread_t writeThreadHandle;
 	volatile int _sync_data;
 	volatile uint64_t _size_all;
-	u_long lastTimeSyslogFullData;
+	u_int64_t lastTimeSyslogFullData;
 friend void *_SocketSimpleBufferWrite_writeFunction(void *arg);
 };
 
@@ -2644,9 +2402,6 @@ private:
 	volatile int _sync;
 };
 
-string base64_encode(const unsigned char *data, size_t input_length);
-char *base64_encode(const unsigned char *data, size_t input_length, size_t *output_length);
-void _base64_encode(const unsigned char *data, size_t input_length, char *encoded_data, size_t output_length = 0);
 
 #define LOCALTIME_MINCACHE_LENGTH 6
 #define LOCALTIME_TIMEZONE_LENGTH 10
@@ -2666,7 +2421,7 @@ struct sLocalTimeHourCacheItem {
 		time->tm_min = min15 * 15 + min15sec / 60;
 		time->tm_sec = min15sec % 60;
 		time->tm_isdst = isdst;
-		time->tm_zone = zone;
+		time->tm_zone = (char *)zone;
 	}
 	time_t getTimestamp(struct tm *time) {
 		return(timestamp_ymdhm15 * (15 * 60) +
@@ -2873,26 +2628,39 @@ struct sLocalTimeHourCache {
 	u_int16_t local_timezones_count;
 };
 
-inline void conv_tz(time_t *timestamp, struct tm *time, const char *timezone = NULL) {
-#if defined(__arm__)
-	static map<unsigned int, sLocalTimeHourCache*> timeCacheMap;
-	static volatile int timeCacheMap_sync = 0;
-	unsigned int tid = get_unix_tid();
+inline void conv_tz(time_t *timestamp, struct tm *time, const char *timezone = NULL, bool useGlobalTimeCache = false) {
 	sLocalTimeHourCache *timeCache = NULL;
-	while(__sync_lock_test_and_set(&timeCacheMap_sync, 1));
-	if(!timeCacheMap[tid]) {
-		timeCache = new FILE_LINE(39014) sLocalTimeHourCache();
-		timeCacheMap[tid] = timeCache;
+	static volatile int timeCache_global_sync = 0;
+	static sLocalTimeHourCache *timeCache_global = NULL;
+	if(useGlobalTimeCache) {
+		while(__sync_lock_test_and_set(&timeCache_global_sync, 1));
+		if(!timeCache_global) {
+			timeCache_global = new FILE_LINE(39014) sLocalTimeHourCache();
+		}
+		timeCache = timeCache_global;
 	} else {
-		timeCache = timeCacheMap[tid];
+		#if not defined(__arm__)
+		static __thread sLocalTimeHourCache *timeCache_thread = NULL;
+		if(timeCache_thread) {
+			timeCache = timeCache_thread;
+		} else {
+		#endif
+			extern map<unsigned int, sLocalTimeHourCache*> timeCacheMap;
+			extern volatile int timeCacheMap_sync;
+			unsigned int tid = get_unix_tid();
+			while(__sync_lock_test_and_set(&timeCacheMap_sync, 1));
+			if(!timeCacheMap[tid]) {
+				timeCache = new FILE_LINE(39014) sLocalTimeHourCache();
+				timeCacheMap[tid] = timeCache;
+			} else {
+				timeCache = timeCacheMap[tid];
+			}
+			__sync_lock_release(&timeCacheMap_sync);
+		#if not defined(__arm__)
+			timeCache_thread = timeCache;
+		}
+		#endif
 	}
-	__sync_lock_release(&timeCacheMap_sync);
-#else
-	static __thread sLocalTimeHourCache *timeCache = NULL;
-	if(!timeCache) {
-		timeCache = new FILE_LINE(39014) sLocalTimeHourCache();
-	}
-#endif
 	bool force_gmt = false;
 	bool force_local = false;
 	if(timezone && timezone[0]) {
@@ -2918,10 +2686,19 @@ inline void conv_tz(time_t *timestamp, struct tm *time, const char *timezone = N
 			*timestamp = timeCache->getTimestamp(time, (opt_sql_time_utc || isCloud() || force_gmt) && !force_local, NULL);
 		}
 	}
+	if(useGlobalTimeCache) {
+		__sync_lock_release(&timeCache_global_sync);
+	}
 }
-inline struct tm time_r(time_t *timestamp, const char *timezone = NULL) {
+inline struct tm time_r(u_int64_t timestamp_us, const char *timezone = NULL, bool useGlobalTimeCache = false) {
 	struct tm time;
-	conv_tz(timestamp, &time, timezone);
+	time_t timestamp_s = TIME_US_TO_S(timestamp_us);
+	conv_tz(&timestamp_s, &time, timezone, useGlobalTimeCache);
+	return(time);
+}
+inline struct tm time_r(time_t *timestamp, const char *timezone = NULL, bool useGlobalTimeCache = false) {
+	struct tm time;
+	conv_tz(timestamp, &time, timezone, useGlobalTimeCache);
 	return(time);
 }
 inline string time_r_str(time_t *timestamp, const char *timezone = NULL) {
@@ -2943,8 +2720,11 @@ inline long int mktime(const char *str_time, const char *timezone) {
 	struct tm time;
 	memset(&time, 0, sizeof(struct tm));
 	strptime(str_time, "%Y-%m-%d %H:%M:%S", &time);
+	time.tm_isdst = -1;
 	return(mktime(&time, timezone));
 }
+
+void termTimeCacheForThread();
 
 string getGuiTimezone(class SqlDb *sqlDb = NULL);
 
@@ -3049,22 +2829,6 @@ bool create_waveform_from_raw(const char *rawInput,
 bool create_spectrogram_from_raw(const char *rawInput,
 				 size_t sampleRate, size_t msPerPixel, size_t height, u_int8_t channels,
 				 const char spectrogramOutput[][1024]);
-
-int vm_pthread_create(const char *thread_description,
-		      pthread_t *thread, pthread_attr_t *attr,
-		      void *(*start_routine) (void *), void *arg, 
-		      const char *src_file, int src_file_line,
-		      bool autodestroy = false);
-int vm_pthread_create_autodestroy(const char *thread_description,
-				  pthread_t *thread, pthread_attr_t *attr,
-				  void *(*start_routine) (void *), void *arg, 
-				  const char *src_file, int src_file_line) {
-	return(vm_pthread_create(thread_description,
-				 thread, attr,
-				 start_routine, arg, 
-				 src_file, src_file_line,
-				 true));
-}
 
 string getSystemTimezone(int method = 0);
 
@@ -3656,30 +3420,223 @@ private:
 	sTable table;
 };
 
-class cGzip {
+
+struct sDbString {
+	const char *begin;
+	unsigned offset;
+	unsigned length;
+	bool icase;
+	int flags;
+	const char *str;
+	u_int64_t cb_id;
+	u_int64_t ai_id;
+	void setZeroTerm() {
+		*((char*)begin + offset + length) = 0;
+	}
+	void setNextData() {
+		const char *p = begin + offset;
+		flags = *p - '0';
+		if(*(p + 1) == ':') {
+			str = p + 2;
+		} else {
+			str = NULL;
+		}
+		cb_id = 0;
+		ai_id = 0;
+	}
+	void setStr() {
+		str = begin + offset;
+	}
+	const char *getStr() {
+		return(begin + offset);
+	}
+	friend int operator == (const sDbString &s1, const sDbString &s2) {
+		if(s1.length == s2.length) {
+			if(s1.icase || s2.icase) {
+				return(!strncasecmp(s1.begin + s1.offset, s2.begin + s2.offset, s1.length));
+			} else {
+				return(!strncmp(s1.begin + s1.offset, s2.begin + s2.offset, s1.length));
+			}
+		} else {
+			return(0);
+		}
+	}
+	friend int operator < (const sDbString &s1, const sDbString &s2) {
+		if(!s1.length || !s2.length) {
+			return(s1.length < s2.length);
+		}
+		if(s1.length == s2.length) {
+			int rslt_cmp;
+			if(s1.icase || s2.icase) {
+				rslt_cmp = strncasecmp(s1.begin + s1.offset, s2.begin + s2.offset, s1.length);
+			} else {
+				rslt_cmp = strncmp(s1.begin + s1.offset, s2.begin + s2.offset, s1.length);
+			}
+			return(rslt_cmp < 0);
+		} else {
+			int rslt_cmp;
+			if(s1.icase || s2.icase) {
+				rslt_cmp = strncasecmp(s1.begin + s1.offset, s2.begin + s2.offset, min(s1.length, s2.length));
+			} else {
+				rslt_cmp = strncmp(s1.begin + s1.offset, s2.begin + s2.offset, min(s1.length, s2.length));
+			}
+			if(rslt_cmp == 0) {
+				return(s1.length < s2.length);
+			} else {
+				return(rslt_cmp < 0);
+			}
+		}
+	}
+	void substCB(class cSqlDbData *dbData, list<string> *cb_inserts);
+	void substAI(class cSqlDbData *dbData, u_int64_t *ai_id, const char *table_name);
+};
+
+class cDbStrings {
 public:
-	enum eOperation {
-		_na,
-		_compress,
-		_decompress
+	cDbStrings(unsigned capacity = 0, unsigned capacity_inc = 0);
+	~cDbStrings();
+	void add(const char *begin, unsigned offset, unsigned length);
+	void explodeCsv(const char *csv);
+	void setZeroTerm();
+	void setNextData();
+	void createMap(bool icase);
+	int findIndex(const char *str, unsigned str_length = 0) {
+		if(!strings_map) {
+			return(-2);
+		}
+		sDbString _str;
+		_str.begin = str;
+		_str.offset = 0;
+		_str.length = str_length ? str_length : strlen(str);
+		_str.icase = icase_map;
+		map<sDbString, unsigned>::iterator iter = strings_map->find(_str);
+		if(iter != strings_map->end()) {
+			return(iter->second);
+		}
+		return(-1);
+	}
+	int findIndex(string &str) {
+		return(findIndex(str.c_str(), str.length()));
+	}
+	void substCB(class cSqlDbData *dbData, list<string> *cb_inserts);
+	void substAI(class cSqlDbData *dbData, u_int64_t *ai_id, const char *table_name);
+	string implodeInsertColumns();
+	string implodeInsertValues(const char *table, cDbStrings *header, SqlDb *sqlDb);
+	void print();
+	sDbString *strings;
+	map<sDbString, unsigned> *strings_map;
+	unsigned size;
+	unsigned capacity;
+	unsigned capacity_inc;
+	bool zero_term_set;
+	bool icase_map;
+};
+
+class cDbTableContent {
+public:
+	struct sHeader {
+		sHeader() {
+			items = NULL;
+			content = NULL;
+		}
+		void destroy() {
+			if(items) delete items;
+			if(content) delete content;
+		}
+		cDbStrings *items;
+		const char *content;
+	};
+	struct sRow {
+		sRow() {
+			items = NULL;
+			content = NULL;
+		}
+		void destroy() {
+			if(items) delete items;
+			if(content) delete content;
+		}
+		cDbStrings *items;
+		const char *content;
 	};
 public:
-	cGzip();
-	~cGzip();
+	cDbTableContent(const char *table_name);
+	~cDbTableContent();
+	void addHeader(const char *source);
+	void addRow(const char *source);
+	void substCB(class cSqlDbData *dbData, list<string> *cb_inserts);
+	void substAI(class cSqlDbData *dbData, u_int64_t *ai_id);
+	string insertQuery(SqlDb *sqlDb);
 public:
-	bool compress(u_char *buffer, size_t bufferLength, u_char **cbuffer, size_t *cbufferLength);
-	bool compressString(string &str, u_char **cbuffer, size_t *cbufferLength);
-	bool decompress(u_char *buffer, size_t bufferLength, u_char **dbuffer, size_t *dbufferLength);
-	string decompressString(u_char *buffer, size_t bufferLength);
-	bool isCompress(u_char *buffer, size_t bufferLength);
-private:
-	void initCompress();
-	void initDecompress();
-	void term();
-private:
-	eOperation operation;
-	z_stream *zipStream;
-	SimpleBuffer *destBuffer;
+	sHeader header;
+	vector<sRow> rows;
+	string table_name;
+};
+
+class cDbTablesContent {
+public:
+	cDbTablesContent();
+	~cDbTablesContent();
+	void addCsvRow(const char *source);
+	void substCB(class cSqlDbData *dbData, list<string> *cb_inserts);
+	void substAI(class cSqlDbData *dbData, u_int64_t *ai_id);
+	string getMainTable();
+	void insertQuery(list<string> *dst, SqlDb *sqlDb);
+	sDbString *findColumn(const char *table, const char *column, unsigned rowIndex, int *columnIndex);
+	sDbString *findColumn(unsigned table_enum, const char *column, unsigned rowIndex, int *columnIndex);
+	int getCountRows(const char *table);
+	int getCountRows(unsigned table_enum);
+	const char *getValue_str(unsigned table_enum, const char *column, bool *null = NULL, unsigned rowIndex = 0, int *columnIndex = NULL);
+	const char *getValue_string(unsigned table_enum, const char *column, bool *null = NULL, unsigned rowIndex = 0) {
+		const char *str = getValue_str(table_enum, column, null, rowIndex);
+		if(str) {
+			return(str);
+		}
+		return("");
+	}
+	long long getValue_int(unsigned table_enum, const char *column, bool onlyNotZero = false, bool *null = NULL, unsigned rowIndex = 0, int *columnIndex = NULL) {
+		const char *str = getValue_str(table_enum, column, null, rowIndex, columnIndex);
+		if(str) {
+			long long rslt = atoll(str);
+			if(onlyNotZero && !rslt && null) {
+				*null = true;
+			}
+			return(rslt);
+		}
+		if(onlyNotZero && null) {
+			*null = true;
+		}
+		return(0);
+	}
+	double getValue_float(unsigned table_enum, const char *column, bool onlyNotZero = false, bool *null = NULL, unsigned rowIndex = 0) {
+		const char *str = getValue_str(table_enum, column, null, rowIndex);
+		if(str) {
+			double rslt = atof(str);
+			if(onlyNotZero && !rslt && null) {
+				*null = true;
+			}
+			return(rslt);
+		}
+		if(onlyNotZero && null) {
+			*null = true;
+		}
+		return(0);
+	}
+	double getMinMaxValue(unsigned table_enum, const char *columns[], bool min, bool onlyNotZero, bool *null = NULL);
+	vmIP getValue_ip(unsigned table_enum, const char *column, bool *null = NULL, unsigned rowIndex = 0) {
+		const char *str = getValue_str(table_enum, column, null, rowIndex);
+		if(str) {
+			vmIP ip;
+			ip.setFromString(str);
+			return(ip);
+		}
+		return(0);
+	}
+	void removeColumn(unsigned table_enum, const char *column);
+	void removeColumn(unsigned table_enum, unsigned columnIndex);
+public:
+	vector<cDbTableContent*> tables;
+	map<string, cDbTableContent*> tables_map;
+	map<unsigned, cDbTableContent*> tables_enum_map;
 };
 
 
@@ -3706,6 +3663,7 @@ inline void hexdump(const char *data, unsigned size) {
 }
 
 unsigned file_get_rows(const char *filename, vector<string> *rows);
+unsigned file_get_rows(string, vector<string> *rows);
 
 vector<string> findCoredumps(int pid);
 
@@ -3747,78 +3705,839 @@ private:
 };
 
 
-class cResolver {
+#define EF_VECTOR_VALUES(ptr) ((vector<cEvalFormula::sValue>*)ptr)
+
+class cEvalFormula {
 public:
-	enum eTypeResolve {
-		_typeResolve_default,
-		_typeResolve_std,
-		_typeResolve_system_host
+	enum eEvalSpecType {
+		_est_na,
+		_est_sql
 	};
-private:
-	struct sIP_time {
-		u_int32_t ipl;
-		time_t at;
-		unsigned timeout;
+	enum eEvalSqlTypeData {
+		_estd_na,
+		_estd_call
+	};
+	enum eValueType {
+		_v_na      = 0x00,
+		_v_int     = 0x01,
+		_v_float   = 0x02,
+		_v_dynamic = 0x10,
+		_v_string  = 0x11,
+		_v_ip      = 0x12,
+		_v_list    = 0x13
+	};
+	struct sValueStr {
+		sValueStr() {
+			this->str = NULL;
+			this->pos = 0;
+			this->length = 0;
+		}
+		sValueStr(const char *str, unsigned pos, unsigned length) {
+			this->str = str;
+			this->pos = pos;
+			this->length = length;
+		}
+		const char *str_pos() {
+			return(str ? str + pos : NULL);
+		}
+		bool isEmpty() {
+			return(!str);
+		}
+		string getString() {
+			if(isEmpty()) {
+				return("");
+			} else {
+				return(string(str_pos(), length));
+			}
+		}
+		const char *str;
+		unsigned pos;
+		unsigned length;
+	};
+	struct sValue_data {
+		eValueType v_type : 8;
+		bool v_null : 1;
+		bool v_id : 1;
+		bool v_dyn : 1;
+		unsigned int v_str_wildcard : 2;
+		union {
+			int64_t _int;
+			double _float;
+			string *_string;
+			vmIP *_ip;
+			void *_list;
+			void *__pt;
+		} v;
+	};
+	struct sValue : public sValue_data {
+		inline sValue() {
+			null();
+		}
+		inline ~sValue() {
+			if(v_dyn) {
+				free_dynamic_items();
+			}
+		}
+		inline sValue(int v) {
+			null();
+			v_type = _v_int;
+			this->v._int = v;
+		}
+		inline sValue(unsigned int v) {
+			null();
+			v_type = _v_int;
+			this->v._int = v;
+		}
+		inline sValue(int64_t v) {
+			null();
+			v_type = _v_int;
+			this->v._int = v;
+		}
+		inline sValue(double v) {
+			null();
+			v_type = _v_float;
+			this->v._float = v;
+		}
+		inline sValue(string v) {
+			null();
+			v_type = _v_string;
+			this->v._string = new FILE_LINE(0) string(v);
+			this->v_dyn = true;
+		}
+		inline sValue(vmIP v) {
+			null();
+			v_type = _v_ip;
+			this->v._ip = new FILE_LINE(0) vmIP(v);
+			this->v_dyn = true;
+		}
+		inline sValue(const sValue &from) {
+			copy(&from);
+			if(from.v_dyn) {
+				clone_dynamic_items(&from);
+			}
+		}
+		inline sValue& operator = (const sValue& from) {
+			if(v_dyn) {
+				free_dynamic_items();
+			}
+			copy(&from);
+			if(from.v_dyn) {
+				clone_dynamic_items(&from);
+			}
+			return(*this);
+		}
+		inline void null() {
+			memset(this, 0, sizeof(*this));
+		}
+		inline void copy(const sValue *from) {
+			*(sValue_data*)this = *(sValue_data*)from;
+		}
+		inline void free_dynamic_items() {
+			switch(v_type) {
+			case _v_string:
+				delete v._string;
+				break;
+			case _v_ip:
+				delete v._ip;
+				break;
+			case _v_list:
+				delete EF_VECTOR_VALUES(v._list);
+				break;
+			default:
+				break;
+			}
+		}
+		inline void clone_dynamic_items(const sValue *from) {
+			switch(from->v_type) {
+			case _v_string:
+				v._string = new FILE_LINE(0) string(*from->v._string);
+				break;
+			case _v_ip:
+				v._ip = new FILE_LINE(0) vmIP(*from->v._ip);
+				break;
+			case _v_list:
+				v._list = new FILE_LINE(0) vector<sValue>;
+				*(EF_VECTOR_VALUES(v._list)) = *(EF_VECTOR_VALUES(from->v._list));
+				break;
+			default:
+				break;
+			}
+		}
+		inline void moveFrom(sValue *from) {
+			copy(from);
+			from->null();
+		}
+		void setFromField(void *field);
+		void setFromDbString(sDbString *dbString);
+		inline bool isEmpty() {
+			return(v_type == _v_na);
+		}
+		inline bool getBool() {
+			return(v_type == _v_int ? v._int != 0 :
+			       v_type == _v_float ? v._float != 0 :
+			       v_type == _v_string && v._string ? !v._string->empty() : 
+			       v_type == _v_ip && v._ip ? v._ip->isSet() : 
+			       false);
+		}
+		inline int64_t getInteger() {
+			return(v_type == _v_int ? v._int :
+			       v_type == _v_float ? (int64_t)v._float :
+			       v_type == _v_string && v._string ? atoll(v._string->c_str()) : 
+			       0);
+		}
+		inline double getFloat() {
+			return(v_type == _v_int ? (double)v._int :
+			       v_type == _v_float ? v._float :
+			       v_type == _v_string && v._string ? atof(v._string->c_str()) : 
+			       0);
+		}
+		inline string getString() {
+			return(v_type == _v_int ? intToString((long long)v._int) :
+			       v_type == _v_float ? floatToString(v._float) :
+			       v_type == _v_string && v._string ? *v._string : 
+			       v_type == _v_ip && v._ip ? v._ip->getString() : 
+			       "");
+		}
+		inline vmIP getIP() {
+			return(v_type == _v_int ? ipv4_2_vmIP(v._int) :
+			       v_type == _v_string && v._string ? str_2_vmIP(v._string->c_str()) : 
+			       v_type == _v_ip && v._ip ? *v._ip : 
+			       vmIP());
+		}
+		sValue arithm(sValue &v2, string oper);
+		inline sValue like(sValue &pattern_v);
+		inline friend sValue operator << (sValue &v1, sValue &v2) {
+			return(sValue(v1.getInteger() << v2.getInteger()));
+		}
+		inline friend sValue operator >> (sValue &v1, sValue &v2) {
+			return(sValue(v1.getInteger() >> v2.getInteger()));
+		}
+		inline friend sValue operator & (sValue &v1, sValue &v2) {
+			return(sValue(v1.getInteger() & v2.getInteger()));
+		}
+		inline friend sValue operator | (sValue &v1, sValue &v2) {
+			return(sValue(v1.getInteger() | v2.getInteger()));
+		}
+		inline friend sValue operator ! (sValue &v) {
+			sValue rslt;
+			if(v.v_type != _v_na) {
+				rslt.v_type = _v_int;
+				rslt.v._int = !v.getBool();
+				rslt.v_null = !v.v_null;
+			}
+			return(rslt);
+		}
+		inline friend sValue operator * (sValue &v1, sValue &v2) {
+			return(v1.arithm(v2, "*"));
+		}
+		inline friend sValue operator / (sValue &v1, sValue &v2) {
+			return(v1.arithm(v2, "/"));
+		}
+		inline friend sValue operator + (sValue &v1, sValue &v2) {
+			return(v1.arithm(v2, "+"));
+		}
+		inline friend sValue operator - (sValue &v1, sValue &v2) {
+			return(v1.arithm(v2, "-"));
+		}
+		inline friend sValue operator < (sValue &v1, sValue &v2) {
+			if(v1.v_null || v2.v_null) {
+				return(sValue(0));
+			}
+			return(v1.v_type == _v_ip || v2.v_type == _v_ip ? sValue(v1.getIP() < v2.getIP() ? 1 : 0) :
+			       v1.v_type == _v_float || v2.v_type == _v_float ? sValue(v1.getFloat() < v2.getFloat() ? 1 : 0) :
+			       v1.v_type == _v_int || v2.v_type == _v_int ? sValue(v1.getInteger() < v2.getInteger() ? 1 : 0) :
+			       v1.v_type == _v_string || v2.v_type == _v_string ? sValue(v1.getString() < v2.getString() ? 1 : 0) :
+			       v1.v_type != _v_na && v2.v_type != _v_na ? sValue(v1.getInteger() < v2.getInteger() ? 1 : 0) :
+				sValue());
+		}
+		inline friend sValue operator <= (sValue &v1, sValue &v2) {
+			if(v1.v_null || v2.v_null) {
+				return(sValue(0));
+			}
+			return(v1.v_type == _v_ip || v2.v_type == _v_ip ? sValue(v1.getIP() <= v2.getIP() ? 1 : 0) :
+			       v1.v_type == _v_float || v2.v_type == _v_float ? sValue(v1.getFloat() <= v2.getFloat() ? 1 : 0) :
+			       v1.v_type == _v_int || v2.v_type == _v_int ? sValue(v1.getInteger() <= v2.getInteger() ? 1 : 0) :
+			       v1.v_type == _v_string || v2.v_type == _v_string ? sValue(v1.getString() <= v2.getString() ? 1 : 0) :
+			       v1.v_type != _v_na && v2.v_type != _v_na ? sValue(v1.getInteger() <= v2.getInteger() ? 1 : 0) :
+				sValue());
+		}
+		inline friend sValue operator > (sValue &v1, sValue &v2) {
+			if(v1.v_null || v2.v_null) {
+				return(sValue(0));
+			}
+			return(v1.v_type == _v_ip || v2.v_type == _v_ip ? sValue(v1.getIP() > v2.getIP() ? 1 : 0) :
+			       v1.v_type == _v_float || v2.v_type == _v_float ? sValue(v1.getFloat() > v2.getFloat() ? 1 : 0) :
+			       v1.v_type == _v_int || v2.v_type == _v_int ? sValue(v1.getInteger() > v2.getInteger() ? 1 : 0) :
+			       v1.v_type == _v_string || v2.v_type == _v_string ? sValue(v1.getString() > v2.getString() ? 1 : 0) :
+			       v1.v_type != _v_na && v2.v_type != _v_na ? sValue(v1.getInteger() > v2.getInteger() ? 1 : 0) :
+				sValue());
+		}
+		inline friend sValue operator >= (sValue &v1, sValue &v2) {
+			if(v1.v_null || v2.v_null) {
+				return(sValue(0));
+			}
+			return(v1.v_type == _v_ip || v2.v_type == _v_ip ? sValue(v1.getIP() >= v2.getIP() ? 1 : 0) :
+			       v1.v_type == _v_float || v2.v_type == _v_float ? sValue(v1.getFloat() >= v2.getFloat() ? 1 : 0) :
+			       v1.v_type == _v_int || v2.v_type == _v_int ? sValue(v1.getInteger() >= v2.getInteger() ? 1 : 0) :
+			       v1.v_type == _v_string || v2.v_type == _v_string ? sValue(v1.getString() >= v2.getString() ? 1 : 0) :
+			       v1.v_type != _v_na && v2.v_type != _v_na ?sValue(v1.getInteger() >= v2.getInteger() ? 1 : 0) :
+				sValue());
+		}
+		inline friend sValue operator == (sValue &v1, sValue &v2) {
+			if(v1.v_null || v2.v_null) {
+				return(sValue(0));
+			}
+			return(v1.v_type == _v_ip && v2.v_type == _v_ip ? sValue(*v1.v._ip == *v2.v._ip ? 1 : 0) :
+			       v1.v_type == _v_ip || v2.v_type == _v_ip ? sValue(v1.getIP() == v2.getIP() ? 1 : 0) :
+			       v1.v_type == _v_float || v2.v_type == _v_float ? sValue(v1.getFloat() == v2.getFloat() ? 1 : 0) :
+			       v1.v_type == _v_int || v2.v_type == _v_int ? sValue(v1.getInteger() == v2.getInteger() ? 1 : 0) :
+			       v1.v_type == _v_string || v2.v_type == _v_string ? sValue(v1.getString() == v2.getString() ? 1 : 0) :
+			       v1.v_type != _v_na && v2.v_type != _v_na ? sValue(v1.getInteger() == v2.getInteger() ? 1 : 0) :
+				sValue());
+		}
+		inline friend sValue operator != (sValue &v1, sValue &v2) {
+			if(v1.v_null || v2.v_null) {
+				return(sValue(0));
+			}
+			return(v1.v_type == _v_ip || v2.v_type == _v_ip ? sValue(v1.getIP() != v2.getIP() ? 1 : 0) :
+			       v1.v_type == _v_float || v2.v_type == _v_float ? sValue(v1.getFloat() != v2.getFloat() ? 1 : 0) :
+			       v1.v_type == _v_int || v2.v_type == _v_int ? sValue(v1.getInteger() != v2.getInteger() ? 1 : 0) :
+			       v1.v_type == _v_string || v2.v_type == _v_string ? sValue(v1.getString() != v2.getString() ? 1 : 0) :
+			       v1.v_type != _v_na && v2.v_type != _v_na ? sValue(v1.getInteger() != v2.getInteger() ? 1 : 0) :
+				sValue());
+		}
+		inline friend sValue operator && (sValue &v1, sValue &v2) {
+			return(v1.v_type != _v_na && v2.v_type != _v_na ?
+				sValue(v1.getInteger() && v2.getInteger() ? 1 : 0) :
+				sValue());
+		}
+		inline friend sValue operator || (sValue &v1, sValue &v2) {
+			return(v1.v_type != _v_na && v2.v_type != _v_na ?
+				sValue(v1.getInteger() || v2.getInteger() ? 1 : 0) :
+				sValue());
+		}
+	};
+	enum eOperator {
+		_o_na,
+		_o_shift_l,
+		_o_shift_r,
+		_o_b_and,
+		_o_b_or,
+		_o_mult,
+		_o_div,
+		_o_add,
+		_o_sub,
+		_o_cmp_lt,
+		_o_cmp_le,
+		_o_cmp_gt,
+		_o_cmp_ge,
+		_o_cmp_eq,
+		_o_cmp_neq,
+		_o_like,
+		_o_not_like,
+		_o_and,
+		_o_or,
+		_o_not,
+		_o_sql_div,
+		_o_sql_is,
+		_o_sql_is_not,
+		_o_sql_eq,
+		_o_sql_in,
+		_o_sql_not_in,
+		_o_sql_comma,
+		_o_sql_inet_aton,
+		_o_sql_inet6_aton,
+		_o_sql_coalesce,
+		_o_sql_greatest,
+		_o_sql_least,
+		_o_sql_if
+	};
+	struct sOperator {
+		enum eFlags {
+			_need_end = 1,
+			_short_eval_and = 2,
+			_short_eval_or = 4
+		};
+		unsigned level;
+		const char *oper;
+		eOperator e_oper;
+		int flags;
+		unsigned length;
+	};
+	struct sOperandReplaceData {
+		sOperandReplaceData() {
+			u.i = 0;
+		}
+		union {
+			u_int32_t i;
+			struct {
+				u_int8_t table;
+				u_int8_t column;
+				u_int8_t child_table;
+				u_int8_t child_index;
+			} s;
+		} u;
+	};
+	struct sSplitOperands {
+		enum eSubType {
+			_st_field,
+			_st_subselect
+		};
+		enum eColumnType {
+			_ct_na,
+			_ct_id,
+			_ct_count,
+			_ct_max,
+			_ct_min
+		};
+		sSplitOperands(int type) {
+			this->type = type;
+			operands_count = 0;
+			operands = NULL;
+			u_operators = NULL;
+			b_operators = NULL;
+			cond_s = NULL;
+		}
+		~sSplitOperands() {
+			clearOperands();
+			if(cond_s) {
+				delete cond_s;
+			}
+		}
+		inline sValue e_opt(cEvalFormula *f, unsigned level, bool *existsSpecType, bool *opt);
+		inline sValue e(cEvalFormula *f, unsigned level = 0);
+		void addOperand(sSplitOperands *operand);
+		void clearOperands();
+		int type;
+		sValue value;
+		sSplitOperands** operands;
+		unsigned operands_count;
+		eOperator *u_operators;
+		eOperator *b_operators;
+		eSubType subType;
+		eColumnType columnType;
+		string table;
+		string column;
+		string cond;
+		cEvalFormula::sSplitOperands *cond_s;
+		cEvalFormula::sOperandReplaceData ord;
 	};
 public:
-	cResolver();
-	u_int32_t resolve(const char *host, unsigned timeout = 0, eTypeResolve typeResolve = _typeResolve_default);
-	u_int32_t resolve(string &host, unsigned timeout = 0, eTypeResolve typeResolve = _typeResolve_default) {
-		return(resolve(host.c_str(), timeout, typeResolve));
+	cEvalFormula(eEvalSpecType evalSpecType, bool debug = false) {
+		this->debug = debug;
+		this->evalSpecType = evalSpecType;
+		sql_data = NULL;
+		sql_data2 = NULL;
+		sql_child_table = NULL;
+		sql_child_index = 0;
 	}
-	static u_int32_t resolve_n(const char *host, unsigned timeout = 0, eTypeResolve typeResolve = _typeResolve_default);
-	static u_int32_t resolve_n(string &host, unsigned timeout = 0, eTypeResolve typeResolve = _typeResolve_default) {
-		return(resolve_n(host.c_str(), timeout, typeResolve));
+	sValue e(const char *formula, unsigned pos = 0, unsigned length = 0, unsigned level = 0, sSplitOperands *splitOperands = NULL,
+		 int operator_level_lt = -1, int *pos_return = NULL);
+	bool e_opt(sSplitOperands *splitOperands);
+	sValue e(sSplitOperands *splitOperands);
+	inline sValue e_u_operator(sValue &operand, eOperator oper);
+	inline sValue e_u_operator(sValue &operand, sOperator *oper);
+	inline sValue e_b_operator(sValue &operand1, sValue &operand2, eOperator oper);
+	inline sValue e_b_operator(sValue &operand1, sValue &operand2, sOperator *oper);
+	inline sValue getOperand(const char *formula, unsigned pos, unsigned pos_max, unsigned *pos_end, sOperator **u_operator, sSplitOperands **splitOperands);
+	inline sValueStr getBracketsBlock(const char *formula, unsigned pos, unsigned pos_max, unsigned *pos_end, sOperator **oper);
+	inline sOperator *getU_Operator(const char *formula, unsigned pos, unsigned pos_max, unsigned *pos_end);
+	inline sOperator *getB_Operator(const char *formula, unsigned pos, unsigned pos_max, unsigned *pos_end);
+	inline bool isOperator_u(const char *try_operator, sOperator **oper);
+	inline bool isOperator_b(const char *try_operator, sOperator **oper);
+	inline void _isOperator(sOperator *table, const char *try_operator, sOperator **oper);
+	inline bool specEvalBB(sValueStr *bb, sValue *bb_rslt, unsigned level, sSplitOperands **splitOperands);
+	inline bool isSpace(char ch) {
+		return(ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n');
 	}
-	static string resolve_str(const char *host, unsigned timeout = 0, eTypeResolve typeResolve = _typeResolve_default);
-	static string resolve_str(string &host, unsigned timeout = 0, eTypeResolve typeResolve = _typeResolve_default) {
-		return(resolve_str(host.c_str(), timeout, typeResolve));
+	inline bool isAlpha(char ch) {
+		return((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z'));
 	}
-private:
-	u_int32_t resolve_std(const char *host);
-	u_int32_t resolve_by_system_host(const char *host);
-private:
-	void lock() {
-		while(__sync_lock_test_and_set(&_sync_lock, 1)) {
-			usleep(100);
+	inline bool isDigit(char ch) {
+		return((ch >= '0' && ch <= '9') || ch == '.');
+	}
+	inline bool isLeftBracket(char ch) {
+		return(ch == '(');
+	}
+	inline bool isRightBracket(char ch) {
+		return(ch == ')');
+	}
+	inline bool isBrackets(char ch) {
+		return(isLeftBracket(ch) || isRightBracket(ch));
+	}
+	inline bool isEndOperator(char ch) {
+		return(!ch ||
+		       isSpace(ch) ||
+		       isBrackets(ch));
+	}
+	inline bool enableSqlOperandReplace() {
+		return(evalSpecType == _est_sql);
+	}
+	inline bool isOperandChar(char ch, unsigned pos) {
+		if(evalSpecType == _est_sql) {
+			return((pos > 0 &&
+				(isDigit(ch) || ch == '-' || ch == '.')) ||
+			       (isAlpha(ch) || ch == '_' || ch == '`'));
+		}
+		return(false);
+	}
+	inline void debug_output(unsigned level, string debug_str) {
+		if(debug) {
+			for(unsigned i = 0; i < level * 3; i++) {
+				cout << ' ';
+			}
+			cout << debug_str << endl;
 		}
 	}
-	void unlock() {
-		__sync_lock_release(&_sync_lock);
+	void setSqlData(eEvalSqlTypeData sql_data_type, void *sql_data, void *sql_data2) {
+		this->sql_data_type = sql_data_type;
+		this->sql_data = sql_data;
+		this->sql_data2 = sql_data2;
 	}
-private:
-	bool use_lock;
-	bool res_timeout;
-	map<string, sIP_time> res_table;
-	volatile int _sync_lock;
+	void setSqlChildIndex(string *sql_child_table, unsigned sql_child_index) {
+		this->sql_child_table = sql_child_table;
+		this->sql_child_index = sql_child_index;
+	}
+	void clearSqlChildIndex() {
+		this->sql_child_table = NULL;
+		this->sql_child_index = 0;
+	}
+	inline bool sqlOperandReplace(sValue *value, string operand, sSplitOperands **splitOperands);
+	inline bool evalSqlSubselect(string *table, string *column, string *cond, sSplitOperands::eColumnType column_type, sValue *rslt, unsigned level,
+				     cEvalFormula::sSplitOperands **cond_s);
+public:
+	static sOperator b_operators[];
+	static sOperator u_operators[];
+	static sOperator b_operators_sql[];
+	static sOperator u_operators_sql[];
+	eEvalSpecType evalSpecType;
+	bool debug;
+	eEvalSqlTypeData sql_data_type;
+	void *sql_data;
+	void *sql_data2;
+	string *sql_child_table;
+	unsigned sql_child_index;
 };
 
 
-class cUtfConverter {
+unsigned RTPSENSOR_VERSION_INT();
+
+void rss_purge(bool force = false);
+
+void parse_cmd_str(const char *cmd_str, vector<string> *args);
+
+string tmpnam();
+bool file_get_contents(const char *filename, SimpleBuffer *content, string *error);
+bool file_put_contents(const char *filename, SimpleBuffer *content, string *error);
+
+
+#if 0 // podpora pro různé délky v node struktuře
+
+template <class NODE_DATA>
+class cNodeData {
 public:
-	cUtfConverter();
-	~cUtfConverter();
-	bool check(const char *str);
-	string reverse(const char *str);
-	bool is_ascii(const char *str);
-	string remove_no_ascii(const char *str, const char subst = '_');
-	void _remove_no_ascii(const char *str, const char subst = '_');
-private:
-	bool init();
-	void term();
-	void lock() {
-		while(__sync_lock_test_and_set(&_sync_lock, 1)) {
-			usleep(100);
+	class cNodeItem {
+	public:
+		cNodeItem(cNodeItem *parent = NULL) {
+			this->parent = parent;
+			type = 0;
+			use_counter = 0;
+		}
+		~cNodeItem();
+	public:
+		cNodeItem *parent;
+		u_int8_t type;
+		volatile u_int32_t use_counter;
+	};
+	class cNodeItem_nodes_1 : public cNodeItem {
+	public:
+		cNodeItem_nodes_1(cNodeItem *parent = NULL) {
+			this->parent = parent;
+			this->type = 1;
+			memset(nodes, 0, sizeof(nodes));
+		}
+		void destruct() {
+			for(unsigned i = 0; i < sizeof(nodes) / sizeof(nodes[0]); i++) {
+				if(nodes[i]) {
+					delete nodes[i];
+				}
+			}
+		}
+	public:
+		cNodeItem *nodes[256];
+	};
+	class cNodeItem_nodes_2 : public cNodeItem {
+	public:
+		cNodeItem_nodes_2(cNodeItem *parent = NULL) {
+			this->parent = parent;
+			this->type = 2;
+			memset(nodes, 0, sizeof(nodes));
+		}
+		void destruct() {
+			for(unsigned i = 0; i < sizeof(nodes) / sizeof(nodes[0]); i++) {
+				if(nodes[i]) {
+					delete nodes[i];
+				}
+			}
+		}
+	public:
+		cNodeItem *nodes[65536];
+	};
+	class cNodeItem_data : public cNodeItem {
+	public:
+		cNodeItem_data(cNodeItem *parent = NULL) {
+			this->parent = parent;
+			this->type = 3;
+		}
+	public:
+		NODE_DATA node_data;
+	};
+public:
+	cNodeData() {
+		first = NULL;
+	}
+	~cNodeData() {
+		if(first) {
+			delete first;
 		}
 	}
-	void unlock() {
-		__sync_lock_release(&_sync_lock);
+	NODE_DATA *add(u_char *bytes, u_int8_t bytes_length, u_int8_t type, 
+		       u_char *bytes_2 = NULL, u_int8_t bytes_2_length = 0, u_int8_t type_2 = 0, 
+		       cNodeItem **endNode = NULL) {
+		cNodeItem **node = &first;
+		cNodeItem *prev = NULL;
+		for(u_int8_t pass = 0; pass < (type_2 ? 2 : 1); pass++) {
+			if(pass) {
+				bytes = bytes_2;
+				bytes_length = bytes_2_length;
+				type = type_2;
+			}
+			for(u_int8_t i = 0; i < bytes_length; i += type) {
+				if(!*node) {
+					if(prev) {
+						++prev->use_counter;
+					}
+					inc_counter_user_packets(pass == 0 ? 0 : 1);
+					*node = type == 1 ?
+						 (cNodeItem*)new FILE_LINE(0) cNodeItem_nodes_1(prev) :
+						 (cNodeItem*)new FILE_LINE(0) cNodeItem_nodes_2(prev);
+				}
+				prev = *node;
+				node = type == 1 ?
+					&(((cNodeItem_nodes_1*)*node)->nodes[bytes[i]]) :
+					&(((cNodeItem_nodes_2*)*node)->nodes[*(u_int16_t*)(bytes + i)]);
+			}
+		}
+		if(!*node) {
+			++prev->use_counter;
+			inc_counter_user_packets(2);
+			*node = (cNodeItem*)new FILE_LINE(0) cNodeItem_data(prev);
+		}
+		if(endNode) {
+			*endNode = *node;
+		}
+		return(&(((cNodeItem_data*)*node)->node_data));
+	}
+	NODE_DATA *find(u_char *bytes, u_int8_t bytes_length, u_int8_t type, 
+			u_char *bytes_2 = NULL, u_int8_t bytes_2_length = 0, u_int8_t type_2 = 0, 
+			cNodeItem **endNode = NULL) {
+		cNodeItem **node = &first;
+		for(u_int8_t pass = 0; pass < (type_2 ? 2 : 1); pass++) {
+			if(pass) {
+				bytes = bytes_2;
+				bytes_length = bytes_2_length;
+				type = type_2;
+			}
+			for(u_int8_t i = 0; i < bytes_length; i += type) {
+				if(!*node) {
+					return(NULL);
+				}
+				node = type == 1 ?
+					&(((cNodeItem_nodes_1*)*node)->nodes[bytes[i]]) :
+					&(((cNodeItem_nodes_2*)*node)->nodes[*(u_int16_t*)(bytes + i)]);
+			}
+		}
+		if(!*node) {
+			return(NULL);
+		}
+		if(endNode) {
+			*endNode = *node;
+		}
+		return(&(((cNodeItem_data*)*node)->node_data));
 	}
 private:
-	UConverter *cnv_utf8;
-	bool init_ok;
-	volatile int _sync_lock;
+	cNodeItem *first;
 };
+
+template <class NODE_DATA>
+inline cNodeData<NODE_DATA>::cNodeItem::~cNodeItem() {
+	if(type == 1) {
+		((cNodeItem_nodes_1*)this)->destruct();
+	} else if(type == 2) {
+		((cNodeItem_nodes_2*)this)->destruct();
+	}
+}
+
+#endif
+
+template <class NODE_DATA>
+class cNodeData {
+public:
+	class cNodeItem {
+	public:
+		cNodeItem(cNodeItem *parent = NULL) {
+			this->parent = parent;
+			type = 0;
+			use_counter = 0;
+		}
+		~cNodeItem();
+	public:
+		cNodeItem *parent;
+		u_int8_t type;
+		volatile u_int32_t use_counter;
+	};
+	class cNodeItem_nodes : public cNodeItem {
+	public:
+		cNodeItem_nodes(cNodeItem *parent = NULL) {
+			this->parent = parent;
+			this->type = 1;
+			memset(nodes, 0, sizeof(nodes));
+		}
+		void destruct() {
+			for(unsigned i = 0; i < sizeof(nodes) / sizeof(nodes[0]); i++) {
+				if(nodes[i]) {
+					delete nodes[i];
+				}
+			}
+		}
+	public:
+		cNodeItem *nodes[256];
+	};
+	class cNodeItem_data : public cNodeItem {
+	public:
+		cNodeItem_data(cNodeItem *parent = NULL) {
+			this->parent = parent;
+			this->type = 3;
+		}
+	public:
+		NODE_DATA node_data;
+	};
+public:
+	cNodeData() {
+		first = NULL;
+	}
+	~cNodeData() {
+		if(first) {
+			delete first;
+		}
+	}
+	NODE_DATA *add(u_char *bytes, u_int8_t bytes_length,
+		       u_char *bytes_2 = NULL, u_int8_t bytes_2_length = 0/*,
+		       cNodeItem **endNode = NULL*/) {
+		cNodeItem **node = &first;
+		cNodeItem *prev = NULL;
+		for(u_int8_t i = 0; i < bytes_length; ++i) {
+			if(!*node) {
+				if(prev) {
+					++prev->use_counter;
+				}
+				//inc_counter_user_packets(0);
+				*node = (cNodeItem*)new FILE_LINE(0) cNodeItem_nodes(prev);
+			}
+			prev = *node;
+			node = &(((cNodeItem_nodes*)*node)->nodes[bytes[i]]);
+		}
+		for(u_int8_t i = 0; i < bytes_2_length; ++i) {
+			if(!*node) {
+				if(prev) {
+					++prev->use_counter;
+				}
+				//inc_counter_user_packets(1);
+				*node = (cNodeItem*)new FILE_LINE(0) cNodeItem_nodes(prev);
+			}
+			prev = *node;
+			node = &(((cNodeItem_nodes*)*node)->nodes[bytes_2[i]]);
+		}
+		if(!*node) {
+			++prev->use_counter;
+			//inc_counter_user_packets(2);
+			*node = (cNodeItem*)new FILE_LINE(0) cNodeItem_data(prev);
+		}
+		/*
+		if(endNode) {
+			*endNode = *node;
+		}
+		*/
+		return(&(((cNodeItem_data*)*node)->node_data));
+	}
+	void **_add(u_char *bytes, u_int8_t bytes_length) {
+		cNodeItem **node = &first;
+		cNodeItem *prev = NULL;
+		for(u_int8_t i = 0; i < bytes_length; ++i) {
+			if(!*node) {
+				*node = (cNodeItem*)new FILE_LINE(0) cNodeItem_nodes(prev);
+			}
+			prev = *node;
+			node = &(((cNodeItem_nodes*)*node)->nodes[bytes[i]]);
+		}
+		return((void**)node);
+	}
+	NODE_DATA *find(u_char *bytes, u_int8_t bytes_length,
+			u_char *bytes_2 = NULL, u_int8_t bytes_2_length = 0/*,
+			cNodeItem **endNode = NULL*/) {
+		cNodeItem *node = first;
+		for(u_int8_t i = 0; i < bytes_length; ++i) {
+			if(!node) {
+				return(NULL);
+			}
+			node = ((cNodeItem_nodes*)node)->nodes[bytes[i]];
+		}
+		for(u_int8_t i = 0; i < bytes_2_length; ++i) {
+			if(!node) {
+				return(NULL);
+			}
+			node = ((cNodeItem_nodes*)node)->nodes[bytes_2[i]];
+		}
+		if(!node) {
+			return(NULL);
+		}
+		/*
+		if(endNode) {
+			*endNode = *node;
+		}
+		*/
+		return(&(((cNodeItem_data*)node)->node_data));
+	}
+	void *_find(u_char *bytes, u_int8_t bytes_length) {
+		cNodeItem *node = first;
+		for(u_int8_t i = 0; i < bytes_length; ++i) {
+			if(!node) {
+				return(NULL);
+			}
+			node = ((cNodeItem_nodes*)node)->nodes[bytes[i]];
+		}
+		return(node);
+	}
+	void **_find_ptr(u_char *bytes, u_int8_t bytes_length) {
+		cNodeItem **node = &first;
+		for(u_int8_t i = 0; i < bytes_length; ++i) {
+			if(!*node) {
+				return(NULL);
+			}
+			node = &(((cNodeItem_nodes*)*node)->nodes[bytes[i]]);
+		}
+		return((void**)node);
+	}
+private:
+	cNodeItem *first;
+};
+
+template <class NODE_DATA>
+inline cNodeData<NODE_DATA>::cNodeItem::~cNodeItem() {
+	if(type == 1) {
+		((cNodeItem_nodes*)this)->destruct();
+	}
+}
 
 
 #endif

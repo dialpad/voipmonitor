@@ -10,6 +10,7 @@
 
 #include "heap_safe.h"
 #include "sync.h"
+#include "tools_global.h"
 
 
 typedef volatile int v_int;
@@ -20,7 +21,7 @@ class rqueue_quick {
 public:
 	rqueue_quick(size_t length,
 		     unsigned int pushUsleep, unsigned int popUsleep,
-		     int *term_rqueue,
+		     volatile int *term_rqueue,
 		     bool binaryBuffer) {
 		this->length = length;
 		this->pushUsleep = pushUsleep;
@@ -49,7 +50,7 @@ public:
 					return(false);
 				}
 				if(useLock) unlock();
-				usleep(pushUsleep);
+				USLEEP(pushUsleep);
 				if(useLock) lock();
 			} else {
 				if(useLock) unlock();
@@ -83,7 +84,7 @@ public:
 					if(useLock) unlock();
 					return(false);
 				}
-				usleep(popUsleep);
+				USLEEP(popUsleep);
 			} else {
 				if(useLock) unlock();
 				return(false);
@@ -166,7 +167,7 @@ private:
 	bool binaryBuffer;
 	unsigned int pushUsleep;
 	unsigned int popUsleep;
-	int *term_rqueue;
+	volatile int *term_rqueue;
 	typeItem *buffer;
 	v_int *free;
 	v_u_int32_t readit;

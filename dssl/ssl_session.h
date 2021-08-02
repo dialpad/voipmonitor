@@ -52,6 +52,23 @@ struct DSSL_handshake_buffer_
 #define SSF_TLS_CLIENT_EXTENDED_MASTER_SECRET	0x0100
 #define SSF_TLS_SERVER_EXTENDED_MASTER_SECRET	0x0200
 
+
+struct DSSL_Session_get_keys_data_item
+{	u_char 				key[SSL3_MASTER_SECRET_SIZE];
+	unsigned 			length;
+};
+
+struct DSSL_Session_get_keys_data
+{
+	struct DSSL_Session_get_keys_data_item client_random;
+	struct DSSL_Session_get_keys_data_item client_handshake_traffic_secret;
+	struct DSSL_Session_get_keys_data_item server_handshake_traffic_secret;
+	struct DSSL_Session_get_keys_data_item exporter_secret;
+	struct DSSL_Session_get_keys_data_item client_traffic_secret_0;
+	struct DSSL_Session_get_keys_data_item server_traffic_secret_0;
+	int 				set;
+};
+
 struct DSSL_Session_
 {
 	DSSL_Env*			env;
@@ -122,10 +139,17 @@ struct DSSL_Session_
 	void 			*handshake_data;
 	uint32_t		handshake_data_size;
 	
-	int (*gener_master_secret)(u_char *client_random, u_char *master_secret, DSSL_Session *session);
-	void *gener_master_secret_data[2];
+	int (*get_keys_fce)(u_char *client_random, struct DSSL_Session_get_keys_data *get_keys_data, DSSL_Session *session);
+	void *get_keys_fce_call_data[2];
+	struct DSSL_Session_get_keys_data get_keys_rslt_data;
 	
 	int ignore_error_invalid_mac;
+	int ignore_error_bad_finished_digest;
+	
+	void *tls_session;
+	uint64_t tls_session_server_seq;
+	uint64_t tls_session_client_seq;
+	
 };
 
 

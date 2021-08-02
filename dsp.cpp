@@ -95,9 +95,9 @@ static struct progalias {
 
 static struct progress {
 	enum gsamp_size size;
-	int freqs[7];
+	int freqs[10];
 } modes[] = {
-	{ GSAMP_SIZE_NA, { 350, 440, 480, 620, 950, 1400, 1800 } },	/*!< North America */
+	{ GSAMP_SIZE_NA, { 350, 400, 425, 440, 450, 480, 620, 950, 1400, 1800 } },	/*!< North America */
 	{ GSAMP_SIZE_CR, { 425 } },					/*!< Costa Rica, Brazil */
 	{ GSAMP_SIZE_UK, { 350, 400, 440 } },				/*!< UK */
 };
@@ -230,6 +230,7 @@ static void tone_detect_init(tone_detect_state_t *s, int freq, int duration, int
 
 	s->samples_pending = s->block_size;
 	s->hit_count = 0;
+	s->nohit_count = 0;
 	s->lhit = 0;
 	s->energy = 0.0;
 
@@ -302,7 +303,7 @@ static void digit_detect_init(digit_detect_state_t *s, int mf, unsigned int samp
 	}
 }
 
-static int tone_detect(struct dsp */*dsp*/, tone_detect_state_t *s, int16_t *amp, int samples)
+static int tone_detect(struct dsp */*dsp*/, tone_detect_state_t *s, int16_t *amp, int samples, int nohit_limit)
 {
 	float tone_energy;
 	int i;
@@ -361,10 +362,14 @@ static int tone_detect(struct dsp */*dsp*/, tone_detect_state_t *s, int16_t *amp
 
 		if (hit == s->lhit) {
 			if (!hit) {
-				/* Two successive misses. Tone ended */
-				s->hit_count = 0;
+				++s->nohit_count;
+				if (s->nohit_count >= nohit_limit) {
+					/* (nohit_limit + 1) successive misses. Tone ended */
+					s->hit_count = 0;
+				}
 			} else if (!s->hit_count) {
 				s->hit_count++;
+				s->nohit_count = 0;
 			}
 
 		}
@@ -830,8 +835,8 @@ static int __dsp_call_progress(struct dsp *dsp, short *s, int len)
 		dsp->gsamps += pass;
 		len -= pass;
 		if (dsp->gsamps == dsp->gsamp_size) {
-			float hz[7];
-			for (y = 0; y < 7; y++) {
+			float hz[10];
+			for (y = 0; y < 10; y++) {
 				hz[y] = goertzel_result(&dsp->freqs[y]);
 			}
 			switch (dsp->progmode) {
@@ -842,6 +847,12 @@ static int __dsp_call_progress(struct dsp *dsp, short *s, int len)
 					newstate = DSP_TONE_STATE_RINGING;
 				} else if (pair_there(hz[HZ_350], hz[HZ_440], hz[HZ_480], hz[HZ_620], dsp->genergy)) {
 					newstate = DSP_TONE_STATE_DIALTONE;
+				} else if (pair_there(hz[HZ_400], hz[HZ_450], hz[HZ_400], hz[HZ_400], dsp->genergy)) {
+					//UK RINGING
+					newstate = DSP_TONE_STATE_RINGING;
+				} else if (hz[HZ_425] > TONE_MIN_THRESH * TONE_THRESH) {
+					//CZECH / europe RINGING
+					newstate = DSP_TONE_STATE_RINGING;
 				} else if (hz[HZ_950] > TONE_MIN_THRESH * TONE_THRESH) {
 					newstate = DSP_TONE_STATE_SPECIAL1;
 				} else if (hz[HZ_1400] > TONE_MIN_THRESH * TONE_THRESH) {
@@ -860,6 +871,7 @@ static int __dsp_call_progress(struct dsp *dsp, short *s, int len)
 					newstate = DSP_TONE_STATE_SILENCE;
 				}
 				break;
+#if 0
 			case PROG_MODE_CR:
 				if (hz[HZ_425] > TONE_MIN_THRESH * TONE_THRESH) {
 					newstate = DSP_TONE_STATE_RINGING;
@@ -876,6 +888,7 @@ static int __dsp_call_progress(struct dsp *dsp, short *s, int len)
 					newstate = DSP_TONE_STATE_DIALTONE;
 				}
 				break;
+#endif
 			default:
 				syslog(LOG_WARNING, "Can't process in unknown prog mode '%u'\n", dsp->progmode);
 			}
@@ -934,7 +947,7 @@ static int __dsp_call_progress(struct dsp *dsp, short *s, int len)
 			}
 
 			/* Reset goertzel */
-			for (x = 0; x < 7; x++) {
+			for (x = 0; x < 10; x++) {
 				dsp->freqs[x].v2 = dsp->freqs[x].v3 = 0.0;
 			}
 			dsp->gsamps = 0;
@@ -950,7 +963,7 @@ int dsp_call_progress(struct dsp *dsp, short *data, int samples)
 	return __dsp_call_progress(dsp, data, samples);
 }
 
-static int __dsp_silence_noise(struct dsp *dsp, short *s, int len, int *totalsilence, int *totalnoise, int *frames_energy)
+static int __dsp_silence_noise(struct dsp *dsp, short *s, int len, int *totalsilence, int *totalnoise, u_int16_t *frames_energy)
 {
 	int accum;
 	int x;
@@ -959,9 +972,39 @@ static int __dsp_silence_noise(struct dsp *dsp, short *s, int len, int *totalsil
 	if (!len) {
 		return 0;
 	}
+
+	dsp->received += len/160;
+
 	accum = 0;
 	for (x = 0; x < len; x++) {
+		if(s[x] <= 1) {
+			if(dsp->last_zero == true) {
+				dsp->counter++;
+			}
+			dsp->last_zero = true;
+		} else {
+			dsp->counter = 0;
+			dsp->last_zero = false;
+		}
 		accum += abs(s[x]);
+	}
+	if(dsp->counter >= 159 and dsp->counter <= 195) { // tolerance 159-195 frames for 20ms 
+		// 20ms (8khz) silence - count loss and reset counter;
+		dsp->loss++;  // number of consecutive silence 20ms frames 
+		//if(dsp->counter > 161) printf("hit los %u ++ %d\n", dsp->counter, dsp->loss);
+		dsp->counter = 0;
+	} else {
+		if(dsp->loss) {
+			if(dsp->loss <= 3) {
+				// store loss only if there were max 3 consecutive lost silence frames
+				dsp->loss_hist[dsp->loss]++;
+				dsp->loss = 0;
+			} else {
+				// any consecutive loss > 2 resets loss counter to 0
+				dsp->loss = 0;
+			}
+		}
+		dsp->loss = 0;
 	}
 	accum /= len;
 	if (accum < dsp->threshold) {
@@ -1153,7 +1196,7 @@ int dsp_busydetect(struct dsp *dsp)
 	return res;
 }
 
-static int dsp_silence_noise_with_energy(struct dsp *dsp, short *data, int len, int *total, int *frames_energy, int noise)
+static int dsp_silence_noise_with_energy(struct dsp *dsp, short *data, int len, int *total, u_int16_t *frames_energy, int noise)
 {
 	if (noise) {
 		return __dsp_silence_noise(dsp, data, len, NULL, total, frames_energy);
@@ -1162,7 +1205,7 @@ static int dsp_silence_noise_with_energy(struct dsp *dsp, short *data, int len, 
 	}
 }
 
-int dsp_silence_with_energy(struct dsp *dsp, short *data, int len, int *totalsilence, int *frames_energy)
+int dsp_silence_with_energy(struct dsp *dsp, short *data, int len, int *totalsilence, u_int16_t *frames_energy)
 {
 	return dsp_silence_noise_with_energy(dsp, data, len, totalsilence, frames_energy, 0);
 }
@@ -1178,36 +1221,45 @@ int dsp_noise(struct dsp *dsp, short *data, int len, int *totalnoise)
 }
 
 
-int dsp_process(struct dsp *dsp, short *shortdata, int len, char *event_digit, int *event_len, int *silence, int *totalsilence, int *totalnoise)
+int dsp_process(struct dsp *dsp, short *shortdata, int len, char *event_digit, int *event_len, int *silence, int *totalsilence, int *totalnoise, int *res_call_progress, u_int16_t *energylevel)
 {
-	int res;
+	int res = 0;
 	int digit = 0, fax_digit = 0;
 
+	if(event_len) {
+		*event_len = 0;
+	}
+	if(event_digit) {
+		*event_digit = 0;
+	}
+	if(res_call_progress) {
+		*res_call_progress = 0;
+	}
+	
 	/* Initially we do not want to mute anything */
 	dsp->mute_fragments = 0;
 
 	/* Need to run the silence detection stuff for silence suppression and busy detection */
-	if ((dsp->features & DSP_FEATURE_SILENCE_SUPPRESS) || (dsp->features & DSP_FEATURE_BUSY_DETECT)) {
-		res = __dsp_silence_noise(dsp, shortdata, len, totalsilence, totalnoise, NULL);
-		*silence = res;
-		if(dspdebug) syslog(1, "silence [%u] noise [%u]\n", *totalsilence, *totalnoise);
+	if ((dsp->features & DSP_FEATURE_SILENCE_SUPPRESS) || (dsp->features & DSP_FEATURE_BUSY_DETECT) || (dsp->features & DSP_FEATURE_ENERGYLEVEL)) {
+		*silence = __dsp_silence_noise(dsp, shortdata, len, totalsilence, totalnoise, energylevel);
+		//if(dspdebug) syslog(1, "silence [%u] noise [%u]\n", *totalsilence, *totalnoise);
 	}
 
 	if ((dsp->features & DSP_FEATURE_SILENCE_SUPPRESS) && silence) {
-		//return 1; //silnce
+		res |= DSP_PROCESS_RES_SILENCE; //silence
 	}
 
 	if ((dsp->features & DSP_FEATURE_BUSY_DETECT) && dsp_busydetect(dsp)) {
 		if(dspdebug) syslog(1, "busy tone was detected");
-		return 2; // busy detected
+		res |= DSP_PROCESS_RES_BUSY; // busy detected
 	}
 
 	if ((dsp->features & DSP_FEATURE_FAX_DETECT)) {
-		if ((dsp->faxmode & DSP_FAXMODE_DETECT_CNG) && tone_detect(dsp, &dsp->cng_tone_state, shortdata, len)) {
+		if ((dsp->faxmode & DSP_FAXMODE_DETECT_CNG) && tone_detect(dsp, &dsp->cng_tone_state, shortdata, len, 1)) {
 			fax_digit = 'f';
 		}
 
-		if ((dsp->faxmode & DSP_FAXMODE_DETECT_CED) && tone_detect(dsp, &dsp->ced_tone_state, shortdata, len)) {
+		if ((dsp->faxmode & DSP_FAXMODE_DETECT_CED) && tone_detect(dsp, &dsp->ced_tone_state, shortdata, len, 2)) {
 			fax_digit = 'e';
 		}
 	}
@@ -1255,7 +1307,7 @@ int dsp_process(struct dsp *dsp, short *shortdata, int len, char *event_digit, i
 
 			if (event == AST_FRAME_DTMF_END) {
 				if(dspdebug) syslog(LOG_DEBUG, "[%p] event[%u] digit[%c] len[%u]\n", dsp, event, *event_digit, *event_len);
-				return 5;
+				res |= DSP_PROCESS_RES_DTMF;
 			}
 		}
 	}
@@ -1263,28 +1315,39 @@ int dsp_process(struct dsp *dsp, short *shortdata, int len, char *event_digit, i
 	if (fax_digit) {
 		/* Fax was detected - digit is either 'f' or 'e' */
 		*event_digit = fax_digit;
-		return 4; // fax
+		res |= DSP_PROCESS_RES_FAX; // fax
 	}
 
 	if ((dsp->features & DSP_FEATURE_CALL_PROGRESS)) {
-		res = __dsp_call_progress(dsp, shortdata, len);
-		if (res) {
-			switch (res) {
+		int _res_call_progress = __dsp_call_progress(dsp, shortdata, len);
+		if (_res_call_progress) {
+			switch (_res_call_progress) {
 			case AST_CONTROL_ANSWER:
 			case AST_CONTROL_BUSY:
 			case AST_CONTROL_RINGING:
 			case AST_CONTROL_CONGESTION:
 			case AST_CONTROL_HANGUP:
-				return res;
+				*res_call_progress = _res_call_progress;
+				break;
 			default:
+				*res_call_progress = _res_call_progress;
 				syslog(LOG_WARNING, "Don't know how to represent call progress message %d\n", res);
-				return res;
 			}
+			res |= DSP_PROCESS_RES_CALL_PROGRESSS;
 		}
-	} else if ((dsp->features & DSP_FEATURE_WAITDIALTONE)) {
-		res = __dsp_call_progress(dsp, shortdata, len);
 	}
-	return 0;
+	
+	if ((dsp->features & DSP_FEATURE_WAITDIALTONE)) {
+		int _res_call_progress = __dsp_call_progress(dsp, shortdata, len);
+		if(_res_call_progress) {
+			if(!*res_call_progress) {
+				*res_call_progress = _res_call_progress;
+			}
+			res |= DSP_PROCESS_RES_WAITDIALTONE;
+		}
+	}
+	
+	return res;
 }
 
 static void dsp_prog_reset(struct dsp *dsp)

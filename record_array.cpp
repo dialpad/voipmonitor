@@ -9,12 +9,22 @@ string RecordArrayField::getJson() {
 		return(intToString((long long)v.i));
 	case tf_uint:
 		return(intToString((u_int64_t)v.u));
+	case tf_ip:
+		return("\"" + v_ip.getString() + "\"");
+	case tf_ip_n4:
+		return(v_ip.is_v6() ?
+			"\"" + v_ip.getString() + "\"" :
+			intToString(v_ip.getIPv4()));
+	case tf_port:
+		return(v_port.getString());
 	case tf_float:
-		return(floatToString(v.d));
+		return(!isnan(v.d) ? floatToString(v.d) : "null");
 	case tf_pointer:
 		return('"' + pointerToString(v.p) + '"');
 	case tf_time:
 		return('"' + sqlDateTimeString(v.u) + '"');
+	case tf_time_ms:
+		return('"' + sqlDateTimeString_us2ms(v.u) + '"');
 	case tf_string:
 		if(v.s) {
 			return('"' + json_encode(v.s) + '"');

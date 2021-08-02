@@ -3,9 +3,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <fstream>
+#include <algorithm>
 
 #include "voipmonitor.h"
 #include "pstat.h"
+
+
+using namespace std;
 
 
 bool pstat_quietly_errors = false;
@@ -99,6 +104,21 @@ void pstat_calc_cpu_usage(const pstat_data* cur_usage,
 			- (last_usage->stime_ticks + last_usage->cstime_ticks);
 }
 
+double get_cpu_usage_perc(const int pid, pstat_data *data) {
+	if(pid) {
+		if(data[0].cpu_total_time) {
+			data[1] = data[0];
+		}
+		pstat_get_data(pid, data);
+		double ucpu_usage, scpu_usage;
+		if(data[0].cpu_total_time && data[1].cpu_total_time) {
+			pstat_calc_cpu_usage_pct(&data[0], &data[1], &ucpu_usage, &scpu_usage);
+			return(ucpu_usage + scpu_usage);
+		}
+	}
+	return(-1);
+}
+
 long unsigned int getRss() {
 	pstat_data pstatData;
 	if(pstat_get_data(0, &pstatData)) {
@@ -124,9 +144,118 @@ void getLoadAvg(double *la_1, double *la_5, double *la_15) {
 }
 
 std::string getLoadAvgStr() {
-	double la_1, la_5, la_15;
-	getLoadAvg(&la_1, &la_5, &la_15);
-	char buff_rslt[20];
-	snprintf(buff_rslt, sizeof(buff_rslt), "%.2lf %.2lf %.2lf", la_1, la_5, la_15);
+	int vm_cpu_count = get_cpu_count();
+	bool vm_cpu_ht = get_cpu_ht();
+	double la[3];
+	getLoadAvg(&la[0], &la[1], &la[2]);
+	bool overload = false;
+	for(int i = 0; i < 3; i++) {
+		if(la[i] > ((double)vm_cpu_count * (vm_cpu_ht ? 3./4 : 1))) {
+			overload = true;
+		}
+	}
+	char buff_rslt[100];
+	snprintf(buff_rslt, sizeof(buff_rslt), 
+		 "%sLA[%.2lf %.2lf %.2lf|%d%s]", 
+		 overload ? "*" : "",
+		 la[0], la[1], la[2], vm_cpu_count,
+		 vm_cpu_ht ? "h" : "");
 	return(buff_rslt);
+}
+
+bool get_cpu_ht() {
+	static int vm_cpu_ht = -1;
+        if(vm_cpu_ht < 0) {
+		vm_cpu_ht=0;
+		std::ifstream input("/proc/cpuinfo");
+		std::string line;
+		std::string needle("ht");
+		while( std::getline( input, line ))
+			if (!line.compare( 0, 5, "flags" )) {
+				std::size_t found = line.find(needle);
+				if(found == std::string::npos) continue;
+				vm_cpu_ht=1;
+			}
+	}
+        return(vm_cpu_ht);
+}
+
+int get_cpu_count() {
+	static int vm_cpu_count = -1;
+	if(vm_cpu_count < 0) {
+		vm_cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
+	}
+	return(vm_cpu_count);
+	
+}
+
+bool get_interrupts_counters(map<string, pair<string, u_int64_t> > *counters) {
+	FILE *fint = fopen("/proc/interrupts", "r");
+	if(fint == NULL) {
+		#ifndef FREEBSD
+		if(!pstat_quietly_errors) {
+			perror("pstat fopen error (/proc/interrupts) ");
+		}
+		#endif
+		return(false);
+	}
+	char line[10000];
+	unsigned linesCounter = 0;
+	unsigned countCpu = 0;
+	while(fgets(line, sizeof(line), fint)) {
+		++linesCounter;
+		unsigned lineLength = strlen(line);
+		if(line[lineLength - 1] == '\n') {
+			line[lineLength - 1] = 0;
+			--lineLength;
+		}
+		if(linesCounter == 1) {
+			char *ptr = line;
+			while(*ptr) {
+				while(*ptr == ' ' || *ptr == '\t') {
+					++ptr;
+				}
+				if(!strncasecmp(ptr, "CPU", 3)) {
+					++countCpu;
+				}
+				++ptr;
+			}
+		} else {
+			string typeInt;
+			string descrInt;
+			u_int64_t count = 0;
+			unsigned countItems = 0;
+			char *ptr = line;
+			while(*ptr) {
+				while(*ptr == ' ' || *ptr == '\t') {
+					++ptr;
+				}
+				char *ptrEnd = ptr;
+				while(*ptrEnd &&
+				      !(*ptrEnd == ' ' || *ptrEnd == '\t')) {
+					++ptrEnd;
+				}
+				if(countItems == 0) {
+					typeInt = string(ptr, ptrEnd - ptr);
+					if(typeInt[typeInt.length() - 1] == ':') {
+						typeInt.resize(typeInt.length() - 1);
+					}
+					std::transform(typeInt.begin(), typeInt.end(), typeInt.begin(), ::tolower);
+				} else if(countItems <= countCpu) {
+					count += atoll(ptr);
+				} else {
+					descrInt = string(ptr);
+					break;
+				}
+				++countItems;
+				ptr = ptrEnd + 1;
+			}
+			pair<string, u_int64_t> descrCount;
+			descrCount.first = descrInt;
+			descrCount.second  = count;
+			(*counters)[typeInt] = descrCount;
+		}
+	}
+	fclose(fint);
+	return(true);
 }

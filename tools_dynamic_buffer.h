@@ -61,7 +61,7 @@ public:
 	void setLzmaLevel(int lzmaLevel);
 	void enableAutoPrefixFile();
 	void enableForceStream();
-	void setSendParameters(int client, void *sshchannel, void *c_client);
+	void setSendParameters(int client, void *c_client);
 	void initCompress();
 	void initDecompress(u_int32_t dataLen);
 	void termCompress();
@@ -138,7 +138,6 @@ private:
 	bool forceStream;
 	u_int32_t processed_len;
 	int sendParameter_client;
-	void *sendParameter_sshchannel;
 	void *sendParameter_c_client;
 friend class ChunkBuffer;
 };
@@ -149,7 +148,7 @@ public:
 	~RecompressStream();
 	void setTypeDecompress(eTypeCompress typeDecompress, bool enableForceStream = false);
 	void setTypeCompress(eTypeCompress typeCompress);
-	void setSendParameters(int client, void *sshchannel, void *c_client);
+	void setSendParameters(int client, void *c_client);
 	void processData(char *data, u_int32_t len);
 	void end();
 	bool isError();
@@ -224,8 +223,9 @@ public:
 		u_int32_t chunkIndex;
 	};
 public:
-	ChunkBuffer(int time, data_tar_time tar_time,
-		    u_int32_t chunk_fix_len = 0, class Call_abstract *call = NULL, int typeContent = 0);
+	ChunkBuffer(int time, data_tar_time tar_time, bool need_tar_pos,
+		    u_int32_t chunk_fix_len = 0, class Call_abstract *call = NULL, int typeContent = 0, int indexContent = 0,
+		    const char *name = NULL);
 	virtual ~ChunkBuffer();
 	void setTypeCompress(CompressStream::eTypeCompress typeCompress, u_int32_t compressBufferLength, u_int32_t maxDataLength);
 	void setZipLevel(int zipLevel);
@@ -235,9 +235,8 @@ public:
 	data_tar_time getTarTime() {
 		return(tar_time);
 	}
-	void setName(const char *name);
 	string getName() {
-		return(this->name ? this->name : "");
+		return(this->name);
 	}
 	void add(char *data, u_int32_t len, bool flush = false, u_int32_t decompress_len = 0, bool directAdd = false);
 	void close();
@@ -295,10 +294,16 @@ public:
 		return(chunk_buffers_sumsize);
 	}
 private:
+	void strange_log(const char *error);
+private:
 	int time;
 	data_tar_time tar_time;
+	bool need_tar_pos;
 	Call_abstract *call;
 	int typeContent;
+	int indexContent;
+	string name;
+	string fbasename;
 	list<sChunk> chunkBuffer;
 	volatile unsigned int chunkBuffer_countItems;
 	volatile u_int32_t len;
@@ -312,13 +317,13 @@ private:
 	volatile u_int32_t chunkIterateProceedLen;
 	volatile bool closed;
 	bool decompressError;
-	char *name;
 	volatile int _sync_chunkBuffer;
 	volatile int _sync_compress;
 	unsigned int last_add_time;
 	unsigned int last_add_time_tar;
 	unsigned int last_tar_time;
 	volatile u_int64_t chunk_buffer_size;
+	u_int64_t created_at;
 static volatile u_int64_t chunk_buffers_sumsize;
 };      
 

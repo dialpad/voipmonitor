@@ -11,6 +11,7 @@
 #include "pcap_queue_block.h"
 #include "pstat.h"
 #include "heap_safe.h"
+#include "tools_global.h"
 
 
 extern int opt_tcpreassembly_thread;
@@ -146,6 +147,9 @@ public:
 	timeval getTime() {
 		return(this->time);
 	}
+	u_int64_t getTimeMS() {
+		return(::getTimeMS(&this->time));
+	}
 	u_int32_t getAck() {
 		return(this->ack);
 	}
@@ -200,12 +204,12 @@ public:
 
 class TcpReassemblyProcessData {
 public:
-	virtual void processData(u_int32_t ip_src, u_int32_t ip_dst,
-				 u_int16_t port_src, u_int16_t port_dst,
+	virtual void processData(vmIP ip_src, vmIP ip_dst,
+				 vmPort port_src, vmPort port_dst,
 				 TcpReassemblyData *data,
 				 u_char *ethHeader, u_int32_t ethHeaderLength,
-				 u_int16_t handle_index, int dlt, int sensor_id, u_int32_t sensor_ip,
-				 void *uData,
+				 u_int16_t handle_index, int dlt, int sensor_id, vmIP sensor_ip, sPacketInfoData pid,
+				 void *uData, void *uData2, void *uData2_last,
 				 class TcpReassemblyLink *reassemblyLink,
 				 std::ostream *debugStream) = 0;
 	virtual void writeToDb(bool /*all*/ = false) {}
@@ -213,25 +217,25 @@ public:
 };
 
 struct TcpReassemblyLink_id {
-	TcpReassemblyLink_id(u_int32_t ip_src = 0, u_int32_t ip_dst = 0, 
-			     u_int16_t port_src = 0, u_int16_t port_dst = 0) {
+	TcpReassemblyLink_id(vmIP ip_src = 0, vmIP ip_dst = 0, 
+			     vmPort port_src = 0, vmPort port_dst = 0) {
 		this->ip_src = ip_src;
 		this->ip_dst = ip_dst;
 		this->port_src = port_src; 
 		this->port_dst = port_dst;
 	}
 	void reverse() {
-		u_int32_t tmp = this->ip_src;
+		vmIP tmp_ip = this->ip_src;
 		this->ip_src = this->ip_dst;
-		this->ip_dst = tmp;
-		tmp = this->port_src;
+		this->ip_dst = tmp_ip;
+		vmPort tmp_port = this->port_src;
 		this->port_src = this->port_dst;
-		this->port_dst = tmp;
+		this->port_dst = tmp_port;
 	}
-	u_int32_t ip_src;
-	u_int32_t ip_dst;
-	u_int16_t port_src;
-	u_int16_t port_dst;
+	vmIP ip_src;
+	vmIP ip_dst;
+	vmPort port_src;
+	vmPort port_dst;
 	bool operator < (const TcpReassemblyLink_id& other) const {
 		return((this->ip_src < other.ip_src) ? 1 : (this->ip_src > other.ip_src) ? 0 :
 		       (this->ip_dst < other.ip_dst) ? 1 : (this->ip_dst > other.ip_dst) ? 0 :
@@ -427,7 +431,8 @@ public:
 	}
 	void push(TcpReassemblyStream_packet packet);
 	int ok(bool crazySequence = false, bool enableSimpleCmpMaxNextSeq = false, u_int32_t maxNextSeq = 0,
-	       int enableValidateDataViaCheckData = -1, int needValidateDataViaCheckData = -1, TcpReassemblyStream *prevHttpStream = NULL, bool enableDebug = false,
+	       int enableValidateDataViaCheckData = -1, int needValidateDataViaCheckData = -1, int unlimitedReassemblyAttempts = -1,
+	       TcpReassemblyStream *prevHttpStream = NULL, bool enableDebug = false,
 	       u_int32_t forceFirstSeq = 0, int ignorePsh = -1);
 	bool ok2_ec(u_int32_t nextAck, bool enableDebug = false);
 	u_char *complete(u_int32_t *datalen, timeval *time, u_int32_t *seq, bool check = false,
@@ -516,12 +521,18 @@ public:
 		private:
 			TcpReassemblyLink *link;
 	};
+	struct sRemainDataItem {
+		u_int32_t ack;
+		u_int32_t seq;
+		u_char *data;
+		u_int32_t datalen;
+	};
 	TcpReassemblyLink(class TcpReassembly *reassembly,
-			  u_int32_t ip_src = 0, u_int32_t ip_dst = 0, 
-			  u_int16_t port_src = 0, u_int16_t port_dst = 0,
-			  u_char *packet = NULL, iphdr2 *header_ip = NULL,
-			  u_int16_t handle_index = 0, int dlt = 0, int sensor_id = 0, u_int32_t sensor_ip = 0,
-			  void *uData = NULL) {
+			  vmIP ip_src, vmIP ip_dst, 
+			  vmPort port_src, vmPort port_dst,
+			  u_char *packet, iphdr2 *header_ip,
+			  u_int16_t handle_index, int dlt, int sensor_id, vmIP sensor_ip, sPacketInfoData pid,
+			  void *uData, void *uData2) {
 		this->reassembly = reassembly;
 		this->ip_src = ip_src;
 		this->ip_dst = ip_dst;
@@ -555,11 +566,10 @@ public:
 		this->dlt = dlt;
 		this->sensor_id = sensor_id;
 		this->sensor_ip = sensor_ip;
+		this->pid = pid;
 		this->uData = uData;
-		for(int i = 0; i < 2; i++) {
-			this->remainData[i] = NULL;
-			this->remainDataLength[i] = 0;
-		}
+		this->uData2 = uData2;
+		this->uData2_last = uData2;
 		this->check_duplicity_seq = NULL;
 		this->check_duplicity_seq_length = 10;
 	}
@@ -685,16 +695,18 @@ public:
 	}
 	void cleanup(u_int64_t act_time);
 	void printContent(int level  = 0);
-	void setRemainData(u_char *data, u_int32_t datalen, TcpReassemblyDataItem::eDirection direction);
+	void addRemainData(TcpReassemblyDataItem::eDirection direction, u_int32_t ack, u_int32_t seq, u_char *data, u_int32_t datalen);
 	void clearRemainData(TcpReassemblyDataItem::eDirection direction);
-	u_char *getRemainData(TcpReassemblyDataItem::eDirection direction);
+	u_char *completeRemainData(TcpReassemblyDataItem::eDirection direction, u_int32_t *rslt_datalen, u_int32_t ack, u_int32_t seq, u_char *data, u_int32_t datalen);
 	u_int32_t getRemainDataLength(TcpReassemblyDataItem::eDirection direction);
+	bool existsRemainData(TcpReassemblyDataItem::eDirection direction);
+	bool existsAllAckSeq(TcpReassemblyDataItem::eDirection direction);
 	list<d_u_int32_t> *getSipOffsets();
 	void clearCompleteStreamsData();
 	bool checkDuplicitySeq(u_int32_t newSeq);
 private:
 	void lock_queue() {
-		while(__sync_lock_test_and_set(&this->_sync_queue, 1)) usleep(100);
+		while(__sync_lock_test_and_set(&this->_sync_queue, 1)) USLEEP(100);
 	}
 	void unlock_queue() {
 		__sync_lock_release(&this->_sync_queue);
@@ -708,10 +720,10 @@ private:
 	void extCleanup(int id, bool all);
 private:
 	TcpReassembly *reassembly;
-	u_int32_t ip_src;
-	u_int32_t ip_dst;
-	u_int16_t port_src;
-	u_int16_t port_dst;
+	vmIP ip_src;
+	vmIP ip_dst;
+	vmPort port_src;
+	vmPort port_dst;
 	eState state;
 	bool forceOk;
 	u_int32_t first_seq_to_dest;
@@ -741,10 +753,12 @@ private:
 	u_int16_t handle_index;
 	int dlt; 
 	int sensor_id;
-	u_int32_t sensor_ip;
+	vmIP sensor_ip;
+	sPacketInfoData pid;
 	void *uData;
-	u_char *remainData[2];
-	u_int32_t remainDataLength[2];
+	void *uData2;
+	void *uData2_last;
+	vector<sRemainDataItem> remainData[2];
 	u_int32_t *check_duplicity_seq;
 	unsigned check_duplicity_seq_length;
 friend class TcpReassembly;
@@ -770,8 +784,10 @@ public:
 		u_int16_t handle_index; 
 		int dlt; 
 		int sensor_id;
-		u_int32_t sensor_ip;
+		vmIP sensor_ip;
+		sPacketInfoData pid;
 		void *uData;
+		void *uData2;
 		bool isSip;
 	};
 public:
@@ -779,8 +795,8 @@ public:
 	~TcpReassembly();
 	void push_tcp(pcap_pkthdr *header, iphdr2 *header_ip, u_char *packet, bool alloc_packet,
 		      pcap_block_store *block_store, int block_store_index, bool block_store_locked,
-		      u_int16_t handle_index = 0, int dlt = 0, int sensor_id = 0, u_int32_t sensor_ip = 0,
-		      void *uData = NULL, bool isSip = false);
+		      u_int16_t handle_index, int dlt, int sensor_id, vmIP sensor_ip, sPacketInfoData pid,
+		      void *uData = NULL, void *uData2 = NULL, bool isSip = false);
 	void cleanup(bool all = false);
 	void cleanup_simple(bool all = false);
 	void setEnableHttpForceInit(bool enableHttpForceInit = true) {
@@ -806,6 +822,9 @@ public:
 	}
 	void setEnableValidateDataViaCheckData(bool enableValidateDataViaCheckData = true) {
 		this->enableValidateDataViaCheckData = enableValidateDataViaCheckData;
+	}
+	void setUnlimitedReassemblyAttempts(bool unlimitedReassemblyAttempts = true) {
+		this->unlimitedReassemblyAttempts = unlimitedReassemblyAttempts;
 	}
 	void setEnableValidateLastQueueDataViaCheckData(bool enableValidateLastQueueDataViaCheckData = true) {
 		this->enableValidateLastQueueDataViaCheckData = enableValidateLastQueueDataViaCheckData;
@@ -870,28 +889,28 @@ public:
 	void preparePacketPstatData();
 	double getPacketCpuUsagePerc(bool preparePstatData = false);
 	string getCpuUsagePerc();
-	bool check_ip(u_int32_t ip, u_int16_t port = 0) {
+	bool check_ip(vmIP ip, vmPort port = 0) {
 		if(type == http || type == webrtc) {
-			extern vector<u_int32_t> httpip;
-			extern vector<d_u_int32_t> httpnet;
-			extern vector<u_int32_t> webrtcip;
-			extern vector<d_u_int32_t> webrtcnet;
+			extern vector<vmIP> httpip;
+			extern vector<vmIPmask> httpnet;
+			extern vector<vmIP> webrtcip;
+			extern vector<vmIPmask> webrtcnet;
 			return(check_ip_in(ip, (type == http ? &httpip : &webrtcip), (type == http ? &httpnet : &webrtcnet), true));
 		} else if(type == ssl) {
-			extern map<d_u_int32_t, string> ssl_ipport;
-			map<d_u_int32_t, string>::iterator iter = ssl_ipport.find(d_u_int32_t(ip, port));
+			extern map<vmIPport, string> ssl_ipport;
+			map<vmIPport, string>::iterator iter = ssl_ipport.find(vmIPport(ip, port));
 			return(iter != ssl_ipport.end());
 		}
 		return(false);
 	}
-	bool check_port(u_int16_t port, u_int32_t ip = 0) {
+	bool check_port(vmPort port, vmIP ip = 0) {
 		if(type == http || type == webrtc) {
 			extern char *httpportmatrix;
 			extern char *webrtcportmatrix;
 			return(type == http ? httpportmatrix[port] : webrtcportmatrix[port]);
 		} else if(type == ssl) {
-			extern map<d_u_int32_t, string> ssl_ipport;
-			map<d_u_int32_t, string>::iterator iter = ssl_ipport.find(d_u_int32_t(ip, port));
+			extern map<vmIPport, string> ssl_ipport;
+			map<vmIPport, string>::iterator iter = ssl_ipport.find(vmIPport(ip, port));
 			return(iter != ssl_ipport.end());
 		}
 		return(false);
@@ -916,20 +935,20 @@ public:
 private:
 	void _push(pcap_pkthdr *header, iphdr2 *header_ip, u_char *packet,
 		   pcap_block_store *block_store, int block_store_index,
-		   u_int16_t handle_index, int dlt, int sensor_id, u_int32_t sensor_ip,
-		   void *uData, bool isSip);
+		   u_int16_t handle_index, int dlt, int sensor_id, vmIP sensor_ip, sPacketInfoData pid,
+		   void *uData, void *uData2, bool isSip);
 	void createCleanupThread();
 	void createPacketThread();
 	void *cleanupThreadFunction(void *);
 	void *packetThreadFunction(void *);
 	void lock_links() {
-		while(__sync_lock_test_and_set(&this->_sync_links, 1)) usleep(100);
+		while(__sync_lock_test_and_set(&this->_sync_links, 1)) USLEEP(100);
 	}
 	void unlock_links() {
 		__sync_lock_release(&this->_sync_links);
 	}
 	void lock_push() {
-		while(__sync_lock_test_and_set(&this->_sync_push, 1)) usleep(100);
+		while(__sync_lock_test_and_set(&this->_sync_push, 1)) USLEEP(100);
 	}
 	void unlock_push() {
 		__sync_lock_release(&this->_sync_push);
@@ -947,6 +966,7 @@ private:
 	bool enableDestroyStreamsInComplete;
 	bool enableAllCompleteAfterZerodataAck;
 	bool enableValidateDataViaCheckData;
+	bool unlimitedReassemblyAttempts;
 	bool enableValidateLastQueueDataViaCheckData;
 	bool enableStrictValidateDataViaCheckData;
 	bool needValidateDataViaCheckData;
@@ -975,7 +995,6 @@ private:
 	FILE *log;
 	pstat_data cleanupThreadPstatData[2];
 	pstat_data packetThreadPstatData[2];
-	u_long lastTimeLogErrExceededMaximumAttempts;
 	u_long _cleanupCounter;
 	u_int32_t linkTimeout;
 	SafeAsyncQueue<sPacket> packetQueue;

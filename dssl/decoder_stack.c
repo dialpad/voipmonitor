@@ -32,7 +32,14 @@
 
 void dssl_decoder_stack_init( dssl_decoder_stack* stack )
 {
-	memset( stack, 0, sizeof(stack) );
+	#if __GNUC__ >= 8
+	#pragma GCC diagnostic push
+	#pragma GCC diagnostic ignored "-Wsizeof-pointer-memaccess"
+	#endif
+	memset( stack, 0, sizeof(*stack) );
+	#if __GNUC__ >= 8
+	#pragma GCC diagnostic pop
+	#endif
 	stack->state = SS_Initial;
 }
 
@@ -93,7 +100,7 @@ int dssl_decoder_stack_set( dssl_decoder_stack* d, DSSL_Session* sess, uint16_t 
 	case TLS1_1_VERSION:
 	case TLS1_2_VERSION:
 		dssl_decoder_init( &d->drecord, ssl3_record_layer_decoder, d );
-		dssl_decoder_init( &d->dhandshake, ssl3_decode_handshake_record, d );
+		dssl_decoder_init( &d->dhandshake, (sslc_decode_proc)ssl3_decode_handshake_record, d );
 		dssl_decoder_init( &d->dcss, ssl3_change_cipher_spec_decoder, d );
 		dssl_decoder_init( &d->dappdata, ssl_application_data_decoder, d );
 		dssl_decoder_init( &d->dalert, ssl3_alert_decoder, d );
@@ -102,7 +109,7 @@ int dssl_decoder_stack_set( dssl_decoder_stack* d, DSSL_Session* sess, uint16_t 
 	#if (OPENSSL_VERSION_NUMBER < 0x10100000L)
 	case SSL2_VERSION:
 		dssl_decoder_init( &d->drecord, ssl2_record_layer_decoder, d );
-		dssl_decoder_init( &d->dhandshake, ssl2_handshake_record_decode_wrapper, d );
+		dssl_decoder_init( &d->dhandshake, (sslc_decode_proc)ssl2_handshake_record_decode_wrapper, d );
 		dssl_decoder_init( &d->dappdata, ssl_application_data_decoder, d );
 		break;
 	#endif //(OPENSSL_VERSION_NUMBER < 0x10100000L)

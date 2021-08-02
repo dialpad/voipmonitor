@@ -18,6 +18,7 @@
 ** Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 **
 */
+#include <string.h>
 #include "stdinc.h"
 #include "decoder_stack.h"
 #include "ssl_session.h"
@@ -64,7 +65,7 @@ int ssl3_calculate_mac( dssl_decoder_stack* stack, u_char type,
 	u_char seq_buf[8];
 
 	_ASSERT( stack->md != NULL );
-	_ASSERT_STATIC( sizeof(stack->seq_num) == 8 );
+	//_ASSERT_STATIC( sizeof(stack->seq_num) == 8 );
 
 	mac_size = EVP_MD_size( md );
 	pad_size = (48/mac_size)*mac_size;
@@ -172,7 +173,7 @@ int tls1_calculate_mac( dssl_decoder_stack* stack, u_char type,
 	u_char hdr[5];
 
 	_ASSERT( stack->md != NULL );
-	_ASSERT_STATIC( sizeof(stack->seq_num) == 8 );
+	//_ASSERT_STATIC( sizeof(stack->seq_num) == 8 );
 
 	if( md == NULL ) return NM_ERROR( DSSL_E_INVALID_PARAMETER );
 
@@ -211,7 +212,7 @@ int ssl2_calculate_mac( dssl_decoder_stack* stack, u_char type,
 	stack->seq_num = seq;
 
 	/* TODO */
-	type; data; len; mac;
+	//type; data; len; mac;
 	return NM_ERROR( DSSL_E_NOT_IMPL );
 }
 #endif //(OPENSSL_VERSION_NUMBER < 0x10100000L)
@@ -273,7 +274,7 @@ int tls1_decode_finished( DSSL_Session* sess, NM_PacketDir dir, u_char* data, ui
 
 	if( rc != DSSL_RC_OK ) return rc;
 
-	if( memcmp( data, prf_out, 12 ) != 0 ) return NM_ERROR( DSSL_E_SSL_BAD_FINISHED_DIGEST );
+	if( memcmp( data, prf_out, 12 ) != 0 && !sess->ignore_error_bad_finished_digest ) return NM_ERROR( DSSL_E_SSL_BAD_FINISHED_DIGEST );
 
 	return DSSL_RC_OK;
 }

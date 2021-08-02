@@ -200,6 +200,7 @@ public:
 	string getMaxSpoolDate();
 	void getSumSizeByDate(map<string, long long> *sizeByDate);
 	string printSumSizeByDate();
+	string getOldestDate();
 	static void run_cleanProcess(int spoolIndex = -1);
 	static void run_clean_obsolete(int spoolIndex = -1);
 	static void run_test_load(string type, int spoolIndex = -1);
@@ -210,6 +211,7 @@ public:
 	static void run_check_spooldir_filesindex(const char *dirfilter = NULL, int spoolIndex = -1);
 	static void run_reindex_spool(int spoolIndex = -1);
 	static string run_print_spool(int spoolIndex = -1);
+	static string get_oldest_date(int spoolIndex = -1);
 	static bool suspend(int spoolIndex = -1);
 	static bool resume(int spoolIndex = -1);
 	static bool isSetCleanspoolParameters(int spoolIndex);
@@ -241,7 +243,7 @@ private:
 	void unlink_dirs(string datehour, int sip, int reg, int skinny, int mgcp, int ss7, int rtp, int graph, int audio, string callFrom);
 	void erase_dir(string dir, sSpoolDataDirIndex index, string callFrom);
 	void erase_dir_if_empty(string dir, string callFrom = "");
-	bool dir_is_empty(string dir);
+	bool dir_is_empty(string dir, bool enableRecursion = false);
 	string reduk_dir(string dir, string *last_dir);
 	void clean_spooldir_run();
 	void clean_maxpoolsize(bool sip, bool rtp, bool graph, bool audio);

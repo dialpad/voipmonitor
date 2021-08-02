@@ -18,14 +18,9 @@
 #include <pcap.h>
 #include <math.h>
 #include <time.h>
-
-#ifdef HAVE_LIBSSH
-#include <libssh/libssh.h>
-#include <libssh/callbacks.h>
-#endif 
-
+#ifdef HAVE_OPENSSL
 #include <openssl/crypto.h>  
-
+#endif
 #include <sstream>
 
 #include "ipaccount.h"
@@ -54,9 +49,17 @@
 #include "options.h"
 #include "server.h"
 #include "filter_mysql.h"
+#include "charts.h"
 
 #ifndef FREEBSD
 #include <malloc.h>
+#endif
+
+#if HAVE_LIBTCMALLOC
+#include <gperftools/malloc_extension.h>
+#endif
+#if HAVE_LIBTCMALLOC_HEAPPROF
+#include <gperftools/heap-profiler.h>
 #endif
 
 //#define BUFSIZE 1024
@@ -64,7 +67,7 @@
 #define BUFSIZE 4096		//block size?
 
 extern Calltable *calltable;
-extern int terminating;
+extern volatile int terminating;
 extern int opt_manager_port;
 extern char opt_manager_ip[32];
 extern int opt_manager_nonblock_mode;
@@ -77,8 +80,10 @@ extern int manager_socket_server;
 extern int opt_nocdr;
 extern int global_livesniffer;
 extern map<unsigned int, octects_live_t*> ipacc_live;
+extern int opt_t2_boost;
 
-extern map<unsigned int, livesnifferfilter_t*> usersniffer;
+extern map<unsigned int, livesnifferfilter_s*> usersniffer;
+extern map<unsigned int, string> usersniffer_kill_reason;
 extern volatile int usersniffer_sync;
 
 extern char ssh_host[1024];
@@ -94,6 +99,9 @@ extern cConfig CONFIG;
 extern bool useNewCONFIG;
 extern volatile bool cloud_activecheck_sshclose;
 
+extern char opt_call_id_alternative[256];
+extern string binaryNameWithPath;
+
 int opt_blocktarwrite = 0;
 int opt_blockasyncprocess = 0;
 int opt_blockprocesspacket = 0;
@@ -104,7 +112,7 @@ int opt_block_alloc_stack = 0;
 
 using namespace std;
 
-int sendvm(int socket, ssh_channel channel, cClient *c_client, const char *buf, size_t len, int /*mode*/);
+int sendvm(int socket, cClient *c_client, const char *buf, size_t len, int /*mode*/);
 
 std::map<string, int> MgmtCmdsRegTable;
 std::map<string, string> MgmtHelpTable;
@@ -131,7 +139,7 @@ int Mgmt_params::sendString(const char *str) {
 }
 
 int Mgmt_params::sendString(const char *str, ssize_t size) {
-	if(sendvm(client, sshchannel, c_client, str, size, 0) == -1){
+	if(sendvm(client.handler, c_client, str, size, 0) == -1){
 		cerr << "Error sending data to client" << endl;
 		return -1;
 	}
@@ -150,6 +158,10 @@ int Mgmt_params::sendString(int value) {
 	return(sendString(&tstr));
 }
 
+int Mgmt_params::sendString(string str) {
+	return(sendString(&str));
+}
+
 int Mgmt_params::sendString(string *str) {
 	if(str->empty()) {
 		return(0);
@@ -158,7 +170,7 @@ int Mgmt_params::sendString(string *str) {
 	if(zip &&
 	   ((*str)[0] != 0x1f || (str->length() > 1 && (unsigned char)(*str)[1] != 0x8b))) {
 		compressStream = new FILE_LINE(13021) CompressStream(CompressStream::gzip, 1024, 0);
-		compressStream->setSendParameters(client, sshchannel, c_client);
+		compressStream->setSendParameters(client.handler, c_client);
 	}
 	unsigned chunkLength = 4096;
 	unsigned processedLength = 0;
@@ -171,7 +183,7 @@ int Mgmt_params::sendString(string *str) {
 			return -1;
 			}
 		} else {
-			if(sendvm(client, sshchannel, c_client, (char*)str->c_str() + processedLength, processLength, 0) == -1){
+			if(sendvm(client.handler, c_client, (char*)str->c_str() + processedLength, processLength, 0) == -1){
 				cerr << "Error sending data to client" << endl;
 				return -1;
 			}
@@ -185,15 +197,25 @@ int Mgmt_params::sendString(string *str) {
 	return(0);
 }
 
-int Mgmt_params::sendFile(const char *fileName) {
+int Mgmt_params::sendFile(const char *fileName, u_int64_t tailMaxSize) {
 	int fd = open(fileName, O_RDONLY);
 	if(fd < 0) {
 		string str = "error: cannot open file " + string(fileName);
 		sendString(&str);
 		return -1;
 	}
+	u_int64_t startPos = 0;
+	if(tailMaxSize) {
+		u_int64_t fileSize = GetFileSize(fileName);
+		if(fileSize > tailMaxSize) {
+			startPos = fileSize - tailMaxSize;
+		}
+	}
+	if(startPos) {
+		lseek(fd, startPos);
+	}
 	RecompressStream *recompressStream = new FILE_LINE(0) RecompressStream(RecompressStream::compress_na, zip ? RecompressStream::gzip : RecompressStream::compress_na);
-	recompressStream->setSendParameters(client, sshchannel, c_client);
+	recompressStream->setSendParameters(client.handler, c_client);
 	ssize_t nread;
 	size_t read_size = 0;
 	char rbuf[4096];
@@ -223,12 +245,80 @@ int Mgmt_params::sendFile(const char *fileName) {
 	return(0);
 }
 
+int Mgmt_params::sendConfigurationFile(const char *fileName, list<string> *hidePasswordForOptions) {
+	FILE *file = fopen(fileName, "r");
+	if(!file) {
+		string str = "error: cannot open file " + string(fileName);
+		sendString(&str);
+		return -1;
+	}
+	RecompressStream *recompressStream = new FILE_LINE(0) RecompressStream(RecompressStream::compress_na, zip ? RecompressStream::gzip : RecompressStream::compress_na);
+	recompressStream->setSendParameters(client.handler, c_client);
+	char lineBuffer[10000];
+	while(fgets(lineBuffer, sizeof(lineBuffer), file)) {
+		string lineBufferSubst;
+		if(hidePasswordForOptions) {
+			char *optionSeparatorPos = strchr(lineBuffer, '=');
+			if(optionSeparatorPos) {
+				string option = trim_str(string(lineBuffer, optionSeparatorPos - lineBuffer));
+				string value = trim_str(string(optionSeparatorPos + 1));
+				for(list<string>::iterator iter = hidePasswordForOptions->begin(); iter != hidePasswordForOptions->end(); iter++) {
+					if(option == *iter) {
+						lineBufferSubst = option + " = ****\n";
+						break;
+					}
+				}
+			}
+		}
+		if(lineBufferSubst.empty()) {
+			recompressStream->processData(lineBuffer, strlen(lineBuffer));
+		} else {
+			recompressStream->processData((char*)lineBufferSubst.c_str(), lineBufferSubst.length());
+		}
+		if(recompressStream->isError()) {
+			fclose(file);
+			return -1;
+		}
+	}
+	fclose(file);
+	delete recompressStream;
+	return(0);
+}
 
-Mgmt_params::Mgmt_params(char *ibuf, int isize, int iclient, ssh_channel isshchannel, cClient *ic_client, ManagerClientThread **imanagerClientThread) {
+int Mgmt_params::sendPexecOutput(const char *cmd) {
+	int exitCode;
+	string result_out;
+	string result_err;
+        #if true
+		SimpleBuffer out;
+		SimpleBuffer err;
+		vm_pexec(cmd, &out, &err, &exitCode);
+		result_out = (char*)out;
+		result_err = (char*)err;
+	#else
+		result_out = pexec((char*)cmd, &exitCode);
+		if(!result_out.empty()) {
+			exitCide = 0;
+		}
+	#endif
+	if(exitCode == 0 && !result_out.empty()) {
+		return(sendString(result_out));
+	} else {
+		string failed_str = string("failed ") + cmd;
+		if(result_err.size()) {
+			if(result_err[result_err.length() - 1] == '\n') {
+				result_err.resize(result_err.length() - 1);
+			}
+			failed_str += result_err;
+		}
+		return(sendString(failed_str));
+	}
+}
+
+Mgmt_params::Mgmt_params(char *ibuf, int isize, sClientInfo iclient, cClient *ic_client, ManagerClientThread **imanagerClientThread) {
 	buf = ibuf;
 	size = isize;
 	client = iclient;
-	sshchannel = isshchannel;
 	c_client = ic_client;
 	managerClientThread = imanagerClientThread;
 	index = 0;
@@ -314,6 +404,8 @@ int Mgmt_ac_add_thread(Mgmt_params *params);
 int Mgmt_ac_remove_thread(Mgmt_params *params);
 int Mgmt_t2sip_add_thread(Mgmt_params *params);
 int Mgmt_t2sip_remove_thread(Mgmt_params *params);
+int Mgmt_storing_cdr_add_thread(Mgmt_params *params);
+int Mgmt_storing_cdr_remove_thread(Mgmt_params *params);
 int Mgmt_rtpread_add_thread(Mgmt_params *params);
 int Mgmt_rtpread_remove_thread(Mgmt_params *params);
 int Mgmt_enable_bad_packet_order_warning(Mgmt_params *params);
@@ -322,8 +414,8 @@ int Mgmt_skinnyports(Mgmt_params *params);
 int Mgmt_ignore_rtcp_jitter(Mgmt_params *params);
 int Mgmt_convertchars(Mgmt_params *params);
 int Mgmt_natalias(Mgmt_params *params);
-int Mgmt_cloud_activecheck(Mgmt_params *params);
 int Mgmt_jemalloc_stat(Mgmt_params *params);
+int Mgmt_heapprof(Mgmt_params *params);
 int Mgmt_list_active_clients(Mgmt_params *params);
 int Mgmt_memory_stat(Mgmt_params *params);
 int Mgmt_sqlexport(Mgmt_params *params);
@@ -331,10 +423,18 @@ int Mgmt_sql_time_information(Mgmt_params *params);
 int Mgmt_pausecall(Mgmt_params *params);
 int Mgmt_unpausecall(Mgmt_params *params);
 int Mgmt_setverbparam(Mgmt_params *params);
+int Mgmt_cleanverbparams(Mgmt_params *params);
 int Mgmt_set_pcap_stat_period(Mgmt_params *params);
 int Mgmt_memcrash_test(Mgmt_params *params);
-int Mgmt_malloc_trim(Mgmt_params *params);
-
+int Mgmt_get_oldest_spooldir_date(Mgmt_params *params);
+int Mgmt_get_sensor_information(Mgmt_params *params);
+int Mgmt_alloc_trim(Mgmt_params *params);
+int Mgmt_alloc_test(Mgmt_params *params);
+int Mgmt_tcmalloc_stats(Mgmt_params *params);
+int Mgmt_hashtable_stats(Mgmt_params *params);
+int Mgmt_usleep_stats(Mgmt_params *params);
+int Mgmt_charts_cache(Mgmt_params *params);
+int Mgmt_packetbuffer_log(Mgmt_params *params);
 
 int (* MgmtFuncArray[])(Mgmt_params *params) = {
 	Mgmt_help,
@@ -415,6 +515,8 @@ int (* MgmtFuncArray[])(Mgmt_params *params) = {
 	Mgmt_ac_remove_thread,
 	Mgmt_t2sip_add_thread,
 	Mgmt_t2sip_remove_thread,
+	Mgmt_storing_cdr_add_thread,
+	Mgmt_storing_cdr_remove_thread,
 	Mgmt_rtpread_add_thread,
 	Mgmt_rtpread_remove_thread,
 	Mgmt_enable_bad_packet_order_warning,
@@ -423,8 +525,8 @@ int (* MgmtFuncArray[])(Mgmt_params *params) = {
 	Mgmt_ignore_rtcp_jitter,
 	Mgmt_convertchars,
 	Mgmt_natalias,
-	Mgmt_cloud_activecheck,
 	Mgmt_jemalloc_stat,
+	Mgmt_heapprof,
 	Mgmt_list_active_clients,
 	Mgmt_memory_stat,
 	Mgmt_sqlexport,
@@ -432,9 +534,18 @@ int (* MgmtFuncArray[])(Mgmt_params *params) = {
 	Mgmt_pausecall,
 	Mgmt_unpausecall,
 	Mgmt_setverbparam,
+	Mgmt_cleanverbparams,
 	Mgmt_set_pcap_stat_period,
 	Mgmt_memcrash_test,
-	Mgmt_malloc_trim,
+	Mgmt_get_oldest_spooldir_date,
+	Mgmt_get_sensor_information,
+	Mgmt_alloc_trim,
+	Mgmt_alloc_test,
+	Mgmt_tcmalloc_stats,
+	Mgmt_hashtable_stats,
+	Mgmt_usleep_stats,
+	Mgmt_charts_cache,
+	Mgmt_packetbuffer_log,
 	NULL
 };
 
@@ -465,7 +576,7 @@ public:
 	}
 	bool check(const char *tar, const char *file, const char *key) {
 		lock();
-		map<string, u_long>::iterator iter = data.find(string(tar) + "/" + file + "/" + key);
+		map<string, u_int64_t>::iterator iter = data.find(string(tar) + "/" + file + "/" + key);
 		bool rslt =  iter != data.end();
 		unlock();
 		cleanup();
@@ -473,10 +584,10 @@ public:
 	}
 	void cleanup() {
 		lock();
-		u_long actTime = getTimeMS();
-		map<string, u_long>::iterator iter = data.begin();
+		u_int64_t actTime = getTimeMS();
+		map<string, u_int64_t>::iterator iter = data.begin();
 		while(iter != data.end()) {
-			if(actTime - iter->second > 10000ul) {
+			if(actTime - iter->second > 10000ull) {
 				data.erase(iter++);
 			} else {
 				++iter;
@@ -491,7 +602,7 @@ public:
 		__sync_lock_release(&_sync);
 	}
 private:
-	map<string, u_long> data;
+	map<string, u_int64_t> data;
 	volatile int _sync;
 } getfile_in_tar_completed;
 
@@ -694,7 +805,7 @@ public:
 			if(!listening_clients.exists(iter->second->call)) {
 				stop(iter->second);
 				while(iter->second->running) {
-					usleep(100);
+					USLEEP(100);
 				}
 			}
 			if(!iter->second->running) {
@@ -776,7 +887,7 @@ void* c_listening_workers::worker_thread_function(void *arguments) {
 
 		/*
 		while(max(call->audiobuffer1->size_get(), call->audiobuffer2->size_get()) < period_msec * 2) {
-			usleep(period_msec * 1000);
+			USLEEP(period_msec * 1000);
 		}
 		*/
 	 
@@ -929,27 +1040,7 @@ void listening_remove_worker(Call *call) {
 	listening_master_unlock();
 }
 
-#ifdef HAVE_LIBSSH
-int sendssh(ssh_channel channel, const char *buf, int len) {
-	int wr, i;
-	wr = 0;
-	do {   
-		i = ssh_channel_write(channel, buf, len);
-		if (i < 0) {
-			fprintf(stderr, "libssh_channel_write: %d\n", i);
-			return -1;
-		}
-		wr += i;
-	} while(i > 0 && wr < len);
-	return wr;
-}
-#else 
-int sendssh(ssh_channel channel, const char *buf, int len) {
-	return 0;
-}
-#endif
-
-int sendvm(int socket, ssh_channel channel, cClient *c_client, const char *buf, size_t len, int /*mode*/) {
+int sendvm(int socket, cClient *c_client, const char *buf, size_t len, int /*mode*/) {
 	int res = 0;
 	if(c_client) {
 		extern cCR_Receiver_service *cloud_receiver;
@@ -960,94 +1051,36 @@ int sendvm(int socket, ssh_channel channel, cClient *c_client, const char *buf, 
 		} else if(snifferClientService) {
 			snifferClientService->get_aes_keys(&aes_ckey, &aes_ivec);
 		}
-		c_client->writeAesEnc((u_char*)buf, len, aes_ckey.c_str(), aes_ivec.c_str());
-	} else if(channel) {
-		res = sendssh(channel, buf, len);
+		res = c_client->writeAesEnc((u_char*)buf, len, aes_ckey.c_str(), aes_ivec.c_str()) ? 0: -1;
 	} else {
 		res = send(socket, buf, len, 0);
 	}
 	return res;
 }
 
-int _sendvm(int socket, void *channel, void *c_client, const char *buf, size_t len, int mode) {
-	return(sendvm(socket, (ssh_channel)channel, (cClient*)c_client, buf, len, mode));
+int _sendvm(int socket, void *c_client, const char *buf, size_t len, int mode) {
+	return(sendvm(socket, (cClient*)c_client, buf, len, mode));
 }
 
-int sendvm_from_stdout_of_command(char *command, int socket, ssh_channel channel, cClient *c_client, char */*buf*/, size_t /*len*/, int /*mode*/) {
+int sendvm_from_stdout_of_command(char *command, int socket, cClient *c_client) {
 	SimpleBuffer out;
 	if(vm_pexec(command, &out) && out.size()) {
-		if(sendvm(socket, channel, c_client, (const char*)out.data(), out.size(), 0) == -1) {
+		if(sendvm(socket, c_client, (const char*)out.data(), out.size(), 0) == -1) {
 			if (verbosity > 0) syslog(LOG_NOTICE, "sendvm_from_stdout_of_command: sending data problem");
 			return -1;
 		}
 	}
 	return 0;
-	
-	/* obsolete
- 
-//using pipe for reading from stdout of given command;
-    int retch;
-    long total = 0;
-
-    FILE *inpipe;
-    
-    cout << command << endl;
-    
-    inpipe = popen(command, "r");
-
-    if (!inpipe) {
-        syslog(LOG_ERR, "sendvm_from_stdout_of_command: couldn't open pipe for command %s", command);
-        return -1;
-    }
-
-//     while (retch = fread(buf, sizeof(char), len, inpipe) > 0) {
-// 		total += retch;
-// 		syslog(LOG_ERR, "CTU: buflen:%d nacetl jsem %li create command",buflen, total);
-// 
-// 		if (sendvm(socket, channel, buf, retch, 0) == -1) {
-// 			if (verbosity > 1) syslog(LOG_NOTICE, "Pipe RET %li bytes, problem sending using sendvm", total);
-// 			return -1;
-// 		}
-//     }
-
-	int filler = 0;		//'offset' buf pointer
-	retch = 0;
-
-	//read char by char from a pipe
-    while ((retch = fread(buf + filler, 1, 1, inpipe)) > 0) {
-		total ++;
-		filler ++;
-
-		if (filler == BUFSIZE) {
-			filler = 0;
-			if (sendvm(socket, channel, buf, BUFSIZE, 0) == -1) 
-			{
-				if (verbosity > 0) syslog(LOG_NOTICE, "sendvm_from_stdout_of_command: Pipe RET %li bytes, but problem sending using sendvm1", total);
-				return -1;
-			}
-		}
-    }
-	if (filler > 0) {
-		if (sendvm(socket, channel, buf, filler, 0) == -1) {
-			if (verbosity > 0) syslog(LOG_NOTICE, "sendvm_from_stdout_of_command: Pipe RET %li bytes, but problem sending using sendvm2", total);
-			return -1;
-		}
-	}
-
-	if (verbosity > 1) syslog(LOG_NOTICE, "sendvm_from_stdout_of_command: Read total %li chars.", total);
-    pclose(inpipe);
-    return 0; 
-	*/
 }
 
-void try_ip_mask(uint &addr, uint &mask, string &ipstr) {
-	stringstream data2(ipstr);
-	string prefix, bits;
-	uint tmpmask = ~0;
-	getline(data2, prefix, '/');
-	getline(data2, bits, '/');
-	mask = ~(tmpmask >> atoi(bits.c_str()));
-	addr = ntohl((unsigned int)inet_addr(prefix.c_str())) & mask;
+void try_ip_mask(vmIP &addr, vmIP &mask, string &ipstr) {
+        vector<string> ip_mask = split(ipstr.c_str(), "/", true);
+	if(ip_mask.size() >= 2) {
+		vmIP ip = str_2_vmIP(ip_mask[0].c_str());
+		unsigned mask_length = atoi(ip_mask[1].c_str());
+		addr = ip.network(mask_length);
+		mask = ip.network_mask(mask_length);
+	}
 }
 
 static volatile bool enable_parse_command = false;
@@ -1060,40 +1093,42 @@ void manager_parse_command_disable() {
 	enable_parse_command = false;
 }
 
-static int _parse_command(char *buf, int size, int client, ssh_channel sshchannel, cClient *c_client, ManagerClientThread **managerClientThread);
+static int _parse_command(char *buf, int size, sClientInfo client, cClient *c_client, ManagerClientThread **managerClientThread);
 
-int parse_command(string cmd, int client, cClient *c_client) {
+int parse_command(string cmd, sClientInfo client, cClient *c_client) {
 	ManagerClientThread *managerClientThread = NULL;
-	int rslt = _parse_command((char*)cmd.c_str(), cmd.length(), client, NULL, c_client, &managerClientThread);
+	int rslt = _parse_command((char*)cmd.c_str(), cmd.length(), client, c_client, &managerClientThread);
 	if(managerClientThread) {
 		if(managerClientThread->parseCommand()) {
 			ClientThreads.add(managerClientThread);
 			managerClientThread->run();
 		} else {
 			delete managerClientThread;
-			if(client) {
-				close(client);
+			if(client.handler) {
+				close(client.handler);
 			}
 		}
 	} else {
-		if(client) {
-			close(client);
+		if(client.handler) {
+			close(client.handler);
 		}
 	}
 	return(rslt);
 }
 
-int _parse_command(char *buf, int size, int client, ssh_channel sshchannel, cClient *c_client, ManagerClientThread **managerClientThread) {
+int _parse_command(char *buf, int size, sClientInfo client, cClient *c_client, ManagerClientThread **managerClientThread) {
 	if(!enable_parse_command) {
 		return(0);
 	}
 
-	char *pointerToEndSeparator = strstr(buf, "\r\n");
-	if(pointerToEndSeparator) {
-		*pointerToEndSeparator = 0;
+	for(int i = 0; i < 2; i++) {
+		char *pointerToEndSeparator = strstr(buf, i == 0 ? "\r" : "\n");
+		if(pointerToEndSeparator) {
+			*pointerToEndSeparator = 0;
+		}
 	}
 	if(sverb.manager) {
-		cout << "manager command: " << buf << "|END" << endl;
+		syslog(LOG_NOTICE, "manager command: %s|END", buf);
 	}
 	
 	int MgmtFuncIndex = -1;
@@ -1114,7 +1149,7 @@ int _parse_command(char *buf, int size, int client, ssh_channel sshchannel, cCli
 			}
 		}
 	}
-	Mgmt_params* mparams = new FILE_LINE(0) Mgmt_params(buf, size, client, sshchannel, c_client, managerClientThread);
+	Mgmt_params* mparams = new FILE_LINE(0) Mgmt_params(buf, size, client, c_client, managerClientThread);
 	if(MgmtFuncIndex >= 0) {
 		mparams->command = MgmtCommand;
 		int ret = MgmtFuncArray[MgmtFuncIndex](mparams);
@@ -1235,14 +1270,12 @@ void *manager_read_thread(void * arg) {
 	char buf[BUFSIZE];
 	string buf_long;
 	int size;
-	unsigned int    client;
-	client = *(unsigned int *)arg;
-	delete (unsigned int*)arg;
+	sClientInfo clientInfo = *(sClientInfo*)arg;
+	delete (sClientInfo*)arg;
 
-	//cout << "New manager connect from: " << inet_ntoa((in_addr)clientInfo.sin_addr) << endl;
-	if ((size = recv(client, buf, BUFSIZE - 1, 0)) == -1) {
+	if ((size = recv(clientInfo.handler, buf, BUFSIZE - 1, 0)) == -1) {
 		cerr << "Error in receiving data" << endl;
-		close(client);
+		close(clientInfo.handler);
 		return 0;
 	} else {
 		buf[size] = '\0';
@@ -1262,7 +1295,7 @@ void *manager_read_thread(void * arg) {
 				if(opt_socket_use_poll) {
 					pollfd fds[2];
 					memset(fds, 0 , sizeof(fds));
-					fds[0].fd = client;
+					fds[0].fd = clientInfo.handler;
 					fds[0].events = POLLIN;
 					int rsltPool = poll(fds, 1, timeout_ms);
 					if(rsltPool > 0 && fds[0].revents) {
@@ -1272,16 +1305,16 @@ void *manager_read_thread(void * arg) {
 					fd_set rfds;
 					struct timeval tv;
 					FD_ZERO(&rfds);
-					FD_SET(client, &rfds);
+					FD_SET(clientInfo.handler, &rfds);
 					tv.tv_sec = 0;
 					tv.tv_usec = timeout_ms * 1000;
-					int rsltSelect = select(client + 1, &rfds, (fd_set *) 0, (fd_set *) 0, &tv);
-					if(rsltSelect > 0 && FD_ISSET(client, &rfds)) {
+					int rsltSelect = select(clientInfo.handler + 1, &rfds, (fd_set *) 0, (fd_set *) 0, &tv);
+					if(rsltSelect > 0 && FD_ISSET(clientInfo.handler, &rfds)) {
 						doRead = true;
 					}
 				}
 				if(doRead &&
-				   (size = recv(client, buf_next, BUFSIZE - 1, 0)) > 0) {
+				   (size = recv(clientInfo.handler, buf_next, BUFSIZE - 1, 0)) > 0) {
 					buf_next[size] = '\0';
 					buf_long += buf_next;
 					if(debugRecv) {
@@ -1304,7 +1337,9 @@ void *manager_read_thread(void * arg) {
 		}
 	}
 	
-	parse_command(buf_long, client, NULL);
+	parse_command(buf_long, clientInfo, NULL);
+	
+	termTimeCacheForThread();
 
 	return 0;
 }
@@ -1315,147 +1350,14 @@ void perror_syslog(const char *msg) {
 	syslog(LOG_ERR, "%s:%s\n", msg, buf);
 }
 
-#ifdef HAVE_LIBSSH
-void *manager_ssh_(void) {
-	ssh_session session;
-	int rc;
-	// Open session and set options
-	list<ssh_channel> ssh_chans;
-	list<ssh_channel>::iterator it1;
-	char buf[1024*1024]; 
-	int len;
-	session = ssh_new();
-	if (session == NULL)
-		exit(-1);
-	ssh_options_set(session, SSH_OPTIONS_HOST, ssh_host);
-	ssh_options_set(session, SSH_OPTIONS_PORT, &ssh_port);
-	ssh_options_set(session, SSH_OPTIONS_COMPRESSION, "yes");
-	ssh_options_set(session, SSH_OPTIONS_SSH_DIR, "/tmp");
-	ssh_options_set(session, SSH_OPTIONS_USER, "root");
-	// Connect to server
-	rc = ssh_connect(session);
-	if (rc != SSH_OK) {
-		syslog(LOG_ERR, "Error connecting to %s: %s\n", ssh_host, ssh_get_error(session));
-		ssh_free(session);
-		return 0;
-	}
-/*
-	// Verify the server's identity
-	// For the source code of verify_knowhost(), check previous example
-	if (verify_knownhost(session) < 0)
-	{
-		ssh_disconnect(session);
-		ssh_free(session);
-		exit(-1);
-	}
-*/
-	// Authenticate ourselves
-	rc = ssh_userauth_password(session, ssh_username, ssh_password);
-	if (rc != SSH_AUTH_SUCCESS) {
-		syslog(LOG_ERR, "Error authenticating with password: %s\n", ssh_get_error(session));
-		ssh_disconnect(session);
-		ssh_free(session);
-		goto ssh_disconnect;
-	}
-	syslog(LOG_NOTICE, "Connected to ssh\n");
-
-	int remote_listenport;
-	rc = ssh_forward_listen(session, ssh_remote_listenhost, ssh_remote_listenport, &remote_listenport);
-	if (rc != SSH_OK) {
-		syslog(LOG_ERR, "Error opening remote port: %s\n", ssh_get_error(session));
-		goto ssh_disconnect;
-	}
-	syslog(LOG_NOTICE, "connection established\n");
-
-	pthread_attr_t attr;
-	pthread_attr_init(&attr);
-
-	cloud_activecheck_sshclose = false; //alow active checking operations from now
-	/* set the thread detach state */
-	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-
-	while(1) {
-		if (cloud_activecheck_sshclose) goto ssh_disconnect;
-		ssh_channel channel;
-		//int port;
-		//channel = ssh_channel_accept_forward(session, 0, &port);
-		channel = ssh_forward_accept(session, 0);
-		usleep(10000);
-		if (channel == NULL) {
-			if(!ssh_is_connected(session)) {
-				break;
-			}
-		} else {
-			ssh_chans.push_back(channel);
-		}
-		for (it1 = ssh_chans.begin(); it1 != ssh_chans.end();) {
-			ssh_channel channel = *it1;
-			if(ssh_channel_is_open(channel) && !ssh_channel_is_eof(channel)) {
-				len = ssh_channel_read_nonblocking(channel, buf, sizeof(buf), 0);
-				if(len == SSH_ERROR) {
-					// read error 
-					ssh_channel_free(channel);
-					ssh_chans.erase(it1++);
-					continue;
-				}
-				if (len <= 0) {
-					++it1;
-					continue;
-				}
-				buf[len] = '\0';
-				_parse_command(buf, len, 0, channel, NULL, NULL);
-				ssh_channel_send_eof(channel);
-				ssh_channel_free(channel);
-				ssh_chans.erase(it1++);
-			} else {
-				// channel is closed already, remove it
-				ssh_channel_free(channel);
-				ssh_chans.erase(it1++);
-			}
-		}
-	}
-ssh_disconnect:
-	ssh_disconnect(session);
-	ssh_free(session);
-	return 0;
-}
-#endif
-
-#ifdef HAVE_LIBSSH
-void *manager_ssh(void */*arg*/) {
-	while (ssh_host[0] == '\0') {	//wait until register.php POST done
-		sleep(1);
-	}
-
-	ssh_threads_set_callbacks(ssh_threads_get_pthread());
-	ssh_init();
-//	ssh_set_log_level(SSH_LOG_WARNING | SSH_LOG_PROTOCOL | SSH_LOG_PACKET | SSH_LOG_FUNCTIONS);
-	while(!is_terminating()) {
-		syslog(LOG_NOTICE, "Starting reverse SSH connection service\n");
-		manager_ssh_();
-		syslog(LOG_NOTICE, "SSH service stopped.\n");
-		sleep(1);
-	}
-	return 0;
-}
-#endif
-
 
 void *manager_server(void */*dummy*/) {
- 
-	sockaddr_in sockName;
-	sockaddr_in clientInfo;
-	socklen_t addrlen;
 
 	// Vytvorime soket - viz minuly dil
-	if ((manager_socket_server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
+	if ((manager_socket_server = socket_create(str_2_vmIP(opt_manager_ip), SOCK_STREAM, IPPROTO_TCP)) == -1) {
 		cerr << "Cannot create manager tcp socket" << endl;
 		return 0;
 	}
-	sockName.sin_family = AF_INET;
-	sockName.sin_port = htons(opt_manager_port);
-	//sockName.sin_addr.s_addr = INADDR_ANY;
-	sockName.sin_addr.s_addr = inet_addr(opt_manager_ip);
 	int on = 1;
 	setsockopt(manager_socket_server, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
 	if(opt_manager_nonblock_mode) {
@@ -1465,13 +1367,13 @@ void *manager_server(void */*dummy*/) {
 		}
 	}
 tryagain:
-	if (bind(manager_socket_server, (sockaddr *)&sockName, sizeof(sockName)) == -1) {
+	if (socket_bind(manager_socket_server, str_2_vmIP(opt_manager_ip), opt_manager_port) == -1) {
 		syslog(LOG_ERR, "Cannot bind to port [%d] trying again after 5 seconds intervals\n", opt_manager_port);
 		sleep(5);
 		goto tryagain;
 	}
 	// create queue with 100 connections max 
-	if (listen(manager_socket_server, 100) == -1) {
+	if (listen(manager_socket_server, 512) == -1) {
 		cerr << "Cannot create manager queue" << endl;
 		return 0;
 	}
@@ -1504,27 +1406,26 @@ tryagain:
 			}
 		}
 		if(doAccept) {
-			addrlen = sizeof(clientInfo);
-			int client = accept(manager_socket_server, (sockaddr*)&clientInfo, &addrlen);
+			vmIP clientIP;
+			int clientHandler = socket_accept(manager_socket_server, &clientIP, NULL);
 			if(is_terminating_without_error()) {
-				close(client);
+				close(clientHandler);
 				close(manager_socket_server);
 				return 0;
 			}
-			if (client == -1) {
+			if (clientHandler == -1) {
 				//cerr << "Problem with accept client" <<endl;
-				close(client);
+				close(clientHandler);
 				continue;
 			}
 
 			pthread_attr_init(&attr);
-			unsigned int *_ids = new FILE_LINE(13018) unsigned int;
-			*_ids = client;
+			sClientInfo *clientInfo = new FILE_LINE(0) sClientInfo(clientHandler, clientIP);
 			int rslt = pthread_create (		/* Create a child thread        */
 				       &threads,		/* Thread ID (system assigned)  */    
 				       &attr,			/* Default thread attributes    */
 				       manager_read_thread,	/* Thread routine               */
-				       _ids);			/* Arguments to be passed       */
+				       clientInfo);		/* Arguments to be passed       */
 			pthread_detach(threads);
 			pthread_attr_destroy(&attr);
 			if(rslt != 0) {
@@ -1551,16 +1452,16 @@ void livesnifferfilter_s::updateState() {
 	new_state.all_vlan = true;
 	new_state.all_siptypes = true;
 	for(int i = 0; i < MAXLIVEFILTERS; i++) {
-		if(this->lv_saddr[i]) {
+		if(this->lv_saddr[i].isSet()) {
 			new_state.all_saddr = false;
 		}
-		if(this->lv_daddr[i]) {
+		if(this->lv_daddr[i].isSet()) {
 			new_state.all_daddr = false;
 		}
-		if(this->lv_bothaddr[i]) {
+		if(this->lv_bothaddr[i].isSet()) {
 			new_state.all_bothaddr = false;
 		}
-		if(this->lv_bothport[i]) {
+		if(this->lv_bothport[i].isSet()) {
 			new_state.all_bothport = false;
 		}
 		if(this->lv_srcnum[i][0]) {
@@ -1622,12 +1523,12 @@ string livesnifferfilter_s::getStringState() {
 		if(!(pass == 1 ? this->state.all_saddr :
 		     pass == 2 ? this->state.all_daddr :
 				 this->state.all_bothaddr)) {
-			unsigned int *addr = pass == 1 ? this->lv_saddr :
-					     pass == 2 ? this->lv_daddr :
-							 this->lv_bothaddr;
+			vmIP *addr = pass == 1 ? this->lv_saddr :
+				     pass == 2 ? this->lv_daddr :
+						 this->lv_bothaddr;
 			int counter = 0;
 			for(int i = 0; i < MAXLIVEFILTERS; i++) {
-				if(addr[i]) {
+				if(addr[i].isSet()) {
 					if(counter) {
 						outStr << ", ";
 					} else {
@@ -1637,7 +1538,7 @@ string livesnifferfilter_s::getStringState() {
 								       "")
 						       << ": ";
 					}
-					outStr << inet_ntostring(addr[i]);
+					outStr << addr[i].getString();
 					++counter;
 				}
 			}
@@ -1702,7 +1603,11 @@ string livesnifferfilter_s::getStringState() {
 			}
 		}
 	}
-	return(outStr.str());
+	string result = outStr.str();
+	while(result.length() && (result[result.length() - 1] == ' ' || result[result.length() - 1] == ';')) {
+		result = result.substr(0, result.length() - 1);
+	}
+	return(result);
 }
 
 void updateLivesnifferfilters() {
@@ -1710,7 +1615,7 @@ void updateLivesnifferfilters() {
 	memset(&new_livesnifferfilterUseSipTypes, 0, sizeof(new_livesnifferfilterUseSipTypes));
 	if(usersniffer.size()) {
 		global_livesniffer = 1;
-		map<unsigned int, livesnifferfilter_t*>::iterator usersnifferIT;
+		map<unsigned int, livesnifferfilter_s*>::iterator usersnifferIT;
 		for(usersnifferIT = usersniffer.begin(); usersnifferIT != usersniffer.end(); ++usersnifferIT) {
 			usersnifferIT->second->updateState();
 			if(usersnifferIT->second->state.all_siptypes) {
@@ -1766,11 +1671,11 @@ bool cmpCallBy_destroy_call_at(Call* a, Call* b) {
 	return(a->destroy_call_at < b->destroy_call_at);   
 }
 bool cmpCallBy_first_packet_time(Call* a, Call* b) {
-	return(a->first_packet_time < b->first_packet_time);   
+	return(a->first_packet_time_us < b->first_packet_time_us);
 }
 
 
-ManagerClientThread::ManagerClientThread(int client, const char *type, const char *command, int commandLength) {
+ManagerClientThread::ManagerClientThread(sClientInfo client, const char *type, const char *command, int commandLength) {
 	this->client = client;
 	this->type = type;
 	if(commandLength) {
@@ -1786,7 +1691,7 @@ void ManagerClientThread::run() {
 	unsigned int counter = 0;
 	bool disconnect = false;
 	int flag = 0;
-	setsockopt(client, IPPROTO_TCP, TCP_NODELAY, (char *) &flag, sizeof(int));
+	setsockopt(client.handler, IPPROTO_TCP, TCP_NODELAY, (char *) &flag, sizeof(int));
 	int flushBuffLength = 1000;
 	char *flushBuff = new FILE_LINE(13019) char[flushBuffLength];
 	memset(flushBuff, '_', flushBuffLength - 1);
@@ -1800,26 +1705,31 @@ void ManagerClientThread::run() {
 		}
 		this->unlock_responses();
 		if(!rsltString.empty()) {
-			if(send(client, rsltString.c_str(), rsltString.length(), 0) == -1) {
+			if(send(client.handler, rsltString.c_str(), rsltString.length(), 0) == -1) {
 				disconnect = true;
 			} else {
-				send(client, flushBuff, flushBuffLength, 0);
+				if(sverb.screen_popup_syslog) {
+					syslog(LOG_INFO, "SCREEN_POPUP - ok send string: dest: %s data: %s", 
+					       client.ip.getString().c_str(),
+					       rsltString.c_str());
+				}
+				send(client.handler, flushBuff, flushBuffLength, 0);
 			}
 		}
 		++counter;
 		if((counter % 5) == 0 && !disconnect) {
-			if(send(client, "ping\n", 5, 0) == -1) {
+			if(send(client.handler, "ping\n", 5, 0) == -1) {
 				disconnect = true;
 			}
 		}
-		usleep(100000);
+		USLEEP(100000);
 	}
-	close(client);
+	close(client.handler);
 	finished = true;
 	delete [] flushBuff;
 }
 
-ManagerClientThread_screen_popup::ManagerClientThread_screen_popup(int client, const char *command, int commandLength) 
+ManagerClientThread_screen_popup::ManagerClientThread_screen_popup(sClientInfo client, const char *command, int commandLength) 
  : ManagerClientThread(client, "screen_popup", command, commandLength) {
 	auto_popup = false;
 	non_numeric_caller_id = false;
@@ -1831,21 +1741,20 @@ bool ManagerClientThread_screen_popup::parseCommand() {
 }
 
 void ManagerClientThread_screen_popup::onCall(int sipResponseNum, const char *callerName, const char *callerNum, const char *calledNum,
-					      unsigned int sipSaddr, unsigned int sipDaddr,
+					      vmIP sipSaddr, vmIP sipDaddr,
 					      const char *screenPopupFieldsString) {
-	/*
-	cout << "** call 01" << endl;
-	cout << "** - called num : " << calledNum << endl;
-	struct in_addr _in;
-	_in.s_addr = sipSaddr;
-	cout << "** - src ip : " << inet_ntoa(_in) << endl;
-	cout << "** - reg_match : " << reg_match(calledNum, this->dest_number.empty() ? this->username.c_str() : this->dest_number.c_str(), __FILE__, __LINE__) << endl;
-	cout << "** - check ip : " << this->src_ip.checkIP(htonl(sipSaddr)) << endl;
-	*/
+	if(sverb.screen_popup) {
+		cout << "** - sip response : " << sipResponseNum << endl;
+		cout << "** - called num : " << calledNum << endl;
+		cout << "** - src ip : " << sipSaddr.getString() << endl;
+		cout << "** - reg_match : " << reg_match(calledNum, this->dest_number.empty() ? this->username.c_str() : this->dest_number.c_str(), __FILE__, __LINE__) << endl;
+		cout << "** - check ip : " << this->src_ip.checkIP(sipSaddr) << endl;
+		cout << "** - screenPopupFieldsString : " << screenPopupFieldsString << endl;
+	}
 	if(!(reg_match(calledNum, this->dest_number.empty() ? this->username.c_str() : this->dest_number.c_str(), __FILE__, __LINE__) &&
 	     (this->non_numeric_caller_id ||
 	      this->isNumericId(calledNum)) &&
-	     this->src_ip.checkIP(htonl(sipSaddr)))) {
+	     this->src_ip.checkIP(sipSaddr))) {
 		return;
 	}
 	if(this->regex_check_calling_number.size()) {
@@ -1861,13 +1770,6 @@ void ManagerClientThread_screen_popup::onCall(int sipResponseNum, const char *ca
 		}
 	}
 	char rsltString[4096];
-	char sipSaddrIP[18];
-	char sipDaddrIP[18];
-	struct in_addr in;
-	in.s_addr = sipSaddr;
-	strcpy(sipSaddrIP, inet_ntoa(in));
-	in.s_addr = sipDaddr;
-	strcpy(sipDaddrIP, inet_ntoa(in));
 	string callerNumStr = callerNum;
 	for(size_t i = 0; i < this->regex_replace_calling_number.size(); i++) {
 		string temp = reg_replace(callerNumStr.c_str(), 
@@ -1891,9 +1793,15 @@ void ManagerClientThread_screen_popup::onCall(int sipResponseNum, const char *ca
 		callerName,
 		callerNumStr.c_str(),
 		calledNum,
-		sipSaddrIP,
-		sipDaddrIP,
+		sipSaddr.getString().c_str(),
+		sipDaddr.getString().c_str(),
 		screenPopupFieldsString);
+	if(sverb.screen_popup_syslog) {
+		syslog(LOG_INFO, "SCREEN_POPUP - send string: username: %s dest: %s data: %s", 
+		       username.c_str(),
+		       client.ip.getString().c_str(),
+		       rsltString);
+	}
 	this->lock_responses();
 	this->responses.push(rsltString);
 	this->unlock_responses();
@@ -1922,6 +1830,7 @@ bool ManagerClientThread_screen_popup::parseUserPassword() {
 			p.src_ip_blacklist,\
 			p.app_launch,\
 			p.app_launch_args_or_url,\
+			p.status_line,\
 			p.popup_title\
 		 from screen_popup_users u\
 		 join screen_popup_profile p on (p.id=u.profile_id)\
@@ -1958,6 +1867,7 @@ bool ManagerClientThread_screen_popup::parseUserPassword() {
 		src_ip.addBlack(row["src_ip_blacklist"].c_str());
 		app_launch = row["app_launch"];
 		app_launch_args_or_url = row["app_launch_args_or_url"];
+		status_line = row["status_line"];
 		popup_title = row["popup_title"];
 		if(!opt_php_path[0]) {
 			rslt = false;
@@ -1992,6 +1902,7 @@ bool ManagerClientThread_screen_popup::parseUserPassword() {
 								"show_ip:[[%i]] "
 								"app_launch:[[%s]] "
 								"args_or_url:[[%s]] "
+								"status_line:[[%s]] "
 								"key:[[%s]] "
 								"allow_change_settings:[[%i]] "
 								"popup_title:[[%s]]\n", 
@@ -2001,6 +1912,7 @@ bool ManagerClientThread_screen_popup::parseUserPassword() {
 								show_ip, 
 								app_launch.c_str(), 
 								app_launch_args_or_url.c_str(), 
+								status_line.c_str(),
 								key, 
 								allow_change_settings,
 								popup_title.c_str());
@@ -2018,7 +1930,7 @@ bool ManagerClientThread_screen_popup::parseUserPassword() {
 		strcpy(rsltString, "login_failed error:[[Invalid user or password.]]\n");
 	}
 	delete sqlDb;
-	send(client, rsltString, strlen(rsltString), 0);
+	send(client.handler, rsltString, strlen(rsltString), 0);
 	return(rslt);
 }
 
@@ -2045,9 +1957,21 @@ void ManagerClientThreads::add(ManagerClientThread *clientThread) {
 	this->cleanup();
 }
 
-void ManagerClientThreads::onCall(int sipResponseNum, const char *callerName, const char *callerNum, const char *calledNum,
-				  unsigned int sipSaddr, unsigned int sipDaddr,
+void ManagerClientThreads::onCall(const char *call_id,
+				  int sipResponseNum, const char *callerName, const char *callerNum, const char *calledNum,
+				  vmIP sipSaddr, vmIP sipDaddr,
 				  const char *screenPopupFieldsString) {
+	if(sverb.screen_popup_syslog) {
+		syslog(LOG_INFO, "SCREEN_POPUP - call: call_id: %s response: %i caller: %s called: %s callername: %s from: %s to: %s fields: %s", 
+		       call_id,
+		       sipResponseNum,
+		       callerNum,
+		       calledNum,
+		       callerName,
+		       sipSaddr.getString().c_str(),
+		       sipDaddr.getString().c_str(),
+		       screenPopupFieldsString);
+	}
 	this->lock_client_threads();
 	vector<ManagerClientThread*>::iterator iter;
 	for(iter = this->clientThreads.begin(); iter != this->clientThreads.end(); ++iter) {
@@ -2382,7 +2306,8 @@ int Mgmt_listcalls(Mgmt_params *params) {
 }
 
 typedef struct {
-	int *setVar;
+	const char *cmd;
+	volatile int *setVar;
 	int setValue;
 	const char *helpText;
 } cmdData;
@@ -2390,23 +2315,30 @@ typedef struct {
 int Mgmt_offon(Mgmt_params *params) {
 	static std::map<string, cmdData> cmdsDataTable;
 	if (params->task == params->mgmt_task_DoInit) {
-		cmdsDataTable["unblocktar"] = {&opt_blocktarwrite, 0, "unblock tar files"};
-		cmdsDataTable["blocktar"] = {&opt_blocktarwrite, 1, "block tar files"};
-		cmdsDataTable["unblockasync"] = {&opt_blockasyncprocess, 0, "unblock async processing"};
-		cmdsDataTable["blockasync"] = {&opt_blockasyncprocess, 1, "block async processing"};
-		cmdsDataTable["unblockprocesspacket"] = {&opt_blockprocesspacket, 0, "unblock packet processing"};
-		cmdsDataTable["blockprocesspacket"] = {&opt_blockprocesspacket, 1, "block packet processing"};
-		cmdsDataTable["unblockcleanupcalls"] = {&opt_blockcleanupcalls, 0, "unblock cleanup calls"};
-		cmdsDataTable["blockcleanupcalls"] = {&opt_blockcleanupcalls, 1, "block cleanup calls"};
-		cmdsDataTable["unsleepprocesspacket"] = {&opt_sleepprocesspacket, 0, "unsleep packet processing"};
-		cmdsDataTable["sleepprocesspacket"] = {&opt_sleepprocesspacket, 1, "sleep packet processing"};
-		cmdsDataTable["unblockqfile"] = {&opt_blockqfile, 0, "unblock qfiles"};
-		cmdsDataTable["blockqfile"] = {&opt_blockqfile, 1, "block qfiles"};
-		cmdsDataTable["unblock_alloc_stack"] = {&opt_block_alloc_stack, 0, "unblock stack allocation"};
-		cmdsDataTable["block_alloc_stack"] = {&opt_block_alloc_stack, 1, "block stack allocation"};
-		cmdsDataTable["disablecdr"] = {&opt_nocdr, 1, "disable cdr creation"};
-		cmdsDataTable["enablecdr"] = {&opt_nocdr, 0, "enable cdr creation"};
-
+		extern volatile int partitionsServiceIsInProgress;
+		cmdData cmdData_src[] = {
+			{ "unblocktar", &opt_blocktarwrite, 0, "unblock tar files"},
+			{ "blocktar", &opt_blocktarwrite, 1, "block tar files"},
+			{ "unblockasync", &opt_blockasyncprocess, 0, "unblock async processing"},
+			{ "blockasync", &opt_blockasyncprocess, 1, "block async processing"},
+			{ "unblockprocesspacket", &opt_blockprocesspacket, 0, "unblock packet processing"},
+			{ "blockprocesspacket", &opt_blockprocesspacket, 1, "block packet processing"},
+			{ "unblockcleanupcalls", &opt_blockcleanupcalls, 0, "unblock cleanup calls"},
+			{ "blockcleanupcalls", &opt_blockcleanupcalls, 1, "block cleanup calls"},
+			{ "unsleepprocesspacket", &opt_sleepprocesspacket, 0, "unsleep packet processing"},
+			{ "sleepprocesspacket", &opt_sleepprocesspacket, 1, "sleep packet processing"},
+			{ "unblockqfile", &opt_blockqfile, 0, "unblock qfiles"},
+			{ "blockqfile", &opt_blockqfile, 1, "block qfiles"},
+			{ "unblock_alloc_stack", &opt_block_alloc_stack, 0, "unblock stack allocation"},
+			{ "block_alloc_stack", &opt_block_alloc_stack, 1, "block stack allocation"},
+			{ "disablecdr", &opt_nocdr, 1, "disable cdr creation"},
+			{ "enablecdr", &opt_nocdr, 0, "enable cdr creation"},
+			{ "unset_partitions_service", &partitionsServiceIsInProgress, 0, "unset flag partitions service is in progress"},
+			{ "set_partitions_service", &partitionsServiceIsInProgress, 1, "set flag partitions service is in progress"}
+		};
+		for(unsigned i = 0; i < sizeof(cmdData_src) / sizeof(cmdData_src[0]); i++) {
+			cmdsDataTable[cmdData_src[i].cmd] = cmdData_src[i];
+		}
 		std::map<string, cmdData>::iterator cmdItem;
 		for (cmdItem = cmdsDataTable.begin(); cmdItem != cmdsDataTable.end(); cmdItem++) {
 			params->registerCommand(cmdItem->first.c_str(), cmdItem->second.helpText);
@@ -2414,10 +2346,7 @@ int Mgmt_offon(Mgmt_params *params) {
 		return(0);
 	}
 	char *endOfCmd = strpbrk(params->buf, " \r\n\t");
-	if (!endOfCmd) {
-		return(-1);
-	}
-	string cmdStr (params->buf, endOfCmd);
+	string cmdStr = endOfCmd ? string(params->buf, endOfCmd) : params->buf;
 	std::map<string, cmdData>::iterator cmdItem = cmdsDataTable.find(cmdStr);
 	if (cmdItem != cmdsDataTable.end()) {
 		* cmdItem->second.setVar = cmdItem->second.setValue;
@@ -2430,177 +2359,129 @@ int Mgmt_creategraph(Mgmt_params *params) {
 		params->registerCommand("creategraph", "creates graphs");
 		return(0);
 	}
-
 	checkRrdVersion(true);
 	extern int vm_rrd_version;
-	if(!vm_rrd_version)
+	if(!vm_rrd_version) {
 		return(params->sendString("missing rrdtool"));
-
-	extern pthread_mutex_t vm_rrd_lock;
-	pthread_mutex_lock(&vm_rrd_lock);
-
-	int res = 0;
-	int manager_argc;
-	char *manager_cmd_line = NULL;	//command line passed to voipmonitor manager
-	char **manager_args = NULL;		//cuted voipmonitor manager commandline to separate arguments
-
-	char sendbuf[BUFSIZE];
-	sendbuf[0] = 0;			//for reseting sendbuf
-
-	if (( manager_argc = vm_rrd_countArgs(params->buf)) < 6) {	//few arguments passed
-		if (verbosity > 0) syslog(LOG_NOTICE, "parse_command creategraph too few arguments, passed%d need at least 6!\n", manager_argc);
-		snprintf(sendbuf, BUFSIZE, "Syntax: creategraph graph_type linuxTS_from linuxTS_to size_x_pixels size_y_pixels  [ slope-mode  [ icon-mode  [ color  [ dstfile ]]]]\n");
-		if (params->sendString(sendbuf) == -1) {
-			cerr << "Error sending data to client 1" << endl;
+	}
+	int rslt = 0;
+	string error;
+	vector<string> args;
+	string params_buf = params->buf;
+	while(params_buf.size() && params_buf[params_buf.size() - 1] == '\n') {
+		params_buf.resize(params_buf.size() - 1);
+	}
+	parse_cmd_str(params_buf.c_str(), &args);
+	if(args.size() < 6) {
+		if(verbosity > 0) {
+			syslog(LOG_NOTICE, "parse_command creategraph too few arguments, passed%zu need at least 6!\n", args.size());
 		}
-		pthread_mutex_unlock(&vm_rrd_lock);
-		return -1;
+		error = "Syntax: creategraph graph_type linuxTS_from linuxTS_to size_x_pixels size_y_pixels  [ slope-mode  [ icon-mode  [ color  [ dstfile ]]]]\n";
 	}
-	if ((manager_cmd_line = new FILE_LINE(13005) char[strlen(params->buf) + 1]) == NULL) {
-		syslog(LOG_ERR, "parse_command creategraph malloc error\n");
-		pthread_mutex_unlock(&vm_rrd_lock);
-		return -1;
-	}
-	if ((manager_args = new FILE_LINE(13006) char*[manager_argc + 1]) == NULL) {
-		delete [] manager_cmd_line;
-		syslog(LOG_ERR, "parse_command creategraph malloc error2\n");
-		pthread_mutex_unlock(&vm_rrd_lock);
-		return -1;
-	}
-
-	memcpy(manager_cmd_line, params->buf, strlen(params->buf));
-	manager_cmd_line[strlen(params->buf)] = '\0';
-
-	syslog(LOG_NOTICE, "creategraph VERBOSE ALL: %s", manager_cmd_line);
-	if ((manager_argc = vm_rrd_createArgs(manager_cmd_line, manager_args))) {
-		//Arguments:
-		//0-creategraphs
-		//1-graph type
-		//2-at-style time from
-		//3-at-style time to
-		//4-total size x
-		//5-total size y
-		//[6-zaobleni hran(slope-mode)]
-		//[7-discard graphs legend (for sizes bellow 600x240)]
-		//[8-color]
-		//[9-dstfile (if not defined PNG goes to stdout)]
-		if (sverb.rrd_info) {
-			syslog(LOG_NOTICE, "%d arguments detected. Showing them:\n", manager_argc);
-			for (int i = 0; i < manager_argc; i++) {
-				syslog (LOG_NOTICE, "%d.arg:%s",i, manager_args[i]);
-			}
-		}
-
-		char *fromat, *toat;
-		char filename[1000];
-		int resx, resy;
-		short slope, icon;
-		char *dstfile;
-		char *color;
-
-		fromat = manager_args[2];
-		toat = manager_args[3];
-		resx = atoi(manager_args[4]);
-		resy = atoi(manager_args[5]);
-		if ((manager_argc > 6) && (manager_args[6][0] == '1')) slope = 1; else slope = 0;
-		if ((manager_argc > 7) && (manager_args[7][0] == '1')) icon = 1; else icon = 0;
-		if ((manager_argc > 8) && (manager_args[8][0] != '-')) color = manager_args[8]; else  color = NULL;
-		if (manager_argc > 9) dstfile = manager_args[9]; else dstfile = NULL;			//set dstfile == NULL if not specified
-
-		//limits check discarding graph's legend and axis/grid
-		if ((resx < 400) or (resy < 200)) icon = 1;
-		//Possible graph types: #PS,PSC,PSS,PSSM,PSSR,PSR,PSA,SQLq,SQLf,tCPU,drop,speed,heap,calls,tacCPU,loadadvg
-
-
-		char sendcommand[2048];			//buffer for send command string;
-		if (!strncmp(manager_args[1], "PSA",4 )) {
-			snprintf(filename, sizeof(filename), "%s/rrd/2db-PS.rrd", getRrdDir());
-			rrd_vm_create_graph_PSA_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "PSR", 4)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/2db-PS.rrd", getRrdDir());
-			rrd_vm_create_graph_PSR_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "PSSR", 5)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/2db-PS.rrd", getRrdDir());
-			rrd_vm_create_graph_PSSR_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "PSSM", 5)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/2db-PS.rrd", getRrdDir());
-			rrd_vm_create_graph_PSSM_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "PSS", 4)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/2db-PS.rrd", getRrdDir());
-			rrd_vm_create_graph_PSS_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "PSC", 4)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/2db-PS.rrd", getRrdDir());
-			rrd_vm_create_graph_PSC_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "PS", 3)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/2db-PS.rrd", getRrdDir());
-			rrd_vm_create_graph_PS_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "SQLq", 5)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/3db-SQL.rrd", getRrdDir());
-			rrd_vm_create_graph_SQLq_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "SQLf", 5)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/3db-SQL.rrd", getRrdDir());
-			rrd_vm_create_graph_SQLf_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "tCPU", 5)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/2db-tCPU.rrd", getRrdDir());
-			rrd_vm_create_graph_tCPU_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "drop", 5)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/2db-drop.rrd", getRrdDir());
-			rrd_vm_create_graph_drop_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "speed", 5)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/2db-speedmbs.rrd", getRrdDir());
-			rrd_vm_create_graph_speed_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "heap", 5)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/2db-heap.rrd", getRrdDir());
-			rrd_vm_create_graph_heap_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "calls", 6)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/3db-callscounter.rrd", getRrdDir());
-			rrd_vm_create_graph_calls_command(filename, fromat, toat, color, resx ,resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "tacCPU", 7)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/2db-tacCPU.rrd", getRrdDir());
-			rrd_vm_create_graph_tacCPU_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "memusage", 7)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/db-memusage.rrd", getRrdDir());
-			rrd_vm_create_graph_memusage_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
-		} else if (!strncmp(manager_args[1], "loadavg", 7)) {
-			snprintf(filename, sizeof(filename), "%s/rrd/db-LA.rrd", getRrdDir());
-			rrd_vm_create_graph_LA_command(filename, fromat, toat, color, resx, resy, slope, icon, dstfile, sendcommand, sizeof(sendcommand));
+	if(error.empty()) {
+		// Arguments:
+		//   0-creategraphs
+		//   1-graph type
+		//   2-at-style time from
+		//   3-at-style time to
+		//   4-total size x
+		//   5-total size y
+		//   [6-zaobleni hran(slope-mode)]
+		//   [7-discard graphs legend (for sizes bellow 600x240)]
+		//   [8-color]
+		string fromTime = args[2];
+		string toTime = args[3];
+		int resx = atoi(args[4].c_str());
+		int resy = atoi(args[5].c_str());
+		bool slope = args.size() > 6 && args[6][0] == '1';
+		bool icon = args.size() > 7 && args[7][0] == '1';
+		string color = args.size() > 8 ? args[8] : "";
+		string chart_type;
+		string series_type;
+		if(args[1] == "PSA") {
+			chart_type = RRD_CHART_PS;
+			series_type= RRD_CHART_SERIES_PSA;
+		} else if(args[1] == "PSR") {
+			chart_type = RRD_CHART_PS;
+			series_type= RRD_CHART_SERIES_PSR;
+		} else if(args[1] == "PSSR") {
+			chart_type = RRD_CHART_PS;
+			series_type= RRD_CHART_SERIES_PSSR;
+		} else if(args[1] == "PSSM") {
+			chart_type = RRD_CHART_PS;
+			series_type= RRD_CHART_SERIES_PSSM;
+		} else if(args[1] == "PSS") {
+			chart_type = RRD_CHART_PS;
+			series_type= RRD_CHART_SERIES_PSS;
+		} else if(args[1] == "PSC") {
+			chart_type = RRD_CHART_PS;
+			series_type= RRD_CHART_SERIES_PSC;
+		} else if(args[1] == "PS") {
+			chart_type = RRD_CHART_PS;
+		} else if(args[1] == "SQLq") {
+			chart_type = RRD_CHART_SQL;
+			series_type= RRD_CHART_SERIES_SQLq;
+		} else if(args[1] == "SQLf") {
+			chart_type = RRD_CHART_SQL;
+			series_type= RRD_CHART_SERIES_SQLf;
+		} else if(args[1] == "tCPU") {
+			chart_type = RRD_CHART_tCPU;
+		} else if(args[1] == "drop") {
+			chart_type = RRD_CHART_drop;
+		} else if(args[1] == "speed") {
+			chart_type = RRD_CHART_speedmbs;
+		} else if(args[1] == "heap") {
+			chart_type = RRD_CHART_heap;
+		} else if(args[1] == "calls") {
+			chart_type = RRD_CHART_callscounter;
+		} else if(args[1] == "tacCPU") {
+			chart_type = RRD_CHART_tacCPU;
+		} else if(args[1] == "memusage") {
+			chart_type = RRD_CHART_memusage;
+		} else if(args[1] == "loadavg") {
+			chart_type = RRD_CHART_LA;
 		} else {
-			snprintf(sendbuf, BUFSIZE, "Error: Graph type %s isn't known\n\tGraph types: PS PSC PSS PSSM PSSR PSR PSA SQLq SQLf tCPU drop speed heap calls tacCPU memusage\n", manager_args[1]);
-			if (verbosity > 0) {
-				syslog(LOG_NOTICE, "creategraph Error: Unrecognized graph type %s", manager_args[1]);
+			error =  "Error: Graph type " + args[1] + " isn't known\n\t"
+				 "Graph types: PS PSC PSS PSSM PSSR PSR PSA SQLq SQLf tCPU drop speed heap calls tacCPU memusage\n";
+			if(verbosity > 0) {
+				syslog(LOG_NOTICE, "creategraph Error: Unrecognized graph type %s", args[1].c_str());
 				syslog(LOG_NOTICE, "    Graph types: PS PSC PSS PSSM PSSR PSR PSA SQLq SQLf tCPU drop speed heap calls tacCPU memusage loadavg");
 			}
-			res = -1;
 		}
-		if ((dstfile == NULL) && (res == 0)) {		//send from stdout of a command (binary data)
-			if (sverb.rrd_info) syslog(LOG_NOTICE, "COMMAND for system pipe:%s", sendcommand);
-			if (sendvm_from_stdout_of_command(sendcommand, params->client, params->sshchannel, params->c_client, sendbuf, sizeof(sendbuf), 0) == -1 ){
-				cerr << "Error sending data to client 2" << endl;
-				delete [] manager_cmd_line;
-				delete [] manager_args;
-				pthread_mutex_unlock(&vm_rrd_lock);
-				return -1;
-			}
-		} else {									//send string data (text data or error response)
-			if (sverb.rrd_info) syslog(LOG_NOTICE, "COMMAND for system:%s", sendcommand);
-			res = system(sendcommand);
-			if ((verbosity > 0) && (res > 0)) snprintf(sendbuf, BUFSIZE, "ERROR while creating graph of type %s from:%s to:%s resx:%i resy:%i slopemode=%s, iconmode=%s\n", manager_args[1], fromat, toat, resx, resy, slope?"yes":"no", icon?"yes":"no");
-			if ((verbosity > 0) && (res == 0)) snprintf(sendbuf, BUFSIZE, "Created graph of type %s from:%s to:%s resx:%i resy:%i slopemode=%s, iconmode=%s in file %s\n", manager_args[1], fromat, toat, resx, resy, slope?"yes":"no", icon?"yes":"no", dstfile);
-			if (strlen(sendbuf)) {
-				if (params->sendString(sendbuf) == -1) {
-					cerr << "Error sending data to client 3" << endl;
-					delete [] manager_cmd_line;
-					delete [] manager_args;
-					pthread_mutex_unlock(&vm_rrd_lock);
-					return -1;
+		if(!chart_type.empty()) {
+			string createGraphCmd = rrd_chart_graphString(chart_type.c_str(),
+								      series_type.c_str(),
+								      NULL, fromTime.c_str(), toTime.c_str(),
+								      color.c_str(), resx, resy,
+								      slope, icon);
+			if(!createGraphCmd.empty()) {
+				createGraphCmd = string(RRDTOOL_CMD) + " " + createGraphCmd;
+				RrdChartQueueItem *queueItem = new FILE_LINE(0) RrdChartQueueItem;
+				queueItem->request_type = "graph";
+				queueItem->rrd_cmd = createGraphCmd;
+				rrd_add_to_queue(queueItem);
+				while(!queueItem->completed) {
+					USLEEP(10000);
 				}
+				if(!queueItem->error.empty()) {
+					error = queueItem->error;
+				} else {
+					if(sendvm(params->client.handler, params->c_client, (const char*)queueItem->result.data(), queueItem->result.size(), 0) == -1) {
+						if(verbosity > 0) {
+							syslog(LOG_NOTICE, "sendvm: sending data problem");
+						}
+						rslt = -1;
+					}
+				}
+				delete queueItem;
 			}
 		}
 	}
-	delete [] manager_cmd_line;
-	delete [] manager_args;
-	pthread_mutex_unlock(&vm_rrd_lock);
-	return res;
+	if(!error.empty()) {
+		params->sendString(error);
+		rslt = -1;
+	}
+	return(rslt);
 }
 
 int Mgmt_d_lc_for_destroy(Mgmt_params *params) {
@@ -2631,10 +2512,10 @@ int Mgmt_d_lc_for_destroy(Mgmt_params *params) {
 				outStr.width(15);
 				outStr << call->caller << " -> ";
 				outStr.width(15);
-				outStr << call->called << "  "
-					<< sqlDateTimeString(call->calltime()) << "  ";
+				outStr << call->called() << "  "
+					<< sqlDateTimeString(call->calltime_s()) << "  ";
 				outStr.width(6);
-				outStr << call->duration() << "s  "
+				outStr << call->duration_s() << "s  "
 					<< sqlDateTimeString(call->destroy_call_at) << "  "
 					<< call->fbasename;
 				outStr << endl;
@@ -2656,14 +2537,22 @@ int Mgmt_d_lc_bye(Mgmt_params *params) {
 		outStr << "sniffer not initialized yet" << endl;
 		return(params->sendString(&outStr));
 	}
-	map<string, Call*>::iterator callMAPIT;
 	Call *call;
 	vector<Call*> vectCall;
 	calltable->lock_calls_listMAP();
-	for (callMAPIT = calltable->calls_listMAP.begin(); callMAPIT != calltable->calls_listMAP.end(); ++callMAPIT) {
-		call = (*callMAPIT).second;
-		if(call->typeIsNot(REGISTER) && call->seenbye) {
-			vectCall.push_back(call);
+	if(opt_call_id_alternative[0]) {
+		for(list<Call*>::iterator callIT = calltable->calls_list.begin(); callIT != calltable->calls_list.end(); ++callIT) {
+			call = *callIT;
+			if(call->typeIsNot(REGISTER) && call->seenbye) {
+				vectCall.push_back(call);
+			}
+		}
+	} else {
+		for(map<string, Call*>::iterator callMAPIT = calltable->calls_listMAP.begin(); callMAPIT != calltable->calls_listMAP.end(); ++callMAPIT) {
+			call = callMAPIT->second;
+			if(call->typeIsNot(REGISTER) && call->seenbye) {
+				vectCall.push_back(call);
+			}
 		}
 	}
 	if(vectCall.size()) {
@@ -2673,10 +2562,10 @@ int Mgmt_d_lc_bye(Mgmt_params *params) {
 			outStr.width(15);
 			outStr << call->caller << " -> ";
 			outStr.width(15);
-			outStr << call->called << "  "
-				<< sqlDateTimeString(call->calltime()) << "  ";
+			outStr << call->called() << "  "
+				<< sqlDateTimeString(call->calltime_s()) << "  ";
 			outStr.width(6);
-			outStr << call->duration() << "s  "
+			outStr << call->duration_s() << "s  "
 				<< (call->destroy_call_at ? sqlDateTimeString(call->destroy_call_at) : "    -  -     :  :  ")  << "  "
 				<< call->fbasename;
 			outStr << endl;
@@ -2698,12 +2587,17 @@ int Mgmt_d_lc_all(Mgmt_params *params) {
 		outStr << "sniffer not initialized yet" << endl;
 		return(params->sendString(&outStr));
 	}
-	map<string, Call*>::iterator callMAPIT;
 	Call *call;
 	vector<Call*> vectCall;
 	calltable->lock_calls_listMAP();
-	for (callMAPIT = calltable->calls_listMAP.begin(); callMAPIT != calltable->calls_listMAP.end(); ++callMAPIT) {
-		vectCall.push_back((*callMAPIT).second);
+	if(opt_call_id_alternative[0]) {
+		for(list<Call*>::iterator callIT = calltable->calls_list.begin(); callIT != calltable->calls_list.end(); ++callIT) {
+			vectCall.push_back(*callIT);
+		}
+	} else {
+		for(map<string, Call*>::iterator callMAPIT = calltable->calls_listMAP.begin(); callMAPIT != calltable->calls_listMAP.end(); ++callMAPIT) {
+			vectCall.push_back(callMAPIT->second);
+		}
 	}
 	if(vectCall.size()) {
 		std::sort(vectCall.begin(), vectCall.end(), cmpCallBy_first_packet_time);
@@ -2712,10 +2606,10 @@ int Mgmt_d_lc_all(Mgmt_params *params) {
 			outStr.width(15);
 			outStr << call->caller << " -> ";
 			outStr.width(15);
-			outStr << call->called << "  "
-				<< sqlDateTimeString(call->calltime()) << "  ";
+			outStr << call->called() << "  "
+				<< sqlDateTimeString(call->calltime_s()) << "  ";
 			outStr.width(6);
-			outStr << call->duration() << "s  "
+			outStr << call->duration_s() << "s  "
 				<< (call->destroy_call_at ? sqlDateTimeString(call->destroy_call_at) : "    -  -     :  :  ")  << "  ";
 			outStr.width(3);
 			outStr << call->lastSIPresponseNum << "  "
@@ -2737,9 +2631,17 @@ int Mgmt_d_pointer_to_call(Mgmt_params *params) {
 	sscanf(params->buf, "d_pointer_to_call %s", fbasename);
 	ostringstream outStr;
 	calltable->lock_calls_listMAP();
-	for(map<string, Call*>::iterator callMAPIT = calltable->calls_listMAP.begin(); callMAPIT != calltable->calls_listMAP.end(); ++callMAPIT) {
-		if(!strcmp((*callMAPIT).second->fbasename, fbasename)) {
-			outStr << "find in calltable->calls_listMAP " << hex << (*callMAPIT).second << endl;
+	if(opt_call_id_alternative[0]) {
+		for(list<Call*>::iterator callIT = calltable->calls_list.begin(); callIT != calltable->calls_list.end(); ++callIT) {
+			if(!strcmp((*callIT)->fbasename, fbasename)) {
+				outStr << "find in calltable->calls_list " << hex << (*callIT) << endl;
+			}
+		}
+	} else {
+		for(map<string, Call*>::iterator callMAPIT = calltable->calls_listMAP.begin(); callMAPIT != calltable->calls_listMAP.end(); ++callMAPIT) {
+			if(!strcmp((callMAPIT->second)->fbasename, fbasename)) {
+				outStr << "find in calltable->calls_list " << hex << (callMAPIT->second) << endl;
+			}
 		}
 	}
 	calltable->unlock_calls_listMAP();
@@ -2761,13 +2663,22 @@ int Mgmt_d_close_call(Mgmt_params *params) {
 	char fbasename[100];
 	sscanf(params->buf, "d_close_call %s", fbasename);
 	string rslt = fbasename + string(" missing");
-	map<string, Call*>::iterator callMAPIT;
 	calltable->lock_calls_listMAP();
-	for (callMAPIT = calltable->calls_listMAP.begin(); callMAPIT != calltable->calls_listMAP.end(); ++callMAPIT) {
-		if(!strcmp((*callMAPIT).second->fbasename, fbasename)) {
-			(*callMAPIT).second->force_close = true;
-			rslt = fbasename + string(" close");
-			break;
+	if(opt_call_id_alternative[0]) {
+		for(list<Call*>::iterator callIT = calltable->calls_list.begin(); callIT != calltable->calls_list.end(); ++callIT) {
+			if(!strcmp((*callIT)->fbasename, fbasename)) {
+				(*callIT)->force_close = true;
+				rslt = fbasename + string(" close");
+				break;
+			}
+		}
+	} else {
+		for(map<string, Call*>::iterator callMAPIT = calltable->calls_listMAP.begin(); callMAPIT != calltable->calls_listMAP.end(); ++callMAPIT) {
+			if(!strcmp((callMAPIT->second)->fbasename, fbasename)) {
+				(callMAPIT->second)->force_close = true;
+				rslt = fbasename + string(" close");
+				break;
+			}
 		}
 	}
 	calltable->unlock_calls_listMAP();
@@ -2885,7 +2796,7 @@ int Mgmt_getactivesniffers(Mgmt_params *params) {
 	}
 	while(__sync_lock_test_and_set(&usersniffer_sync, 1));
 	string jsonResult = "[";
-	map<unsigned int, livesnifferfilter_t*>::iterator usersnifferIT;
+	map<unsigned int, livesnifferfilter_s*>::iterator usersnifferIT;
 	int counter = 0;
 	for(usersnifferIT = usersniffer.begin(); usersnifferIT != usersniffer.end(); usersnifferIT++) {
 		if(counter) {
@@ -2910,7 +2821,7 @@ int Mgmt_stoplivesniffer(Mgmt_params *params) {
 	u_int32_t uid = 0;
 	sscanf(params->buf, "stoplivesniffer %u", &uid);
 	while(__sync_lock_test_and_set(&usersniffer_sync, 1)) {};
-	map<unsigned int, livesnifferfilter_t*>::iterator usersnifferIT = usersniffer.find(uid);
+	map<unsigned int, livesnifferfilter_s*>::iterator usersnifferIT = usersniffer.find(uid);
 	if(usersnifferIT != usersniffer.end()) {
 		delete usersnifferIT->second;
 		usersniffer.erase(usersnifferIT);
@@ -2935,11 +2846,26 @@ int Mgmt_getlivesniffer(Mgmt_params *params) {
 	u_int32_t uid = 0;
 	sscanf(params->buf, "getlivesniffer %u", &uid);
 	while(__sync_lock_test_and_set(&usersniffer_sync, 1));
-	map<unsigned int, livesnifferfilter_t*>::iterator usersnifferIT = usersniffer.find(uid);
+	map<unsigned int, livesnifferfilter_s*>::iterator usersnifferIT = usersniffer.find(uid);
 	if(usersnifferIT != usersniffer.end()) {
-		snprintf(sendbuf, BUFSIZE, "%d %s", 1, (char*)usersnifferIT->second->parameters);
+		string parameters = trim_str((char*)usersnifferIT->second->parameters);
+		if(usersnifferIT->second->timeout_s > 0 &&
+		   parameters.length() && parameters[parameters.length() - 1] == '}') {
+			parameters = parameters.substr(0, parameters.length() - 1) + 
+				     ",\"timeout\":" + intToString(usersnifferIT->second->timeout_s) + 
+				     ",\"time\":" + intToString(time(NULL) - usersnifferIT->second->created_at) +
+				     "}";
+		}
+		snprintf(sendbuf, BUFSIZE, "%d %s", 1, parameters.c_str());
 	} else {
-		snprintf(sendbuf, BUFSIZE, "%d", 0);
+		if(usersniffer_kill_reason[uid].empty()) {
+			snprintf(sendbuf, BUFSIZE, "%d", 0);
+		} else {
+			JsonExport parameters;
+			parameters.add("kill_reason", usersniffer_kill_reason[uid]);
+			snprintf(sendbuf, BUFSIZE, "%d %s", 0, parameters.getJson().c_str());
+			usersniffer_kill_reason.erase(uid);
+		}
 	}
 	__sync_lock_release(&usersniffer_sync);
 	return(params->sendString(sendbuf));
@@ -2960,15 +2886,15 @@ int Mgmt_startlivesniffer(Mgmt_params *params) {
 	jsonParameters.parse(parameters);
 	while(__sync_lock_test_and_set(&usersniffer_sync, 1));
 	unsigned int uid = atol(jsonParameters.getValue("uid").c_str());
-	map<unsigned int, livesnifferfilter_t*>::iterator usersnifferIT = usersniffer.find(uid);
-	livesnifferfilter_t* filter;
+	map<unsigned int, livesnifferfilter_s*>::iterator usersnifferIT = usersniffer.find(uid);
+	livesnifferfilter_s* filter;
 	if(usersnifferIT != usersniffer.end()) {
 		filter = usersnifferIT->second;
 	} else {
-		filter = new FILE_LINE(0) livesnifferfilter_t;
-		memset(CAST_OBJ_TO_VOID(filter), 0, sizeof(livesnifferfilter_t));
+		filter = new FILE_LINE(0) livesnifferfilter_s;
 		filter->parameters.add(parameters);
 		usersniffer[uid] = filter;
+		filter->uid = uid;
 	}
 	string filter_sensor_id = jsonParameters.getValue("filter_sensor_id");
 	if(filter_sensor_id.length()) {
@@ -2979,11 +2905,10 @@ int Mgmt_startlivesniffer(Mgmt_params *params) {
 	if(filter_ip.length()) {
 		vector<string> ip = split(filter_ip.c_str(), split(",|;| ", "|"), true);
 		for(unsigned i = 0; i < ip.size() && i < MAXLIVEFILTERS; i++) {
-			filter->lv_bothaddr[i] = ntohl((unsigned int)inet_addr(ip[i].c_str()));
-			if((int)filter->lv_bothaddr[i] == -1 && strchr(ip[i].c_str(), '/')) {
+			if(!filter->lv_bothaddr[i].setFromString(ip[i].c_str()) && strchr(ip[i].c_str(), '/')) {
 				try_ip_mask(filter->lv_bothaddr[i], filter->lv_bothmask[i], ip[i]);
 			} else {
-				filter->lv_bothmask[i] = ~0;
+				filter->lv_bothmask[i].clear(~0);
 			}
 		}
 	}
@@ -2991,7 +2916,7 @@ int Mgmt_startlivesniffer(Mgmt_params *params) {
 	if(filter_port.length()) {
 		vector<string> port = split(filter_port.c_str(), split(",|;| ", "|"), true);
 		for(unsigned i = 0; i < port.size() && i < MAXLIVEFILTERS; i++) {
-			filter->lv_bothport[i] = ntohs(atoi(port[i].c_str()));
+			filter->lv_bothport[i].setPort(ntohs(atoi(port[i].c_str())));
 		}
 	}
 	string filter_number = jsonParameters.getValue("filter_number");
@@ -3051,7 +2976,14 @@ int Mgmt_startlivesniffer(Mgmt_params *params) {
 			}
 		}
 	}
+	int timeout = atoi(jsonParameters.getValue("timeout").c_str());
+	if(timeout > 0) {
+		filter->timeout_s = timeout;
+	}
 	updateLivesnifferfilters();
+	SqlDb *sqlDb = createSqlObject();
+	sqlDb->getTypeColumn(("livepacket_" + intToString(uid)).c_str(), NULL, true, true);
+	delete sqlDb;
 	global_livesniffer = 1;
 	__sync_lock_release(&usersniffer_sync);
 	return(0);
@@ -3075,13 +3007,12 @@ int Mgmt_livefilter(Mgmt_params *params) {
 
 	if(memmem(search, sizeof(search), "all", 3)) {
 		global_livesniffer = 1;
-		map<unsigned int, livesnifferfilter_t*>::iterator usersnifferIT = usersniffer.find(uid);
-		livesnifferfilter_t* filter;
+		map<unsigned int, livesnifferfilter_s*>::iterator usersnifferIT = usersniffer.find(uid);
+		livesnifferfilter_s* filter;
 		if(usersnifferIT != usersniffer.end()) {
 			filter = usersnifferIT->second;
 		} else {
-			filter = new FILE_LINE(13009) livesnifferfilter_t;
-			memset(CAST_OBJ_TO_VOID(filter), 0, sizeof(livesnifferfilter_t));
+			filter = new FILE_LINE(13009) livesnifferfilter_s;
 			usersniffer[uid] = filter;
 		}
 		updateLivesnifferfilters();
@@ -3089,13 +3020,12 @@ int Mgmt_livefilter(Mgmt_params *params) {
 		return 0;
 	}
 
-	map<unsigned int, livesnifferfilter_t*>::iterator usersnifferIT = usersniffer.find(uid);
-	livesnifferfilter_t* filter;
+	map<unsigned int, livesnifferfilter_s*>::iterator usersnifferIT = usersniffer.find(uid);
+	livesnifferfilter_s* filter;
 	if(usersnifferIT != usersniffer.end()) {
 		filter = usersnifferIT->second;
 	} else {
-		filter = new FILE_LINE(13010) livesnifferfilter_t;
-		memset(CAST_OBJ_TO_VOID(filter), 0, sizeof(livesnifferfilter_t));
+		filter = new FILE_LINE(13010) livesnifferfilter_s;
 		usersniffer[uid] = filter;
 	}
 
@@ -3103,8 +3033,8 @@ int Mgmt_livefilter(Mgmt_params *params) {
 		int i = 0;
 		//reset filters
 		for(i = 0; i < MAXLIVEFILTERS; i++) {
-			filter->lv_saddr[i] = 0;
-			filter->lv_smask[i] = ~0;
+			filter->lv_saddr[i].clear();
+			filter->lv_smask[i].clear(~0);
 		}
 		stringstream  data(value);
 		string val;
@@ -3112,13 +3042,8 @@ int Mgmt_livefilter(Mgmt_params *params) {
 		i = 0;
 		while(i < MAXLIVEFILTERS and getline(data, val,' ')){
 			global_livesniffer = 1;
-			//convert doted ip to unsigned int
-			filter->lv_saddr[i] = ntohl((unsigned int)inet_addr(val.c_str()));
-
-			// bad ip (signed -1) -> try prefix
-			if ((int)filter->lv_saddr[i] == -1 && strchr(val.c_str(), '/'))
+			if (!filter->lv_saddr[i].setFromString(val.c_str()) && strchr(val.c_str(), '/'))
 				try_ip_mask(filter->lv_saddr[i], filter->lv_smask[i], val);
-
 			i++;
 		}
 		updateLivesnifferfilters();
@@ -3126,8 +3051,8 @@ int Mgmt_livefilter(Mgmt_params *params) {
 		int i = 0;
 		//reset filters
 		for(i = 0; i < MAXLIVEFILTERS; i++) {
-			filter->lv_daddr[i] = 0;
-			filter->lv_dmask[i] = ~0;
+			filter->lv_daddr[i].clear();
+			filter->lv_dmask[i].clear(~0);
 		}
 		stringstream  data(value);
 		string val;
@@ -3135,13 +3060,8 @@ int Mgmt_livefilter(Mgmt_params *params) {
 		// read all argumens livefilter set daddr 123 345 244
 		while(i < MAXLIVEFILTERS and getline(data, val,' ')){
 			global_livesniffer = 1;
-			//convert doted ip to unsigned int
-			filter->lv_daddr[i] = ntohl((unsigned int)inet_addr(val.c_str()));
-
-			// bad ip (signed -1) -> try prefix
-			if ((int)filter->lv_daddr[i] == -1 && strchr(val.c_str(), '/'))
+			if (!filter->lv_daddr[i].setFromString(val.c_str()) && strchr(val.c_str(), '/'))
 				try_ip_mask(filter->lv_daddr[i], filter->lv_dmask[i], val);
-
 			i++;
 		}
 		updateLivesnifferfilters();
@@ -3149,8 +3069,8 @@ int Mgmt_livefilter(Mgmt_params *params) {
 		int i = 0;
 		//reset filters
 		for(i = 0; i < MAXLIVEFILTERS; i++) {
-			filter->lv_bothaddr[i] = 0;
-			filter->lv_bothmask[i] = ~0;
+			filter->lv_bothaddr[i].clear();
+			filter->lv_bothmask[i].clear(~0);
 		}
 		stringstream  data(value);
 		string val;
@@ -3158,13 +3078,8 @@ int Mgmt_livefilter(Mgmt_params *params) {
 		// read all argumens livefilter set bothaddr 123 345 244
 		while(i < MAXLIVEFILTERS and getline(data, val,' ')){
 			global_livesniffer = 1;
-			//convert doted ip to unsigned int
-			filter->lv_bothaddr[i] = ntohl((unsigned int)inet_addr(val.c_str()));
-
-			// bad ip (signed -1) -> try prefix
-			if ((int)filter->lv_bothaddr[i] == -1 && strchr(val.c_str(), '/'))
+			if (!filter->lv_bothaddr[i].setFromString(val.c_str()) && strchr(val.c_str(), '/'))
 				try_ip_mask(filter->lv_bothaddr[i], filter->lv_bothmask[i], val);
-
 			i++;
 		}
 		updateLivesnifferfilters();
@@ -3172,7 +3087,7 @@ int Mgmt_livefilter(Mgmt_params *params) {
 		int i;
 		//reset filters
 		for(i = 0; i < MAXLIVEFILTERS; i++) {
-			filter->lv_bothport[i] = 0;
+			filter->lv_bothport[i].clear();
 		}
 		stringstream  data(value);
 		string val;
@@ -3180,7 +3095,7 @@ int Mgmt_livefilter(Mgmt_params *params) {
 
 		while(i < MAXLIVEFILTERS and getline(data, val,' ')){
 			global_livesniffer = 1;
-			filter->lv_bothport[i] = ntohs(atoi(val.c_str()));
+			filter->lv_bothport[i].setFromString(val.c_str());
 			i++;
 		}
 		updateLivesnifferfilters();
@@ -3359,7 +3274,7 @@ int Mgmt_listen_stop(Mgmt_params *params) {
 	if(l_worker && !listening_clients.exists(l_worker->call)) {
 		listening_workers.stop(l_worker);
 		while(l_worker->running) {
-			usleep(100);
+			USLEEP(100);
 		}
 		listening_workers.remove(l_worker);
 	}
@@ -3493,7 +3408,7 @@ int Mgmt_readaudio(Mgmt_params *params) {
 
 int Mgmt_reload(Mgmt_params *params) {
 	if (params->task == params->mgmt_task_DoInit) {
-		params->registerCommand("reload", "voipmonitor reload");
+		params->registerCommand("reload", "voipmonitor's reload. The reloaded items: the capture rules for now");
 		return(0);
 	}
 	reload_capture_rules();
@@ -3528,11 +3443,23 @@ int Mgmt_hot_restart(Mgmt_params *params) {
 }
 
 int Mgmt_get_json_config(Mgmt_params *params) {
+	string cmd = "get_json_config";
 	if (params->task == params->mgmt_task_DoInit) {
-		params->registerCommand("get_json_config", "export JSON config");
+		params->registerCommand(cmd.c_str(), "export JSON config");
 		return(0);
 	}
-	string rslt = useNewCONFIG ? CONFIG.getJson() : "not supported";
+	string rslt;
+	vector<string> filter;
+	if(strlen(params->buf) > cmd.length() + 1) {
+		split(params->buf + cmd.length() + 1, ',', filter);
+	}
+	if(CONFIG.isSet()) {
+		rslt = CONFIG.getJson(false, &filter);
+	} else {
+		cConfig config;
+		config.addConfigItems();
+		rslt = config.getJson(false, &filter);
+	}
 	return(params->sendString(&rslt));
 }
 
@@ -3575,8 +3502,12 @@ int Mgmt_options_qualify_refresh(Mgmt_params *params) {
 		return(0);
 	}
 	extern cSipMsgRelations *sipMsgRelations;
-	sipMsgRelations->loadParamsInBackground();
-	return(params->sendString("reload ok"));
+	if(sipMsgRelations) {
+		sipMsgRelations->loadParamsInBackground();
+		return(params->sendString("reload ok"));
+	} else {
+		return(params->sendString("subsystem SIP Opt.,Subsc.,Notify is not running"));
+	}
 }
 
 int Mgmt_custom_headers_refresh(Mgmt_params *params) {
@@ -3676,7 +3607,6 @@ int Mgmt_getfile_in_tar(Mgmt_params *params) {
 	unsigned spool_index = 0;
 	int type_spool_file = (int)tsf_na;
 	*tarPosI = 0;
-	char buf_output[1024];
 
 	sscanf(params->buf, zip ? "getfile_in_tar_zip %s %s %s %u %s %s %u %i" : "getfile_in_tar %s %s %s %u %s %s %u %i", tar_filename, filename, dateTimeKey, &recordId, tableType, tarPosI, &spool_index, &type_spool_file);
 	if(type_spool_file == tsf_na) {
@@ -3687,12 +3617,13 @@ int Mgmt_getfile_in_tar(Mgmt_params *params) {
 	if(!tar.tar_open(string(getSpoolDir((eTypeSpoolFile)type_spool_file, spool_index)) + '/' + tar_filename, O_RDONLY)) {
 		string filename_conv = filename;
 		prepare_string_to_filename((char*)filename_conv.c_str());
-		tar.tar_read_send_parameters(params->client, params->sshchannel, params->c_client, zip);
-		tar.tar_read((filename_conv + ".*").c_str(), filename, recordId, tableType, tarPosI);
+		tar.tar_read_send_parameters(params->client.handler, params->c_client, zip);
+		tar.tar_read(filename_conv.c_str(), recordId, tableType, tarPosI);
 		if(tar.isReadEnd()) {
 			getfile_in_tar_completed.add(tar_filename, filename, dateTimeKey);
 		}
 	} else {
+		char buf_output[2048 + 100];
 		snprintf(buf_output, sizeof(buf_output), "error: cannot open file [%s]", tar_filename);
 		params->sendString(buf_output);
 		delete [] tarPosI;
@@ -3802,8 +3733,8 @@ int Mgmt_genwav(Mgmt_params *params) {
 
 	char filename[2048];
 	unsigned int size;
-	char wavfile[2048];
-	char pcapfile[2048];
+	char wavfile[2048 + 10];
+	char pcapfile[2048 + 10];
 	char cmd[4092];
 	int secondrun = 0;
 	char buf_output[1024];
@@ -3832,7 +3763,7 @@ getwav2:
 		params->sendString("0");
 		return -1;
 	}
-	snprintf(cmd, sizeof(cmd), "PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/sbin:/usr/local/bin voipmonitor --rtp-firstleg -k -WRc -r \"%s.pcap\" -y -d %s 2>/dev/null >/dev/null", filename, getSpoolDir(tsf_main, 0));
+	snprintf(cmd, sizeof(cmd), "%s --rtp-firstleg -k -WRc -r \"%s.pcap\" -y -d %s 2>/dev/null >/dev/null", binaryNameWithPath.c_str(), filename, getSpoolDir(tsf_main, 0));
 	system(cmd);
 	secondrun = 1;
 	goto getwav2;
@@ -3847,13 +3778,12 @@ int Mgmt_getwav(Mgmt_params *params) {
 	char filename[2048];
 	int fd;
 	unsigned int size;
-	char wavfile[2048];
-	char pcapfile[2048];
+	char wavfile[2048 + 10];
+	char pcapfile[2048 + 10];
 	char cmd[4092];
 	char rbuf[4096];
 	ssize_t nread;
 	int secondrun = 0;
-	char buf_output[1024];
 
 	sscanf(params->buf, "getwav %s", filename);
 
@@ -3865,6 +3795,7 @@ getwav:
 	if(size) {
 		fd = open(wavfile, O_RDONLY);
 		if(fd < 0) {
+			char buf_output[2048 + 100];
 			snprintf(buf_output, sizeof(buf_output), "error: cannot open file [%s]", wavfile);
 			params->sendString(buf_output);
 			return -1;
@@ -3896,7 +3827,7 @@ getwav:
 		params->sendString("0");
 		return -1;
 	}
-	snprintf(cmd, sizeof(cmd), "PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/sbin:/usr/local/bin voipmonitor --rtp-firstleg -k -WRc -r \"%s.pcap\" -y 2>/dev/null >/dev/null", filename);
+	snprintf(cmd, sizeof(cmd), "%s --rtp-firstleg -k -WRc -r \"%s.pcap\" -y 2>/dev/null >/dev/null", binaryNameWithPath.c_str(), filename);
 	system(cmd);
 	secondrun = 1;
 	goto getwav;
@@ -3911,12 +3842,10 @@ int Mgmt_getsiptshark(Mgmt_params *params) {
 	char filename[2048];
 	int fd;
 	unsigned int size;
-	char tsharkfile[2048];
-	char pcapfile[2048];
-	char cmd[4092];
+	char tsharkfile[2048 + 10];
+	char pcapfile[2048 + 10];
 	char rbuf[4096];
 	ssize_t nread;
-	char buf_output[1024];
 
 	sscanf(params->buf, "getsiptshark %s", filename);
 
@@ -3927,6 +3856,7 @@ int Mgmt_getsiptshark(Mgmt_params *params) {
 	if(size) {
 		fd = open(tsharkfile, O_RDONLY);
 		if(fd < 0) {
+			char buf_output[2048 + 100];
 			snprintf(buf_output, sizeof(buf_output), "error: cannot open file [%s]", tsharkfile);
 			params->sendString(buf_output);
 			return -1;
@@ -3953,6 +3883,7 @@ int Mgmt_getsiptshark(Mgmt_params *params) {
 		return -1;
 	}
 
+	char cmd[10000];
 	snprintf(cmd, sizeof(cmd), "PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin tshark -r \"%s.pcap\" -R sip > \"%s.pcap2txt\" 2>/dev/null", filename, filename);
 	system(cmd);
 	snprintf(cmd, sizeof(cmd), "echo ==== >> \"%s.pcap2txt\"", filename);
@@ -3964,6 +3895,7 @@ int Mgmt_getsiptshark(Mgmt_params *params) {
 	if(size) {
 		fd = open(tsharkfile, O_RDONLY);
 		if(fd < 0) {
+			char buf_output[2048 + 100];
 			snprintf(buf_output, sizeof(buf_output), "error: cannot open file [%s]", filename);
 			params->sendString(buf_output);
 			return -1;
@@ -4062,11 +3994,11 @@ int Mgmt_custipcache_get_cust_id(Mgmt_params *params) {
 		params->registerCommand("custipcache_get_cust_id", "custipcache_get_cust_id");
 		return(0);
 	}
-	char ip[20];
+	char ip[INET6_ADDRSTRLEN];
 	sscanf(params->buf, "custipcache_get_cust_id %s", ip);
 	CustIpCache *custIpCache = getCustIpCache();
 	if(custIpCache) {
-		unsigned int cust_id = custIpCache->getCustByIp(inet_addr(ip));
+		unsigned int cust_id = custIpCache->getCustByIp(str_2_vmIP(ip));
 		char sendbuf[BUFSIZE];
 		snprintf(sendbuf, BUFSIZE, "cust_id: %u\n", cust_id);
 		return(params->sendString(sendbuf));
@@ -4197,7 +4129,7 @@ int Mgmt_upgrade_restart(Mgmt_params *params) {
 		return -1;
 	}
 	if(ok) {
-		restart.runRestart(params->client, manager_socket_server, params->c_client);
+		restart.runRestart(params->client.handler, manager_socket_server, params->c_client);
 	}
 	return 0;
 }
@@ -4228,7 +4160,6 @@ int Mgmt_sniffer_stat(Mgmt_params *params) {
 	}
 
 	extern vm_atomic<string> storingCdrLastWriteAt;
-	extern vm_atomic<string> storingRegisterLastWriteAt;
 	extern vm_atomic<string> pbStatString;
 	extern vm_atomic<u_long> pbCountPacketDrop;
 	extern bool opt_upgrade_by_git;
@@ -4320,7 +4251,11 @@ int Mgmt_t2sip_add_thread(Mgmt_params *params) {
 		params->registerCommand("t2sip_add_thread", "t2sip_add_thread");
 		return(0);
 	}
-	PreProcessPacket::autoStartNextLevelPreProcessPacket();
+	if(opt_t2_boost) {
+		PreProcessPacket::autoStartCallX_PreProcessPacket();
+	} else {
+		PreProcessPacket::autoStartNextLevelPreProcessPacket();
+	}
 	return(params->sendString("ok\n"));
 }
 
@@ -4329,7 +4264,29 @@ int Mgmt_t2sip_remove_thread(Mgmt_params *params) {
 		params->registerCommand("t2sip_remove_thread", "t2sip_remove_thread");
 		return(0);
 	}
-	PreProcessPacket::autoStopLastLevelPreProcessPacket(true);
+	if(!opt_t2_boost) {
+		PreProcessPacket::autoStopLastLevelPreProcessPacket(true);
+	}
+	return(params->sendString("ok\n"));
+}
+
+int Mgmt_storing_cdr_add_thread(Mgmt_params *params) {
+	if (params->task == params->mgmt_task_DoInit) {
+		params->registerCommand("storing_cdr_add_thread", "storing_cdr_add_thread");
+		return(0);
+	}
+	extern void storing_cdr_next_thread_add();
+	storing_cdr_next_thread_add();
+	return(params->sendString("ok\n"));
+}
+
+int Mgmt_storing_cdr_remove_thread(Mgmt_params *params) {
+	if (params->task == params->mgmt_task_DoInit) {
+		params->registerCommand("storing_cdr_remove_thread", "storing_cdr_remove_thread");
+		return(0);
+	}
+	extern void storing_cdr_next_thread_remove();
+	storing_cdr_next_thread_remove();
 	return(params->sendString("ok\n"));
 }
 
@@ -4367,10 +4324,10 @@ int Mgmt_sipports(Mgmt_params *params) {
 	}
 	ostringstream outStrSipPorts;
 	extern char *sipportmatrix;
-	for(int i = 0; i < 65537; i++) {
-		if(sipportmatrix[i]) {
-			outStrSipPorts << i << ',';
-		}
+	outStrSipPorts << cConfigItem_ports::getPortString(sipportmatrix) << ',';
+	extern map<vmIPport, string> ssl_ipport;
+	for(map<vmIPport, string>::iterator it = ssl_ipport.begin(); it != ssl_ipport.end(); it++) {
+		outStrSipPorts << it->first.port << ',';
 	}
 	outStrSipPorts << endl;
 	string strSipPorts = outStrSipPorts.str();
@@ -4387,11 +4344,7 @@ int Mgmt_skinnyports(Mgmt_params *params) {
 	extern char *skinnyportmatrix;
 	extern int opt_skinny;
 	if (opt_skinny) {
-		for(int i = 0; i < 65537; i++) {
-			if(skinnyportmatrix[i]) {
-				outStrSkinnyPorts << i << ',';
-			}
-		}
+		outStrSkinnyPorts << cConfigItem_ports::getPortString(skinnyportmatrix);
 	}
 	outStrSkinnyPorts << endl;
 	string strSkinnyPorts = outStrSkinnyPorts.str();
@@ -4435,7 +4388,7 @@ int Mgmt_natalias(Mgmt_params *params) {
 	if(nat_aliases.size()) {
 		ostringstream outStrNatAliases;
 		for(nat_aliases_t::iterator iter = nat_aliases.begin(); iter != nat_aliases.end(); iter++) {
-			outStrNatAliases << inet_ntostring(htonl(iter->first)) << ':' << inet_ntostring(htonl(iter->second)) << ',';
+			outStrNatAliases << iter->first.getString() << ':' << iter->second.getString() << ',';
 		}
 		strNatAliases = outStrNatAliases.str();
 	} else {
@@ -4516,6 +4469,46 @@ int Mgmt_jemalloc_stat(Mgmt_params *params) {
 	return(params->sendString(&rsltMemoryStat));
 }
 
+int Mgmt_heapprof(Mgmt_params *params) {
+	const char *startCmd = "heapprof_start";
+	if (params->task == params->mgmt_task_DoInit) {
+		commandAndHelp ch[] = {
+			{startCmd, "heapprof_start"},
+			{"heapprof_stop", "heapprof_stop"},
+			{"heapprof_dump", "heapprof_dump"},
+			{NULL, NULL}
+		};
+		params->registerCommand(ch);
+		return(0);
+	}
+	#if HAVE_LIBTCMALLOC_HEAPPROF
+	extern bool heap_profiler_is_running;
+	if(strstr(params->buf, startCmd)) {
+		if(!heap_profiler_is_running) {
+			HeapProfilerStart(strlen(params->buf) > strlen(startCmd) + 1 ? 
+					   params->buf + strlen(startCmd) + 1 : 
+					   "voipmonitor.hprof");
+			heap_profiler_is_running = true;
+		}
+	} else if(strstr(params->buf, "heapprof_stop")) {
+		if(heap_profiler_is_running) {
+			HeapProfilerStop();
+			heap_profiler_is_running = false;
+		}
+	} else if(strstr(params->buf, "heapprof_dump")) {
+		if(heap_profiler_is_running) {
+			HeapProfilerDump("force dump via manager");
+		} else {
+			return(params->sendString("heap profiler is not running"));
+		}
+	}
+	#else
+	return(params->sendString("heap profiler need build with tcmalloc (with heap profiler)"));
+	#endif
+	return(0);
+}
+
+/* obsolete
 int Mgmt_cloud_activecheck(Mgmt_params *params) {
 	if (params->task == params->mgmt_task_DoInit) {
 		params->registerCommand("cloud_activecheck", "cloud_activecheck");
@@ -4524,17 +4517,157 @@ int Mgmt_cloud_activecheck(Mgmt_params *params) {
 	cloud_activecheck_success();
 	return(0);
 }
+*/
 
-#ifndef FREEBSD
-int Mgmt_malloc_trim(Mgmt_params *params) {
+int Mgmt_alloc_trim(Mgmt_params *params) {
 	if (params->task == params->mgmt_task_DoInit) {
-		params->registerCommand("malloc_trim", "malloc_trim");
+		params->registerCommand("alloc_trim", "alloc_trim");
 		return(0);
 	}
-	malloc_trim(0);
+	rss_purge(true);
 	return(0);
 }
-#endif
+
+int Mgmt_alloc_test(Mgmt_params *params) {
+	if (params->task == params->mgmt_task_DoInit) {
+		params->registerCommand("alloc_test", "alloc_test");
+		return(0);
+	}
+	unsigned gb = 0;
+	unsigned s = 0;
+	sscanf(params->buf, "alloc_test %u %u", &gb, &s);
+	if(gb && s < 1e4) {
+		s = 1e4;
+	}
+	static char **p;
+	static unsigned c;
+	if(p) {
+		for(unsigned i = 0; i < c; i++) {
+		unsigned ii = rand() % c;
+		if(p[ii]) {
+			delete [] p[ii];
+			p[ii] = NULL;
+		}
+		}
+		for(unsigned i = 0; i < c; i++) {
+			if(p[i]) {
+				delete [] p[i];
+			}
+		}
+		delete [] p;
+		p = NULL;
+	}
+	if(gb) {
+		c = (unsigned)(gb * 1024ull * 1024 * 1024 / s);
+		p = new char*[c];
+		long unsigned sss = 0;
+		for(unsigned i = 0; i < c; i++) {
+			if(sss < gb * 1024ull * 1024 * 1024) {
+				unsigned ss = s + rand() % s;
+				p[i] = new char[ss];
+				memset(p[i], 0, ss);
+				sss += ss;
+			} else {
+				p[i] = NULL;
+			}
+		}
+	}
+	return(0);
+}
+
+int Mgmt_tcmalloc_stats(Mgmt_params *params) {
+	if (params->task == params->mgmt_task_DoInit) {
+		params->registerCommand("tcmalloc_stats", "tcmalloc_stats");
+		return(0);
+	}
+	#if HAVE_LIBTCMALLOC
+	unsigned stats_buffer_length = 1000000;
+	char *stats_buffer = new char[stats_buffer_length];
+	MallocExtension::instance()->GetStats(stats_buffer, stats_buffer_length);
+	int rslt = params->sendString(stats_buffer);
+	delete [] stats_buffer;
+	return(rslt);
+	#else
+	return(0);
+	#endif
+}
+
+int Mgmt_hashtable_stats(Mgmt_params *params) {
+	if (params->task == params->mgmt_task_DoInit) {
+		params->registerCommand("hashtable_stats", "hashtable_stats");
+		return(0);
+	}
+	#if NEW_RTP_FIND__NODES
+	return(0);
+	#else
+	return(params->sendString(calltable->getHashStats()));
+	#endif
+}
+
+int Mgmt_usleep_stats(Mgmt_params *params) {
+	if (params->task == params->mgmt_task_DoInit) {
+		params->registerCommand("usleep_stats", "usleep_stats");
+		return(0);
+	}
+	extern string usleep_stats(unsigned int useconds_lt);
+	extern void usleep_stats_clear();
+	unsigned int useconds_lt = 0;
+	if(strlen(params->buf) + params->command.length() + 1) {
+		useconds_lt = atoi(params->buf + params->command.length() + 1);
+	}
+	string usleepStats = usleep_stats(useconds_lt);
+	usleep_stats_clear();
+	return(params->sendString(usleepStats));
+}
+
+int Mgmt_charts_cache(Mgmt_params *params) {
+	if (params->task == params->mgmt_task_DoInit) {
+		commandAndHelp ch[] = {
+			{"charts_cache_store_all", "charts_cache_store_all"},
+			{"charts_cache_cleanup_all", "charts_cache_cleanup_all"},
+			{NULL, NULL}
+		};
+		params->registerCommand(ch);
+		return(0);
+	}
+	if(strstr(params->buf, "store_all") != NULL) {
+		chartsCacheStore(true);
+	} else if(strstr(params->buf, "cleanup_all") != NULL) {
+		chartsCacheCleanup(true);
+	}
+	return(0);
+}
+
+int Mgmt_packetbuffer_log(Mgmt_params *params) {
+	if (params->task == params->mgmt_task_DoInit) {
+		commandAndHelp ch[] = {
+			{"packetbuffer_log", "packetbuffer_log"},
+			{"packetbuffer_save", "packetbuffer_save"},
+			{NULL, NULL}
+		};
+		params->registerCommand(ch);
+		return(0);
+	}
+	if(strstr(params->buf, "packetbuffer_log") != NULL) {
+		extern PcapQueue_readFromFifo *pcapQueueQ;
+		string log = pcapQueueQ->debugBlockStoreTrash();
+		return(params->sendString(log));
+	} else if(strstr(params->buf, "packetbuffer_save") != NULL) {
+		char *nextParams = params->buf + strlen("packetbuffer_save");
+		while(*nextParams == ' ') {
+			++nextParams;
+		}
+		vector<string> nextParamsV = explode(nextParams, ' ');
+		if(nextParamsV.size() >= 2) {
+			extern PcapQueue_readFromFifo *pcapQueueQ;
+			string rslt = pcapQueueQ->saveBlockStoreTrash(nextParamsV[0].c_str(), nextParamsV[1].c_str());
+			return(params->sendString(rslt + "\n"));
+		} else {
+			return(params->sendString("missing parameters: filter dest_file\n"));
+		}
+	}
+	return(0);
+}
 
 int Mgmt_memcrash_test(Mgmt_params *params) {
 	if (params->task == params->mgmt_task_DoInit) {
@@ -4574,6 +4707,278 @@ int Mgmt_memcrash_test(Mgmt_params *params) {
 	return(0);
 }
 
+int Mgmt_get_oldest_spooldir_date(Mgmt_params *params) {
+	if (params->task == params->mgmt_task_DoInit) {
+		params->registerCommand("get_oldest_spooldir_date", "return oldest date from spool");
+		return(0);
+	}
+	string rslt = CleanSpool::get_oldest_date();
+	if(rslt.empty()) {
+		rslt = "empty";
+	}
+	return(params->sendString(rslt));
+}
+
+int Mgmt_get_sensor_information(Mgmt_params *params) {
+	if (params->task == params->mgmt_task_DoInit) {
+		params->registerCommand("get_sensor_information", "return sensor information");
+		return(0);
+	}
+	const char *_hidePasswordForOptions[] = {
+		"mysqlpassword",
+		"mysqlpassword_2",
+		"database_backup_from_mysqlpassword",
+		"get_customer_by_ip_odbc_password",
+		"get_customer_by_pn_odbc_password",
+		"get_radius_ip_password",
+		"odbcpass",
+		"manager_sshpassword",
+		"server_password"
+	};
+	list<string> hidePasswordForOptions;
+	for(unsigned i = 0; i < sizeof(_hidePasswordForOptions) / sizeof(_hidePasswordForOptions[0]); i++) {
+		hidePasswordForOptions.push_back(_hidePasswordForOptions[i]);
+	}
+	char type_information[256] = "";
+	char next_params[5][256];
+	for(unsigned i = 0; i < sizeof(next_params) / sizeof(next_params[0]); i++) {
+		next_params[i][0] = 0;
+	}
+	sscanf(params->buf + params->command.length() + 1, "%s %s %s %s", type_information, next_params[0], next_params[1], next_params[2]);
+	if(string(next_params[0]) == "zip") {
+		params->zip = true;
+	}
+	if(string(type_information) == "configuration_files_list" ||
+	   string(type_information) == "configuration_file") {
+		string config_dir = "/etc/voipmonitor/conf.d/";
+		list<string> configurations;
+		extern string rundir;
+		extern char configfile[1024];
+		string configfilepath = configfile[0] == '/' ? string(configfile) : (rundir + "/" + configfile);
+		if(file_exists(configfilepath)) {
+			configurations.push_back(configfilepath);
+		}
+		DIR* dp = opendir(config_dir.c_str());
+		if(dp) {
+			dirent *de;
+			while((de = readdir(dp)) != NULL) {
+				if(string(de->d_name) != ".." && string(de->d_name) != ".") {
+					configurations.push_back(config_dir + "/" + de->d_name);
+				}
+			}
+			closedir(dp);
+		}
+		if(configurations.size()) {
+			if(string(type_information) == "configuration_file") {
+				for(list<string>::iterator iter = configurations.begin(); iter != configurations.end(); iter++) {
+					if(next_params[1] == *iter) {
+						return(params->sendConfigurationFile(next_params[1], &hidePasswordForOptions));
+					}
+				}
+				return(params->sendString("failed - access denied"));
+			} else {
+				string configurations_str;
+				for(list<string>::iterator iter = configurations.begin(); iter != configurations.end(); iter++) {
+					if(!configurations_str.empty()) {
+						configurations_str += "\n";
+					}
+					configurations_str += *iter + ":" + intToString(GetFileSize(*iter));
+				}
+				return(params->sendString(configurations_str));
+			}
+		} else {
+			return(params->sendString("failed search configurations"));
+		}
+	} else if(string(type_information) == "configuration_db") {
+		extern bool useNewCONFIG;
+		extern int opt_mysqlloadconfig;
+		if(useNewCONFIG && opt_mysqlloadconfig) {
+			SqlDb *sqlDb = createSqlObject();
+			sqlDb->setMaxQueryPass(1);
+			sqlDb->setDisableLogError();
+			extern int opt_id_sensor;
+			if(sqlDb->query("SELECT * FROM sensor_config WHERE id_sensor " + 
+					(opt_id_sensor > 0 ? intToString(opt_id_sensor) : "IS NULL"))) {
+				SqlDb_row row = sqlDb->fetchRow();
+				delete sqlDb;
+				if(row) {
+					string result;
+					for(size_t i = 0; i < row.getCountFields(); i++) {
+						string column = row.getNameField(i);
+						if(column != "id" && column != "id_sensor" && !row.isNull(column)) {
+							if(!result.empty()) {
+								result += "\n";
+							}
+							result += column + " = ";
+							bool hidePassword = false;
+							for(list<string>::iterator iter = hidePasswordForOptions.begin(); iter != hidePasswordForOptions.end(); iter++) {
+								if(column == *iter) {
+									hidePassword = true;
+									break;
+								}
+							}
+							if(hidePassword) {
+								result += "****";
+							} else {
+								result += row[column];
+							}
+						}
+					}
+					return(params->sendString(result));
+				} else {
+					return(params->sendString("failed - not exists data in table sensor_config for sensor"));
+				}
+			} else {
+				delete sqlDb;
+				return(params->sendString("failed load data from table sensor_config"));
+			}
+		} else {
+			return(params->sendString("failed - need active new config and enable mysqlloadconfig"));
+		}
+	} else if(string(type_information) == "configuration_active") {
+		extern bool useNewCONFIG;
+		if(useNewCONFIG) {
+			extern cConfig CONFIG;
+			string contentConfig = CONFIG.getContentConfig(true, false);
+			vector<string> contentConfigSplit = split(contentConfig, '\n');
+			for(unsigned i = 0; i < contentConfigSplit.size(); i++) {
+				size_t optionSeparatorPos = contentConfigSplit[i].find('=');
+				if(optionSeparatorPos != string::npos) {
+					string option = trim_str(contentConfigSplit[i].substr(0, optionSeparatorPos));
+					string value = trim_str(contentConfigSplit[i].substr(optionSeparatorPos + 1));
+					for(list<string>::iterator iter = hidePasswordForOptions.begin(); iter != hidePasswordForOptions.end(); iter++) {
+						if(option == *iter) {
+							contentConfigSplit[i] = option + " = ****";
+							break;
+						}
+					}
+				}
+			}
+			contentConfig = "";
+			for(unsigned i = 0; i < contentConfigSplit.size(); i++) {
+				if(i) {
+					contentConfig += '\n';
+				}
+				contentConfig += contentConfigSplit[i];
+			}
+			return(params->sendString(contentConfig));
+		} else {
+			return(params->sendString("failed - need active new config"));
+		}
+	} else if(string(type_information) == "syslog_files_list" ||
+		  string(type_information) == "syslog_file") {
+		string syslog_dir = "/var/log";
+		list<string> syslogs;
+		DIR* dp = opendir(syslog_dir.c_str());
+		if(dp) {
+			dirent *de;
+			while((de = readdir(dp)) != NULL) {
+				if(string(de->d_name) != ".." && string(de->d_name) != "." &&
+				   (strstr(de->d_name, "messages") ||
+				    strstr(de->d_name, "syslog"))) {
+					syslogs.push_back(syslog_dir + "/" + de->d_name);
+				}
+			}
+			closedir(dp);
+		}
+		if(syslogs.size()) {
+			if(string(type_information) == "syslog_file") {
+				for(list<string>::iterator iter = syslogs.begin(); iter != syslogs.end(); iter++) {
+					if(next_params[1] == *iter) {
+						return(params->sendFile(next_params[1], next_params[2][0] ? atoll(next_params[2]) : 0));
+					}
+				}
+				return(params->sendString("failed - access denied"));
+			} else {
+				string syslogs_str;
+				for(list<string>::iterator iter = syslogs.begin(); iter != syslogs.end(); iter++) {
+					if(!syslogs_str.empty()) {
+						syslogs_str += "\n";
+					}
+					syslogs_str += *iter + ":" + intToString(GetFileSize(*iter));
+				}
+				return(params->sendString(syslogs_str));
+			}
+		} else {
+			return(params->sendString("failed search syslogs"));
+		}
+	} else if(string(type_information) == "interfaces") {
+		extern char ifname[1024];
+		vector<string> interfaces = split(ifname, split(",|;| |\t|\r|\n", "|"), true);
+		if(interfaces.size()) {
+			string interfaces_str;
+			for(unsigned i = 0; i < interfaces.size(); i ++) {
+				if(!interfaces_str.empty()) {
+					interfaces_str += "\n";
+				}
+				for(unsigned j = 0; j < interfaces[i].length() + 2; j++) {
+					interfaces_str += '-';
+				}
+				interfaces_str += "\n|" + interfaces[i] + "|\n";
+				for(unsigned j = 0; j < interfaces[i].length() + 2; j++) {
+					interfaces_str += '-';
+				}
+				interfaces_str += "\n\n";
+				string cmd = "ip addr show " + interfaces[i];
+				int exitCode;
+				SimpleBuffer out;
+				SimpleBuffer err;
+				vm_pexec(cmd.c_str(), &out, &err, &exitCode);
+				if(exitCode == 0 && out.size()) {
+					interfaces_str += (char*)out;
+					const char *nextCommands[] = {
+						"ethtool -i",
+						"ethtool -g",
+						"ethtool -c",
+						"ethtool -S",
+						"ip -s -s l l"
+					};
+					for(unsigned j = 0; j < sizeof(nextCommands) / sizeof(nextCommands[0]); j++) {
+						string cmd = nextCommands[j] + string(" ") + interfaces[i];
+						int exitCode;
+						SimpleBuffer out;
+						SimpleBuffer err;
+						vm_pexec(cmd.c_str(), &out, &err, &exitCode);
+						if(exitCode == 0 && out.size()) {
+							interfaces_str += "\n" + string((char*)out);
+						} else if(err.size()) {
+							interfaces_str += "\n" + string((char*)err);
+						}
+					}
+				} else {
+					interfaces_str += "failed " + cmd + "\n";
+					if(err.size()) {
+						interfaces_str += (char*)err;
+						if(interfaces_str[interfaces_str.length() - 1] != '\n') {
+							interfaces_str += "\n";
+						}
+					}
+				}
+			}
+			return(params->sendString(interfaces_str));
+		} else {
+			return(params->sendString("no interfaces"));
+		}
+	} else if(string(type_information) == "proc_cpuinfo") {
+		return(params->sendFile("/proc/cpuinfo"));
+	} else if(string(type_information) == "proc_meminfo") {
+		return(params->sendFile("/proc/meminfo"));
+	} else if(string(type_information) == "cmd_df") {
+		return(params->sendPexecOutput("df -h"));
+	} else if(string(type_information) == "cmd_mount") {
+		return(params->sendPexecOutput("mount"));
+	} else if(string(type_information) == "cmd_dmesg") {
+		return(params->sendPexecOutput("dmesg -t"));
+	} else if(string(type_information) == "cmd_file") {
+		extern string rundir;
+		extern string appname;
+		return(params->sendPexecOutput(("file " + rundir + "/" + appname).c_str()));
+	} else if(string(type_information) == "cmd_ldd") {
+		return(params->sendPexecOutput(("ldd " + binaryNameWithPath).c_str()));
+	}
+	return(0);
+}
+
 int Mgmt_set_pcap_stat_period(Mgmt_params *params) {
 	if (params->task == params->mgmt_task_DoInit) {
 		params->registerCommand("set_pcap_stat_period", "set_pcap_stat_period");
@@ -4599,6 +5004,18 @@ int Mgmt_setverbparam(Mgmt_params *params) {
 		verbparam.resize(posEndLine);
 	}
 	parse_verb_param(verbparam);
+	return(0);
+}
+
+int Mgmt_cleanverbparams(Mgmt_params *params) {
+	if (params->task == params->mgmt_task_DoInit) {
+		params->registerCommand("cleanverbparams", "cleanverbparams");
+		return(0);
+	}
+
+	sverb.disable_process_packet_in_packetbuffer = 0;
+	sverb.disable_push_to_t2_in_packetbuffer = 0;
+	
 	return(0);
 }
 
@@ -4636,7 +5053,7 @@ int Mgmt_pausecall(Mgmt_params *params) {
 
 void init_management_functions(void) {
 	int i;
-	Mgmt_params params(NULL, 0, 0, NULL, NULL, NULL);
+	Mgmt_params params(NULL, 0, 0, NULL, NULL);
 	params.task = params.mgmt_task_DoInit;
 
 	for (i = 0;; i++) {

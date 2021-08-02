@@ -35,6 +35,12 @@ enum eRegisterField {
 	rf_calldate,
 	rf_sipcallerip,
 	rf_sipcalledip,
+	rf_sipcallerip_encaps,
+	rf_sipcalledip_encaps,
+	rf_sipcallerip_encaps_prot,
+	rf_sipcalledip_encaps_prot,
+	rf_sipcallerport,
+	rf_sipcalledport,
 	rf_from_num,
 	rf_from_name,
 	rf_from_domain,
@@ -51,6 +57,7 @@ enum eRegisterField {
 	rf_rrd_avg,
 	rf_spool_index,
 	rf_is_sipalg_detected,
+	rf_vlan,
 	rf__max
 };
 
@@ -72,8 +79,8 @@ public:
 	inline void copyFrom(const RegisterState *src);
 	inline bool isEq(Call *call, Register *reg);
 public:
-	u_int32_t state_from;
-	u_int32_t state_to;
+	u_int64_t state_from_us;
+	u_int64_t state_to_us;
 	u_int32_t counter;
 	eRegisterState state;
 	char *contact_num;
@@ -87,8 +94,9 @@ public:
 	u_int64_t fname;
 	u_int32_t expires;
 	int id_sensor;
+	u_int16_t vlan;
 	u_int64_t db_id;
-	u_int32_t save_at;
+	u_int64_t save_at;
 	u_int32_t save_at_counter;
 	bool is_sipalg_detected;
 };
@@ -109,7 +117,7 @@ public:
 	inline void saveStateToDb(RegisterState *state, bool enableBatchIfPossible = true);
 	inline void saveFailedToDb(RegisterState *state, bool force = false, bool enableBatchIfPossible = true);
 	inline eRegisterState getState();
-	inline u_int32_t getStateFrom();
+	inline u_int32_t getStateFrom_s();
 	inline RegisterState *states_last() {
 		return(countStates ? states[0] : NULL);
 	}
@@ -139,8 +147,14 @@ public:
 	}
 public:
 	u_int64_t id;
-	u_int32_t sipcallerip;
-	u_int32_t sipcalledip;
+	vmIP sipcallerip;
+	vmIP sipcalledip;
+	vmIP sipcallerip_encaps;
+	vmIP sipcalledip_encaps;
+	u_int8_t sipcallerip_encaps_prot;
+	u_int8_t sipcalledip_encaps_prot;
+	vmPort sipcallerport;
+	vmPort sipcalledport;
 	char *to_num;
 	char *to_domain;
 	char *contact_num;
@@ -151,10 +165,13 @@ public:
 	char *from_domain;
 	char *digest_realm;
 	char *ua;
+	u_int16_t vlan;
 	RegisterState *states[NEW_REGISTER_MAX_STATES];
 	u_int16_t countStates;
 	u_int64_t rrd_sum;
 	u_int32_t rrd_count;
+	string reg_call_id;
+	list<u_int32_t> reg_tcp_seq;
 	volatile int _sync_states;
 	static volatile u_int64_t _id;
 	static volatile int _sync_id;
@@ -166,6 +183,7 @@ public:
 	Registers();
 	~Registers();
 	void add(Call *call);
+	bool existsDuplTcpSeqInRegOK(Call *call, u_int32_t seq);
 	void cleanup(struct timeval *act_time, bool force = false, int expires_add = 0);
 	void clean_all();
 	inline u_int64_t getNewRegisterFailedId(int sensorId);

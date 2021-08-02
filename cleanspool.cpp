@@ -346,16 +346,16 @@ void CleanSpool::addFile(const char *ymdh, eTypeSpoolFile typeSpoolFile, const c
 		return;
 	}
 	string column = string(getSpoolTypeFilesIndex(typeSpoolFile, true)) + "size";
-	sqlStore->lock(STORE_PROC_ID_CLEANSPOOL + spoolIndex);
-	sqlStore->query( 
+	sqlStore->lock(STORE_PROC_ID_CLEANSPOOL, spoolIndex);
+	sqlStore->query(MYSQL_ADD_QUERY_END(
 	       "INSERT INTO files \
 		SET datehour = " + string(ymdh) + ", \
 		    spool_index = " + getSpoolIndex_string() + ", \
 		    id_sensor = " + getIdSensor_string() + ", \
 		    " + column + " = " + intToString(size) + " \
 		ON DUPLICATE KEY UPDATE \
-		    " + column + " = " + column + " + " + intToString(size),
-		STORE_PROC_ID_CLEANSPOOL + spoolIndex);
+		    " + column + " = " + column + " + " + intToString(size)),
+		STORE_PROC_ID_CLEANSPOOL, spoolIndex);
 	string fname = getSpoolDir_string(tsf_main) + "/filesindex/" + column + '/' + ymdh;
 	ofstream fname_stream;
 	for(int passOpen = 0; passOpen < 2; passOpen++) {
@@ -383,7 +383,7 @@ void CleanSpool::addFile(const char *ymdh, eTypeSpoolFile typeSpoolFile, const c
 	} else {
 		syslog(LOG_ERR, "error write to %s", fname.c_str());
 	}
-	sqlStore->unlock(STORE_PROC_ID_CLEANSPOOL + spoolIndex);
+	sqlStore->unlock(STORE_PROC_ID_CLEANSPOOL, spoolIndex);
 }
 
 void CleanSpool::run() {
@@ -501,6 +501,30 @@ string CleanSpool::printSumSizeByDate() {
 		outStr << iter->first << " : " << iter->second << endl;
 	}
 	return(outStr.str());
+}
+
+string CleanSpool::getOldestDate() {
+	string oldestDate;
+	list<string> spool_dirs;
+	this->getSpoolDirs(&spool_dirs);
+	for(list<string>::iterator iter_sd = spool_dirs.begin(); iter_sd != spool_dirs.end(); iter_sd++) {
+		DIR* dp = opendir(iter_sd->c_str());
+		if(dp) {
+			dirent* de;
+			while((de = readdir(dp)) != NULL) {
+				if(string(de->d_name) == ".." or string(de->d_name) == ".") continue;
+				if(is_dir(de, iter_sd->c_str()) &&
+				   check_date_dir(de->d_name)) {
+					if(oldestDate.empty() ||
+					   oldestDate > de->d_name) {
+						oldestDate = de->d_name;
+					}
+				}
+			}
+			closedir(dp);
+		}
+	}
+	return(oldestDate);
 }
 
 void CleanSpool::run_cleanProcess(int spoolIndex) {
@@ -625,6 +649,23 @@ string CleanSpool::run_print_spool(int spoolIndex) {
 		}
 	}
 	return(rslt);
+}
+
+string CleanSpool::get_oldest_date(int spoolIndex) {
+	string oldestDate;
+	for(int i = 0; i < 2; i++) {
+		if(isSetSpoolDir(i)) {
+			CleanSpool cs(i);
+			list<string> spool_dirs;
+			string _oldestDate = cs.getOldestDate();
+			if(!_oldestDate.empty() &&
+			    (oldestDate.empty() ||
+			     oldestDate > _oldestDate)) {
+				oldestDate = _oldestDate;
+			}
+		}
+	}
+	return(oldestDate);
 }
 
 bool CleanSpool::isSetCleanspoolParameters(int spoolIndex) {
@@ -843,7 +884,7 @@ void CleanSpool::loadSpoolDataDir(cSpoolData *spoolData, sSpoolDataDirIndex inde
 					spoolData->add(indexHour, itemHour);
 					continue;
 				}
-				u_long start = getTimeMS();
+				u_int64_t start = getTimeMS();
 				char *fts_path[2] = { (char*)pathHour.c_str(), NULL };
 				FTS *tree = fts_open(fts_path, FTS_NOCHDIR, 0);
 				if(!tree) {
@@ -915,8 +956,8 @@ void CleanSpool::loadSpoolDataDir(cSpoolData *spoolData, sSpoolDataDirIndex inde
 				}
 				fts_close(tree);
 				if(!is_terminating()) {
-					u_long end = getTimeMS();
-					usleep((end - start) * 1000);
+					u_int64_t end = getTimeMS();
+					USLEEP((end - start) * 1000);
 					syslog(LOG_NOTICE, "cleanspool[%i]: load date/hour - %s/%i", spoolIndex, indexHour.date.c_str(), indexHour.hour);
 					if(countFiles) {
 						sSpoolDataDirIndex _index = index;
@@ -1133,10 +1174,11 @@ void CleanSpool::cleanThreadProcess() {
 		int _minGbForAutoReindex = 5;
 		if(freeSpacePercent < _minPercentForAutoReindex && 
 		   freeSpaceGB < _minGbForAutoReindex) {
-			syslog(LOG_NOTICE, "cleanspool[%i]: low spool disk space - executing convert_filesindex", spoolIndex);
 			if(opt_cleanspool_use_files) {
+				syslog(LOG_NOTICE, "cleanspool[%i]: low spool disk space - executing reindex_all", spoolIndex);
 				reindex_all("call from clean_spooldir - low spool disk space");
 			} else {
+				syslog(LOG_NOTICE, "cleanspool[%i]: low spool disk space - executing reloadSpoolDataDir", spoolIndex);
 				reloadSpoolDataDir(false, true);
 			}
 			freeSpacePercent = (double)GetFreeDiskSpace(getSpoolDir(tsf_main), true) / 100;
@@ -1166,7 +1208,7 @@ void CleanSpool::cleanThreadProcess() {
 				}
 				delete sqlDb;
 			} else {
-				usedSizeGB = spoolData.getSumSize() / (1024 * 1024 * 1024);
+				usedSizeGB = (double)spoolData.getSumSize() / (1024 * 1024 * 1024);
 			}
 			maxpoolsize = (usedSizeGB + freeSpaceGB - min(totalSpaceGB * opt_other.autocleanspoolminpercent / 100, (double)opt_other.autocleanmingb)) * 1024;
 			if(maxpoolsize > 1000 &&
@@ -1183,9 +1225,17 @@ void CleanSpool::cleanThreadProcess() {
 					"maxpoolsize set to value",
 				       maxpoolsize);
 			} else {
-				syslog(LOG_ERR, "cleanspool[%i]: incorrect set autocleanspoolminpercent and autocleanspoolmingb", spoolIndex);
+				char criticalLowSpoolSpace_str[1024];
+				snprintf(criticalLowSpoolSpace_str, sizeof(criticalLowSpoolSpace_str),
+					 "cleanspool[%i]: Critical low disk space in spool %s. Used size: %.2lf GB Free space: %.2lf GB",
+					 spoolIndex,
+					 getSpoolDir(tsf_main),
+					 usedSizeGB,
+					 freeSpaceGB);
+				cLogSensor::log(cLogSensor::critical, criticalLowSpoolSpace_str);
 				maxpoolsize = 0;
 			}
+			criticalLowSpace = true;
 		}
 	}
 	if((timeOk && !suspended) || criticalLowSpace) {
@@ -1286,19 +1336,19 @@ void CleanSpool::reindex_all(const char *reason) {
 		return;
 	}
 	syslog(LOG_NOTICE, "cleanspool[%i]: reindex_all start%s%s", spoolIndex, reason ? " - " : "", reason ? reason : "");
-	sqlStore->query_lock(
+	sqlStore->query_lock(MYSQL_ADD_QUERY_END(
 	       "DELETE FROM files \
 		WHERE spool_index = " + getSpoolIndex_string() + " and \
-		      id_sensor = " + getIdSensor_string(),
-		STORE_PROC_ID_CLEANSPOOL_SERVICE + spoolIndex);
+		      id_sensor = " + getIdSensor_string()),
+		STORE_PROC_ID_CLEANSPOOL, spoolIndex);
 	rmdir_r(getSpoolDir_string(tsf_main) + "/filesindex", true, true);
 	for(list<string>::iterator iter_date_dir = date_dirs.begin(); iter_date_dir != date_dirs.end(); iter_date_dir++) {
 		reindex_date(*iter_date_dir);
 	}
 	syslog(LOG_NOTICE, "cleanspool[%i]: reindex_all done", spoolIndex);
 	// wait for flush sql store
-	while(sqlStore->getSize(STORE_PROC_ID_CLEANSPOOL_SERVICE + spoolIndex) > 0) {
-		usleep(100000);
+	while(sqlStore->getSize(STORE_PROC_ID_CLEANSPOOL, spoolIndex) > 0) {
+		USLEEP(100000);
 	}
 	sleep(1);
 }
@@ -1365,7 +1415,7 @@ long long CleanSpool::reindex_date_hour(string date, int h, bool readOnly, map<s
 		}
 		string ymdh = string(date.substr(0,4)) + date.substr(5,2) + date.substr(8,2) + hour;
 		if(sipsize + regsize + skinnysize + mgcpsize + ss7size + rtpsize + graphsize + audiosize) {
-			sqlStore->query_lock(
+			sqlStore->query_lock(MYSQL_ADD_QUERY_END(
 			       "INSERT INTO files \
 				SET datehour = " + ymdh + ", \
 				    spool_index = " + getSpoolIndex_string() + ", \
@@ -1386,15 +1436,15 @@ long long CleanSpool::reindex_date_hour(string date, int h, bool readOnly, map<s
 				    ss7size = " + intToString(ss7size) + ", \
 				    rtpsize = " + intToString(rtpsize) + ", \
 				    graphsize = " + intToString(graphsize) + ", \
-				    audiosize = " + intToString(audiosize),
-				STORE_PROC_ID_CLEANSPOOL_SERVICE + spoolIndex);
+				    audiosize = " + intToString(audiosize)),
+				STORE_PROC_ID_CLEANSPOOL, spoolIndex);
 		} else {
-			sqlStore->query_lock(
+			sqlStore->query_lock(MYSQL_ADD_QUERY_END(
 			       "DELETE FROM files \
 				WHERE datehour = " + ymdh + " and \
 				      spool_index = " + getSpoolIndex_string() + " and \
-				      id_sensor = " + getIdSensor_string(),
-				STORE_PROC_ID_CLEANSPOOL_SERVICE + spoolIndex);
+				      id_sensor = " + getIdSensor_string()),
+				STORE_PROC_ID_CLEANSPOOL, spoolIndex);
 			for(int typeSpoolFile = tsf_sip; typeSpoolFile < tsf_all; ++typeSpoolFile) {
 				rmdir_r(getSpoolDir_string((eTypeSpoolFile)typeSpoolFile) + '/' + date + '/' + hour);
 			}
@@ -1688,9 +1738,9 @@ void CleanSpool::erase_dir_if_empty(string dir, string callFrom) {
 	if(!callFrom.empty()) {
 		syslog(LOG_NOTICE, "cleanspool[%i]: call erase_dir_if_empty(%s) from %s", spoolIndex, dir.c_str(), callFrom.c_str());
 	}
-	if(dir_is_empty(dir)) {
+	if(dir_is_empty(dir, true)) {
 		if(!sverb.cleanspool_disable_rm) {
-			rmdir(dir.c_str());
+			rmdir_r(dir.c_str(), true);
 		}
 		string redukDir = dir;
 		string lastDir;
@@ -1715,7 +1765,7 @@ void CleanSpool::erase_dir_if_empty(string dir, string callFrom) {
 	}
 }
 
-bool CleanSpool::dir_is_empty(string dir) {
+bool CleanSpool::dir_is_empty(string dir, bool enableRecursion) {
 	DIR* dp = opendir(dir.c_str());
 	if(!dp) {
 		return(false);
@@ -1724,8 +1774,15 @@ bool CleanSpool::dir_is_empty(string dir) {
 	dirent* de;
 	while((de = readdir(dp)) != NULL) {
 		if(string(de->d_name) == ".." or string(de->d_name) == ".") continue;
-		empty = false;
-		break;
+		if(enableRecursion && is_dir(de, dir.c_str())) {
+			if(!dir_is_empty(dir + "/" + de->d_name, enableRecursion)) {
+				empty = false;
+				break;
+			}
+		} else {
+			empty = false;
+			break;
+		}
 	}
 	closedir(dp);
 	return(empty);

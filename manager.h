@@ -6,27 +6,22 @@
 #include <vector>
 #include <queue>
 
-#ifndef HAVE_LIBSSH
-typedef void* ssh_channel;
-#else
-#include <libssh/libssh.h>
-#include <libssh/callbacks.h>
-#endif
 
 void *manager_client(void *dummy);
 void *manager_server(void *dummy);
 void *manager_ssh(void *dummy);
 int Handle_pause_call(long long callref, int val);
 
+
 class ManagerClientThread {
 public:
-	ManagerClientThread(int client, const char *type, const char *command, int commandLength = 0);
+	ManagerClientThread(sClientInfo client, const char *type, const char *command, int commandLength = 0);
 	virtual ~ManagerClientThread() {}
 	void run();
 	bool isFinished() { return(finished); }
 	virtual bool parseCommand() = 0;
 	virtual void onCall(int /*sipResponseNum*/, const char */*callerName*/, const char */*callerNum*/, const char */*calledNum*/,
-			    unsigned int /*sipSaddr*/, unsigned int /*sipDaddr*/,
+			    vmIP /*sipSaddr*/, vmIP /*sipDaddr*/,
 			    const char */*screenPopupFieldsString*/) {}
 protected:
 	void lock_responses() {
@@ -36,7 +31,7 @@ protected:
 		__sync_lock_release(&this->_sync_responses);
 	}
 protected:
-	int client;
+	sClientInfo client;
 	string type;
 	string command;
 	bool finished;
@@ -56,10 +51,10 @@ public:
 		string replace;
 	};
 public:
-	ManagerClientThread_screen_popup(int client, const char *command, int commandLength = 0);
+	ManagerClientThread_screen_popup(sClientInfo client, const char *command, int commandLength = 0);
 	bool parseCommand();
 	void onCall(int sipResponseNum, const char *callerName, const char *callerNum, const char *calledNum,
-		    unsigned int sipSaddr, unsigned int sipDaddr,
+		    vmIP sipSaddr, vmIP sipDaddr,
 		    const char *screenPopupFieldsString);
 private:
 	bool parseUserPassword();
@@ -79,6 +74,7 @@ private:
 	ListIP_wb src_ip;
 	string app_launch;
 	string app_launch_args_or_url;
+	string status_line;
 	string popup_title;
 };
 
@@ -86,8 +82,9 @@ class ManagerClientThreads {
 public:
 	ManagerClientThreads();
 	void add(ManagerClientThread *clientThread);
-	void onCall(int sipResponseNum, const char *callerName, const char *callerNum, const char *calledNum,
-		    unsigned int sipSaddr, unsigned int sipDaddr,
+	void onCall(const char *call_id,
+		    int sipResponseNum, const char *callerName, const char *callerNum, const char *calledNum,
+		    vmIP sipSaddr, vmIP sipDaddr,
 		    const char *screenPopupFieldsString);
 	void cleanup();
 	int getCount();
@@ -110,16 +107,18 @@ struct commandAndHelp {
 
 class Mgmt_params {
 public:
-	Mgmt_params(char *ibuf, int isize, int iclient, ssh_channel isshchannel, cClient *ic_client, ManagerClientThread **imanagerClientThread);
+	Mgmt_params(char *ibuf, int isize, sClientInfo iclient, cClient *ic_client, ManagerClientThread **imanagerClientThread);
 	int sendString(const char *);
 	int sendString(const char *, ssize_t);
+	int sendString(string);
 	int sendString(string *);
 	int sendString(ostringstream *);
 	int sendString(int);
-	int sendFile(const char *fileName);
+	int sendFile(const char *fileName, u_int64_t tailMaxSize = 0);
+	int sendConfigurationFile(const char *fileName, list<string> *hidePasswordForOptions = NULL);
+	int sendPexecOutput(const char *cmd);
 	int registerCommand(const char *, const char *);
 	int registerCommand(struct commandAndHelp *);
-
 	enum eTask {
 		mgmt_task_na = 0,
 		mgmt_task_DoInit = 1 << 0
@@ -131,8 +130,7 @@ public:
 // vars for sendvm
 	char *buf;
 	int size;
-	int client;
-	ssh_channel sshchannel;
+	sClientInfo client;
 	cClient *c_client;
 	ManagerClientThread **managerClientThread;
 };

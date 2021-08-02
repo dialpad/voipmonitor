@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 #include <string.h>
-#include <bits/types.h>
+#include <sys/types.h>
 #include <list>
 #include <deque>
 #include <map>
@@ -50,6 +50,7 @@ enum eSipMsgField {
 	smf_response_string,
 	smf_qualify_ok,
 	smf_exists_pcap,
+	smf_vlan,
 	smf__max
 };
 
@@ -59,20 +60,22 @@ public:
 	cSipMsgItem_base() {
 		type = 0;
 		id_sensor = 0;
-		ip_src = 0;
-		ip_dst = 0;
-		port_src = 0;
-		port_dst = 0;
+		ip_src.clear();
+		ip_dst.clear();
+		port_src.clear();
+		port_dst.clear();
+		vlan = VLAN_UNSET;
 	}
 	bool operator == (const cSipMsgItem_base& other) const;
 	void debug_out();
 public:
 	int16_t type;
 	int16_t id_sensor;
-	u_int32_t ip_src;
-	u_int32_t ip_dst;
-	u_int16_t port_src;
-	u_int16_t port_dst;
+	vmIP ip_src;
+	vmIP ip_dst;
+	vmPort port_src;
+	vmPort port_dst;
+	u_int16_t vlan;
 	string number_src;
 	string number_dst;
 	string domain_src;
@@ -121,6 +124,7 @@ struct sCallDataPcap {
 	sCallDataPcap() {
 		call_data = NULL;
 		pcap = NULL;
+		pcap_save = false;
 		pcap_closed = false;
 	}
 	inline bool isSet() {
@@ -188,14 +192,14 @@ public:
 	}
 	void savePacket(packet_s_process *packetS);
 	void saveToDb(cSipMsgRelations *relations);
-	bool needSavePcap(cSipMsgRelations *relations);
-	bool needSaveToDb(cSipMsgRelations *relations);
+	bool needSavePcap(cSipMsgRelations *relations, class cSipMsgRelation *relation);
+	bool needSaveToDb(cSipMsgRelations *relations, class cSipMsgRelation *relation);
 	u_int64_t getFirstRequestTime();
 	u_int64_t getLastRequestTime();
 	u_int64_t getLastResponseTime();
 	u_int64_t getLastTime();
 	string getPcapFileName();
-	void destroy(cSipMsgRelations *relations);
+	void destroy(cSipMsgRelations *relations, class cSipMsgRelation *relation);
 	void parseCustomHeaders(packet_s_process *packetS, CustomHeaders::eReqRespDirection reqRespDirection);
 public:
 	u_int64_t time_us;
@@ -290,6 +294,7 @@ private:
 	deque<cSipMsgRequestResponse*> queue_req_resp;
 	deque<sHistoryData> history;
 	int id_sensor;
+	unsigned long int flags;
 	volatile int _sync;
 	static volatile u_int64_t _id;
 	static volatile int _sync_id;
@@ -339,8 +344,8 @@ public:
 			return(((options && item->type == smt_options) ||
 				(subscribe && item->type == smt_subscribe) ||
 				(notify && item->type == smt_notify)) &&
-			       (ip_src.is_empty() || ip_src.checkIP(ntohl(item->ip_src))) &&
-			       (ip_dst.is_empty() || ip_dst.checkIP(ntohl(item->ip_src))) &&
+			       (ip_src.is_empty() || ip_src.checkIP(item->ip_src)) &&
+			       (ip_dst.is_empty() || ip_dst.checkIP(item->ip_dst)) &&
 			       (number_src.is_empty() || number_src.checkNumber(item->number_src.c_str())) &&
 			       (number_dst.is_empty() || number_dst.checkNumber(item->number_dst.c_str())) &&
 			       (domain_src.is_empty() || domain_src.check(item->domain_src.c_str())) &&
@@ -416,8 +421,8 @@ public:
 	void closePcap(sCallDataPcap *cdp);
 	void saveToDb(cSipMsgRequestResponse *itemResponse);
 	void _saveToDb(cSipMsgRequestResponse *itemResponse, bool enableBatchIfPossible = true);
-	bool needSavePcap(cSipMsgRequestResponse *itemResponse);
-	bool needSaveToDb(cSipMsgRequestResponse *itemResponse);
+	bool needSavePcap(cSipMsgRequestResponse *itemResponse, cSipMsgRelation *relation);
+	bool needSaveToDb(cSipMsgRequestResponse *itemResponse, cSipMsgRelation *relation);
 	void pushToCdpQueue(sCallDataPcap *cdp);
 	void runInternalThread();
 private:
@@ -438,12 +443,6 @@ private:
 	}
 	void unlock_relations() {
 		__sync_lock_release(&_sync_relations);
-	}
-	void lock_delete_relation() {
-		while(__sync_lock_test_and_set(&_sync_delete_relation, 1));
-	}
-	void unlock_delete_relation() {
-		__sync_lock_release(&_sync_delete_relation);
 	}
 	void lock_params() {
 		while(__sync_lock_test_and_set(&_sync_params, 1));
@@ -489,8 +488,8 @@ private:
 	volatile int _sync_cdp_queue;
 	volatile int _sync_close_pcap;
 	volatile int _sync_save_to_db;
-	u_long lastCleanupRelations_ms;
-	u_long lastClosePcaps_ms;
+	u_int64_t lastCleanupRelations_ms;
+	u_int64_t lastClosePcaps_ms;
 	pthread_t internalThread_id;
 	volatile bool terminate;
 friend class cSipMsgRelation;

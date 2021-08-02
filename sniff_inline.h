@@ -7,7 +7,17 @@
 #if SNIFFER_INLINE_FUNCTIONS
 inline 
 #endif
+unsigned get_udp_header_len(udphdr2 *header_udp);
+
+#if SNIFFER_INLINE_FUNCTIONS
+inline 
+#endif
 unsigned get_udp_data_len(iphdr2 *header_ip, udphdr2 *header_udp, char** data, u_char *packet, unsigned caplen);
+
+#if SNIFFER_INLINE_FUNCTIONS
+inline 
+#endif
+unsigned get_tcp_header_len(tcphdr2 *header_tcp);
 
 #if SNIFFER_INLINE_FUNCTIONS
 inline 
@@ -22,19 +32,19 @@ unsigned get_sctp_data_len(iphdr2 *header_ip, char** data, u_char *packet, unsig
 #if SNIFFER_INLINE_FUNCTIONS
 inline
 #endif
-iphdr2 *convertHeaderIP_GRE(iphdr2 *header_ip);
+iphdr2 *convertHeaderIP_GRE(iphdr2 *header_ip, unsigned max_len);
 
 #if SNIFFER_INLINE_FUNCTIONS
 inline
 #endif
 bool parseEtherHeader(int pcapLinklayerHeaderType, u_char* packet,
 		      sll_header *&header_sll, ether_header *&header_eth, u_char **header_ppp_o_e,
-		      u_int &header_ip_offset, int &protocol, int *vlan = NULL);
+		      u_int16_t &header_ip_offset, u_int16_t &protocol, u_int16_t &vlan);
 
 #if SNIFFER_INLINE_FUNCTIONS
 inline
 #endif
-int findNextHeaderIp(iphdr2 *header_ip, unsigned header_ip_offset, unsigned caplen);
+int findNextHeaderIp(iphdr2 *header_ip, unsigned header_ip_offset, u_char *packet, unsigned caplen, u_int8_t *flags = NULL);
 
 enum pcapProcessFlags {
 	ppf_na = 0,

@@ -32,7 +32,7 @@ public:
 	void load(SqlDb_row *row, SqlDb *sqlDb = NULL);
 	bool isSensorOk(SqlDb *sqlDb = NULL);
 	void loadCond(SqlDb *sqlDb = NULL);
-	bool checkIP(u_int32_t ip);
+	bool checkIP(vmIP ip);
 	bool checkNumber(const char *number);
 private:
 	eBilingTypeAssignment typeAssignment;
@@ -53,7 +53,7 @@ public:
 	~cBillingAssignments();
 	void load(SqlDb *sqlDb = NULL);
 	void clear(bool useLock = true);
-	unsigned findBillingRuleIdForIP(u_int32_t ip, eBilingTypeAssignment typeAssignment,
+	unsigned findBillingRuleIdForIP(vmIP ip, eBilingTypeAssignment typeAssignment,
 					unsigned *assignment_id);
 	unsigned findBillingRuleIdForNumber(const char *number, eBilingTypeAssignment typeAssignment, 
 					    unsigned *assignment_id, CountryPrefixes *countryPrefixes);
@@ -76,8 +76,9 @@ class cBillingExclude {
 public:
 	cBillingExclude(bool agregation = false);
 	void load(SqlDb *sqlDb = NULL);
-	bool checkIP(u_int32_t ip, eBilingSide side);
+	bool checkIP(vmIP ip, eBilingSide side);
 	bool checkNumber(const char *number, eBilingSide side);
+	bool checkDomain(const char *domain, eBilingSide side);
 private:
 	void lock() {
 		while(__sync_lock_test_and_set(&_sync, 1));
@@ -91,6 +92,8 @@ private:
 	ListIP list_ip_dst;
 	ListPhoneNumber list_number_src;
 	ListPhoneNumber list_number_dst;
+	ListCheckString list_domain_src;
+	ListCheckString list_domain_dst;
 	volatile int _sync;
 };
 
@@ -155,25 +158,52 @@ friend class cBillingRule;
 
 class cBillingRuleNumber {
 public:
+	enum eNumberFormat {
+		_number_format_na,
+		_number_format_original,
+		_number_format_normalized,
+		_number_format_both
+	};
+	enum eNumberType {
+		_number_type_na,
+		_number_type_local,
+		_number_type_international,
+		_number_type_both
+	};
+public:
+	cBillingRuleNumber();
+	~cBillingRuleNumber();
 	void load(SqlDb_row *row);
+	void regexp_create();
+	static eNumberFormat numberFormatEnum(const char *str);
+	static eNumberType numberTypeEnum(const char *str);
+	static string numberFormatString(eNumberFormat numbFormat);
+	static string numberTypeString(eNumberType numbType);
 private:
 	string name;
 	string number_prefix;
 	string number_fixed;
+	string number_regex;
 	cPeakDefinition peak_definition;
 	double price;
 	double price_peak;
 	unsigned t1;
 	unsigned t2;
+	eNumberFormat use_for_number_format;
+	eNumberType use_for_number_type;
+	cRegExp *regexp;
 friend class cBillingRule;
 };
 
 class cBillingRule {
 public:
+	~cBillingRule();
 	void load(SqlDb_row *row);
 	void loadNumbers(SqlDb *sqlDb = NULL);
+	void freeNumbers();
 	double billing(time_t time, unsigned duration, const char *number, const char *number_normalized,
-		       cStateHolidays *holidays, const char *timezone);
+		       bool isLocalNumber, cStateHolidays *holidays, const char *timezone,
+		       vector<string> *debug = NULL);
 private:
 	unsigned id;
 	string name;
@@ -183,11 +213,13 @@ private:
 	double price_peak;
 	unsigned t1;
 	unsigned t2;
+	cBillingRuleNumber::eNumberFormat use_for_number_format;
+	cBillingRuleNumber::eNumberType use_for_number_type;
 	bool default_customer;
 	string currency_code;
 	unsigned currency_id;
 	string timezone_name;
-	list<cBillingRuleNumber> numbers;
+	list<cBillingRuleNumber*> numbers;
 friend class cBillingRules;
 friend class cBilling;
 };
@@ -215,6 +247,7 @@ friend class cBilling;
 struct sBillingAgregationSettings {
 	bool enable_by_ip;
 	bool enable_by_number;
+	bool enable_by_domain;
 	unsigned week_start;
 	unsigned hours_history_in_days;
 	unsigned days_history_in_weeks;
@@ -250,6 +283,7 @@ public:
 	void load(SqlDb *sqlDb = NULL);
 	void clear(bool useLock = true);
 	double getExchangeRateToMainCurency(unsigned from_id);
+	string getCurrencyCode(unsigned id);
 private:
 	void lock() {
 		while(__sync_lock_test_and_set(&_sync, 1));
@@ -274,21 +308,45 @@ public:
 	cBilling();
 	~cBilling();
 	void load(SqlDb *sqlDb = NULL);
+	bool isSet() {
+		return(set);
+	}
 	bool billing(time_t time, unsigned duration,
-		     u_int32_t ip_src, u_int32_t ip_dst,
+		     vmIP ip_src, vmIP ip_dst,
 		     const char *number_src, const char *number_dst,
+		     const char *domain_src, const char *domain_dst,
 		     double *operator_price, double *customer_price,
 		     unsigned *operator_currency_id, unsigned *customer_currency_id,
-		     unsigned *operator_id, unsigned *customer_id);
-	list<string> saveAgregation(time_t time,
-				    u_int32_t ip_src, u_int32_t ip_dst,
-				    const char *number_src, const char *number_dst,
-				    double operator_price, double customer_price,
-				    unsigned operator_currency_id, unsigned customer_currency_id);
+		     unsigned *operator_id, unsigned *customer_id,
+		     unsigned force_operator_id = 0, unsigned force_customer_id = 0,
+		     bool use_exclude_rules = true,
+		     vector<string> *operator_debug = NULL, vector<string> *customer_debug = NULL);
+	bool saveAggregation(time_t time,
+			     vmIP ip_src, vmIP ip_dst,
+			     const char *number_src, const char *number_dst,
+			     const char *domain_src, const char *domain_dst,
+			     double operator_price, double customer_price,
+			     unsigned operator_currency_id, unsigned customer_currency_id,
+			     list<string> *inserts);
 	sBillingAgregationSettings getAgregSettings() {
 		return(agreg_settings->settings);
 	}
 	static vector<sAgregationTypePart> getAgregTypeParts(sBillingAgregationSettings *settings);
+	string getCurrencyCode(unsigned id);
+	string test(string calls_string, bool json_rslt);
+	string test(const char *id, const char *time, const char *duration,
+		    const char *ip_src, const char *ip_dst,
+		    const char *number_src, const char *number_dst,
+		    const char *domain_src, const char *domain_dst,
+		    const char *sensor_id,
+		    const char *verify_operator_price, const char *verify_customer_price,
+		    bool json_rslt);
+	void revaluationBilling(list<u_int64_t> *ids,
+				unsigned force_operator_id = 0, unsigned force_customer_id = 0,
+				bool use_exclude_rules = true);
+	void revaluationBilling(SqlDb_rows *rows, SqlDb *sqlDb,
+				unsigned force_operator_id = 0, unsigned force_customer_id = 0,
+				bool use_exclude_rules = true);
 private:
 	void lock() {
 		while(__sync_lock_test_and_set(&_sync, 1));
@@ -297,6 +355,7 @@ private:
 		__sync_lock_release(&_sync);
 	}
 private:
+	bool set;
 	cBillingRules *rules;
 	cBillingAssignments *assignments;
 	cBillingExclude *exclude;
@@ -314,6 +373,11 @@ private:
 void initBilling(SqlDb *sqlDb);
 void termBilling();
 void refreshBilling();
+
+void revaluationBilling(const char *params);
+void revaluationBilling(list<u_int64_t> *ids,
+			unsigned force_operator_id = 0, unsigned force_customer_id = 0,
+			bool use_exclude_rules = true);
 
 
 #endif //BILLING_H

@@ -54,8 +54,12 @@ string CountryDetect_base_table::getTableName(eTableType tableType) {
 		tableName = "geoip_country";
 		useCloudShare = true;
 		break;
+	case _geoipv6_country:
+		tableName = "geoipv6_country";
+		useCloudShare = true;
+		break;
 	}
-	if(!tableName.empty() && isCloud() && useCloudShare) {
+	if(!tableName.empty() && isCloud() && useCloudShare && !sverb.disable_cloudshare) {
 		tableName =  "cloudshare." + tableName;
 	}
 	return(tableName);
@@ -175,7 +179,7 @@ void CheckInternational::setInternationalPrefixes(const char *prefixes, vector<s
 	for(unsigned i = 0; i < internationalPrefixes.size(); i++) {
 		if(internationalPrefixes[i].length()) {
 			if(internationalPrefixes[i][0] == '^') {
-				this->internationalPrefixes_regexp.push_back(new FILE_LINE(0) cRegExp(internationalPrefixes[i].c_str(), cRegExp::_regexp_icase_mathes));
+				this->internationalPrefixes_regexp.push_back(new FILE_LINE(0) cRegExp(internationalPrefixes[i].c_str(), cRegExp::_regexp_icase_matches));
 			} else {
 				this->internationalPrefixes_string.push_back(internationalPrefixes[i]);
 			}
@@ -191,7 +195,7 @@ void CheckInternational::setSkipPrefixes(const char *prefixes, vector<string> *s
 	for(unsigned i = 0; i < skipPrefixes.size(); i++) {
 		if(skipPrefixes[i].length()) {
 			if(skipPrefixes[i][0] == '^') {
-				this->skipPrefixes_regexp.push_back(new FILE_LINE(0) cRegExp(skipPrefixes[i].c_str(), cRegExp::_regexp_icase_mathes));
+				this->skipPrefixes_regexp.push_back(new FILE_LINE(0) cRegExp(skipPrefixes[i].c_str(), cRegExp::_regexp_icase_matches));
 			} else {
 				this->skipPrefixes_string.push_back(skipPrefixes[i]);
 			}
@@ -321,7 +325,7 @@ bool CheckInternational::loadCustomerPrefixAdv(SqlDb *sqlDb) {
 				for(unsigned i = 0; i < trim_prefixes.size(); i++) {
 					if(trim_prefixes[i].length()) {
 						if(trim_prefixes[i][0] == '^') {
-							recAdv->trim_prefixes_regexp.push_back(new FILE_LINE(0) cRegExp(trim_prefixes[i].c_str(), cRegExp::_regexp_icase_mathes));
+							recAdv->trim_prefixes_regexp.push_back(new FILE_LINE(0) cRegExp(trim_prefixes[i].c_str(), cRegExp::_regexp_icase_matches));
 						} else {
 							recAdv->trim_prefixes_string.push_back(trim_prefixes[i]);
 						}
@@ -742,7 +746,9 @@ GeoIP_country::GeoIP_country() {
 
 bool GeoIP_country::load(SqlDb *sqlDb) {
 	string tableName;
-	if(!checkTable(_geoip_country, tableName, sqlDb)) {
+	string tableNameV6;
+	if(!checkTable(_geoip_country, tableName, sqlDb) ||
+	   (VM_IPV6_B && !checkTable(_geoipv6_country, tableNameV6, sqlDb))) {
 		return(false);
 	}
 	bool _createSqlObject = false;
@@ -750,19 +756,25 @@ bool GeoIP_country::load(SqlDb *sqlDb) {
 		sqlDb = createSqlObject();
 		_createSqlObject = true;
 	}
-	sqlDb->query("select * \
-		      from " + tableName + " \
-		      order by ip_from");
-	SqlDb_rows rows;
-	sqlDb->fetchRows(&rows);
-	SqlDb_row row;
-	while((row = rows.fetchRow())) {
-		data.push_back(GeoIP_country_rec(
-			atol(row["ip_from"].c_str()),
-			atol(row["ip_to"].c_str()),
-			row["country"].c_str()));
+	for(int pass = 0; pass < (VM_IPV6_B ? 2 : 1); pass++) {
+		sqlDb->setCsvInRemoteResult(true);
+		sqlDb->query("select * \
+			      from " + (pass ? tableNameV6 : tableName) + " \
+			      order by ip_from");
+		sqlDb->setCsvInRemoteResult(false);
+		SqlDb_rows rows;
+		sqlDb->fetchRows(&rows);
+		SqlDb_row row;
+		vector<GeoIP_country_rec> *_data = pass ? &data_v6 : &data;
+		while((row = rows.fetchRow())) {
+			vmIP ip_from;
+			vmIP ip_to;
+			ip_from.setIP(&row, "ip_from");
+			ip_to.setIP(&row, "ip_to");
+			_data->push_back(GeoIP_country_rec(ip_from, ip_to, row["country"].c_str()));
+		}
+		std::sort(_data->begin(), _data->end());
 	}
-	std::sort(data.begin(), data.end());
 	if(sqlDb->existsTable("geoip_customer_type") &&
 	   sqlDb->existsColumn("geoip_customer_type", "country_code") &&
 	   !sqlDb->emptyTable("geoip_customer_type") &&
@@ -854,7 +866,7 @@ bool CountryDetect::isLocalByPhoneNumber(const char *phoneNumber) {
 	return(rslt);
 }
 
-string CountryDetect::getCountryByIP(u_int32_t ip) {
+string CountryDetect::getCountryByIP(vmIP ip) {
 	string rslt;
 	lock();
 	if(geoIP_country->loadOK) {
@@ -864,7 +876,7 @@ string CountryDetect::getCountryByIP(u_int32_t ip) {
 	return(rslt);
 }
 
-unsigned CountryDetect::getCountryIdByIP(u_int32_t ip) {
+unsigned CountryDetect::getCountryIdByIP(vmIP ip) {
 	unsigned rslt = 0;
 	lock();
 	if(geoIP_country->loadOK) {
@@ -877,7 +889,7 @@ unsigned CountryDetect::getCountryIdByIP(u_int32_t ip) {
 	return(rslt);
 }
 
-bool CountryDetect::isLocalByIP(u_int32_t ip) {
+bool CountryDetect::isLocalByIP(vmIP ip) {
 	bool rslt = false;
 	lock();
 	if(geoIP_country->loadOK) {
@@ -901,7 +913,6 @@ void CountryDetect::prepareReload() {
 	if(opt_nocdr) {
 		return;
 	}
-	reload_do = false;
 	lock_reload();
 	if(countryCodes_reload) {
 		delete countryCodes_reload;
@@ -931,22 +942,24 @@ void CountryDetect::prepareReload() {
 void CountryDetect::applyReload() {
 	if(reload_do) {
 		lock_reload();
-		lock();
-		delete countryCodes;
-		delete countryPrefixes;
-		delete geoIP_country;
-		delete checkInternational;
-		countryCodes = countryCodes_reload;
-		countryPrefixes = countryPrefixes_reload;
-		geoIP_country = geoIP_country_reload;
-		checkInternational = checkInternational_reload;
-		unlock();
-		countryCodes_reload = NULL;
-		countryPrefixes_reload = NULL;
-		geoIP_country_reload = NULL;
-		checkInternational_reload = NULL;
-		reload_do = false;
-		syslog(LOG_NOTICE, "CountryDetect::applyReload");
+		if(reload_do) {
+			lock();
+			delete countryCodes;
+			delete countryPrefixes;
+			delete geoIP_country;
+			delete checkInternational;
+			countryCodes = countryCodes_reload;
+			countryPrefixes = countryPrefixes_reload;
+			geoIP_country = geoIP_country_reload;
+			checkInternational = checkInternational_reload;
+			unlock();
+			countryCodes_reload = NULL;
+			countryPrefixes_reload = NULL;
+			geoIP_country_reload = NULL;
+			checkInternational_reload = NULL;
+			reload_do = false;
+			syslog(LOG_NOTICE, "CountryDetect::applyReload");
+		}
 		unlock_reload();
 	}
 }
@@ -990,7 +1003,7 @@ bool isLocalByPhoneNumber(const char *phoneNumber) {
 	return(false);
 }
 
-string getCountryByIP(u_int32_t ip, bool suppressStringLocal) {
+string getCountryByIP(vmIP ip, bool suppressStringLocal) {
 	if(countryDetect) {
 		string country = countryDetect->getCountryByIP(ip);
 		if(suppressStringLocal && country == "local") {
@@ -1001,7 +1014,8 @@ string getCountryByIP(u_int32_t ip, bool suppressStringLocal) {
 	return("");
 }
 
-unsigned getCountryIdByIP(u_int32_t ip) {
+unsigned int getCountryIdByIP(vmIP ip)
+{
 	if(countryDetect) {
 		return(countryDetect->getCountryIdByIP(ip));
 	}

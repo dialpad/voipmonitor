@@ -47,7 +47,6 @@ CompressStream::CompressStream(eTypeCompress typeCompress, u_int32_t compressBuf
 	this->forceStream = false;
 	this->processed_len = 0;
 	this->sendParameter_client = 0;
-	this->sendParameter_sshchannel = NULL;
 	this->sendParameter_c_client = NULL;
 }
 
@@ -72,9 +71,8 @@ void CompressStream::enableForceStream() {
 	this->forceStream = true;
 }
 
-void CompressStream::setSendParameters(int client, void *sshchannel, void *c_client) {
+void CompressStream::setSendParameters(int client, void *c_client) {
 	this->sendParameter_client = client;
-	this->sendParameter_sshchannel = sshchannel;
 	this->sendParameter_c_client = c_client;
 }
 
@@ -425,7 +423,7 @@ bool CompressStream::compress(char *data, u_int32_t len, bool flush, CompressStr
 								 (char*)SimpleBuffer((char*)"LZO", 3).data() : 
 								 (char*)"LZO", 
 								3, 0, true)) {
-						this->setError("snappy compress_ev failed");
+						this->setError("lzo compress_ev failed");
 						return(false);
 					}
 				}
@@ -553,7 +551,7 @@ bool CompressStream::decompress(char *data, u_int32_t len, u_int32_t decompress_
 			this->zipStreamDecompress->avail_out = this->decompressBufferLength;
 			this->zipStreamDecompress->next_out = (unsigned char*)this->decompressBuffer;
 			int inflateRslt = inflate(this->zipStreamDecompress, Z_NO_FLUSH);
-			if(inflateRslt == Z_OK || inflateRslt == Z_STREAM_END) {
+			if(inflateRslt == Z_OK || inflateRslt == Z_STREAM_END || inflateRslt == Z_BUF_ERROR) {
 				int have = this->decompressBufferLength - this->zipStreamDecompress->avail_out;
 				if(!baseEv->decompress_ev(this->decompressBuffer, have)) {
 					this->setError("zip decompress_ev failed");
@@ -845,10 +843,10 @@ void CompressStream::createDecompressBuffer(u_int32_t bufferLen) {
 	}
 }
 
-extern int _sendvm(int socket, void *channel, void *c_client, const char *buf, size_t len, int mode);
+extern int _sendvm(int socket, void *c_client, const char *buf, size_t len, int mode);
 bool CompressStream::compress_ev(char *data, u_int32_t len, u_int32_t /*decompress_len*/, bool /*format_data*/) {
-	if(this->sendParameter_client || this->sendParameter_sshchannel || this->sendParameter_c_client) {
-		if(_sendvm(this->sendParameter_client, this->sendParameter_sshchannel, this->sendParameter_c_client, data, len, 0) == -1) {
+	if(this->sendParameter_client || this->sendParameter_c_client) {
+		if(_sendvm(this->sendParameter_client, this->sendParameter_c_client, data, len, 0) == -1) {
 			this->setError("send error");
 			return(false);
 		}
@@ -940,8 +938,8 @@ void RecompressStream::setTypeCompress(eTypeCompress typeCompress) {
 	this->compressStream->setTypeCompress(typeCompress);
 }
 
-void RecompressStream::setSendParameters(int client, void *sshchannel, void *c_client) {
-	this->compressStream->setSendParameters(client, sshchannel, c_client);
+void RecompressStream::setSendParameters(int client, void *c_client) {
+	this->compressStream->setSendParameters(client, c_client);
 }
 
 void RecompressStream::processData(char *data, u_int32_t len) {
@@ -961,12 +959,17 @@ bool RecompressStream::decompress_ev(char *data, u_int32_t len) {
 	return(this->compressStream->compress(data, len, false, this->compressStream));
 }
 
-ChunkBuffer::ChunkBuffer(int time, data_tar_time tar_time,
-			 u_int32_t chunk_fix_len, Call_abstract *call, int typeContent) {
+ChunkBuffer::ChunkBuffer(int time, data_tar_time tar_time, bool need_tar_pos,
+			 u_int32_t chunk_fix_len, Call_abstract *call, int typeContent, int indexContent,
+			 const char *name) {
 	this->time = time;
 	this->tar_time = tar_time;
+	this->need_tar_pos = need_tar_pos;
 	this->call = call;
 	this->typeContent = typeContent;
+	this->indexContent =indexContent;
+	if(name) this->name = name;
+	this->fbasename = call->fbasename;
 	this->chunkBuffer_countItems = 0;
 	this->len = 0;
 	this->chunk_fix_len = chunk_fix_len;
@@ -976,15 +979,21 @@ ChunkBuffer::ChunkBuffer(int time, data_tar_time tar_time,
 	this->chunkIterateProceedLen = 0;
 	this->closed = false;
 	this->decompressError = false;
-	this->name = NULL;
 	this->_sync_chunkBuffer = 0;
 	this->_sync_compress = 0;
 	this->last_add_time = 0;
 	this->last_add_time_tar = 0;
 	this->last_tar_time = 0;
 	this->chunk_buffer_size = 0;
+	this->created_at = getTimeUS();
 	if(call) {
+		#if DEBUG_ASYNC_TAR_WRITE
+		if(!call->incChunkBuffers(typeContent - 1 + indexContent, this, this->name.c_str())) {
+			strange_log("error inc chunk in create ChunkBuffer");
+		}
+		#else
 		call->incChunkBuffers();
+		#endif
 	}
 }
 
@@ -1001,14 +1010,32 @@ ChunkBuffer::~ChunkBuffer() {
 		delete this->compressStream;
 	}
 	if(call) {
-		if(call->isAllocFlagOK()) {
-			call->decChunkBuffers();
+		#if DEBUG_ASYNC_TAR_WRITE
+		if(call->isAllocFlagOK() && call->isChunkBuffersCountSyncOK_wait()) {
+			if(call->created_at > this->created_at) {
+				strange_log("overtaking in time in ~ChunkBuffer");
+			} else if(call->fbasename != this->fbasename) {
+				strange_log("mismatch fbasename in ~ChunkBuffer");
+			} else if(call->decChunkBuffers(typeContent - 1 + indexContent, this, this->name.c_str())) {
+				call->addPFlag(typeContent - 1 + indexContent, Call_abstract::_p_flag_destroy_tar_buffer);
+			} else {
+				strange_log("error dec chunk in ~ChunkBuffer");
+			}
 		} else {
-			syslog(LOG_NOTICE, "access to deallocated call in ChunkBuffer::~ChunkBuffer (%s)", this->getName().c_str());
+			strange_log("access to strange call in ~ChunkBuffer");
 		}
-	}
-	if(this->name) {
-		delete this->name;
+		#else
+		if(call->isAllocFlagOK()) {
+			if(call->created_at > this->created_at) {
+				strange_log("overtaking in time in ~ChunkBuffer");
+			} else if(call->fbasename != this->fbasename) {
+				strange_log("mismatch fbasename in ~ChunkBuffer");
+			}
+		} else {
+			strange_log("access to strange call in ~ChunkBuffer");
+		}
+		call->decChunkBuffers();
+		#endif
 	}
 }
 
@@ -1022,18 +1049,6 @@ void ChunkBuffer::setZipLevel(int zipLevel) {
 	if(this->compressStream) {
 		this->compressStream->setZipLevel(zipLevel);
 	}
-}
-
-void ChunkBuffer::setName(const char *name) {
-	if(this->name) {
-		delete this->name;
-		this->name = NULL;
-	}
-	if(!name || !*name) {
-		return;
-	}
-	this->name = new FILE_LINE(40014) char[strlen(name) + 1];
-	strcpy(this->name, name);
 }
 
 #include <stdio.h>
@@ -1468,13 +1483,67 @@ u_int32_t ChunkBuffer::getChunkIterateSafeLimitLength(u_int32_t limitLength) {
 }
 
 void ChunkBuffer::addTarPosInCall(u_int64_t pos) {
-	if(call) {
-		if(call->isAllocFlagOK()) {
+	if(call &&
+	   (need_tar_pos || DEBUG_ASYNC_TAR_WRITE)) {
+		#if DEBUG_ASYNC_TAR_WRITE
+		if(call->isAllocFlagOK() && call->isChunkBuffersCountSyncOK_wait()) {
+			call->addPFlag(typeContent - 1 + indexContent, Call_abstract::_p_flag_chb_add_tar_pos);
 			call->addTarPos(pos, typeContent);
 		} else {
-			syslog(LOG_NOTICE, "access to deallocated call in ChunkBuffer::addTarPosInCall (%s)", this->getName().c_str());
+			strange_log("access to strange call in ChunkBuffer::addTarPosInCall");
 		}
+		#else
+		call->addTarPos(pos, typeContent);
+		#endif
 	}
+}
+
+void ChunkBuffer::strange_log(const char *error) {
+	#if DEBUG_ASYNC_TAR_WRITE
+	string dci;
+	extern cDestroyCallsInfo *destroy_calls_info;
+	if(destroy_calls_info) {
+		dci = destroy_calls_info->find(this->fbasename, typeContent - 1 + indexContent);
+	}
+	#endif
+	syslog(LOG_NOTICE, 
+	       "%s : "
+	       "chunk: %p, "
+	       "chunk->fbasename: %s, "
+	       "chunk->name: %s, "
+	       "chunk->type: %i/%i, "
+	       "chunk->created_at: %" int_64_format_prefix "lu, "
+	       "call: %p, "
+	       "call->fbasename: %s, "
+	       "call->isAllocFlagOK(): %i/%i, "
+	       #if DEBUG_ASYNC_TAR_WRITE
+	       "call->isChunkBuffersCountSyncOK(): %i/%i, "
+	       #endif
+	       "call->created_at: %" int_64_format_prefix "lu, "
+	       "time: %" int_64_format_prefix "lu"
+	       #if DEBUG_ASYNC_TAR_WRITE
+	       ", dci: %s"
+	       #endif
+	       ,
+	       error,
+	       this,
+	       this->fbasename.c_str(),
+	       this->name.c_str(),
+	       this->typeContent,
+	       this->indexContent,
+	       this->created_at,
+	       call,
+	       call->fbasename,
+	       call->isAllocFlagOK(), call->alloc_flag,
+	       #if DEBUG_ASYNC_TAR_WRITE
+	       call->isChunkBuffersCountSyncOK_wait(), call->chunkBuffersCount_sync,
+	       #endif
+	       call->created_at,
+	       getTimeUS()
+	       #if DEBUG_ASYNC_TAR_WRITE
+	       ,dci.c_str()
+	       #endif
+	       );
 }
 
 volatile u_int64_t ChunkBuffer::chunk_buffers_sumsize = 0;

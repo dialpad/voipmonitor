@@ -46,8 +46,20 @@
 #define PAYLOAD_VXOPUS16 346
 #define PAYLOAD_VXOPUS24 347
 #define PAYLOAD_VXOPUS48 348
-#define PAYLOAD_VP8 349
+#define PAYLOAD_MP4ALATM128 349
+#define PAYLOAD_MP4ALATM64 350
+#define PAYLOAD_G72616 351
+#define PAYLOAD_G72624 352
+#define PAYLOAD_G72632 353
+#define PAYLOAD_G72640 354
+#define PAYLOAD_AAL2_G72616 355
+#define PAYLOAD_AAL2_G72624 356
+#define PAYLOAD_AAL2_G72632 357
+#define PAYLOAD_AAL2_G72640 358
+#define PAYLOAD_VP8 359
 #define PAYLOAD_TELEVENT 400
+
+#define PAYLOAD_VIDEO 10000
 
 inline const char *codec2text(int codec) {
 	switch(codec) {
@@ -115,6 +127,19 @@ inline const char *codec2text(int codec) {
 		return "VP8";
 	case PAYLOAD_TELEVENT:
 		return "TELEPHONE EVENT";
+	case PAYLOAD_MP4ALATM128:
+	case PAYLOAD_MP4ALATM64:
+		return "MP4A-LATM";
+	case PAYLOAD_G72616:
+	case PAYLOAD_G72624:
+	case PAYLOAD_G72632:
+	case PAYLOAD_G72640:
+		return "G726";
+	case PAYLOAD_AAL2_G72616:
+	case PAYLOAD_AAL2_G72624:
+	case PAYLOAD_AAL2_G72632:
+	case PAYLOAD_AAL2_G72640:
+		return "AAL2-G726";
 	default:
 		return "UNKNOWN CODEC NUMBER";
 	}

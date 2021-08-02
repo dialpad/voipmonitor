@@ -7,6 +7,7 @@
 #include <string>
 
 #include "heap_safe.h"
+#include "voipmonitor.h"
 
 
 using namespace std;
@@ -21,9 +22,13 @@ struct RecordArrayField {
 		tf_na,
 		tf_int,
 		tf_uint,
+		tf_ip,
+		tf_ip_n4,
+		tf_port,
 		tf_float,
 		tf_pointer,
 		tf_time,
+		tf_time_ms,
 		tf_string,
 		tf_json,
 		tf_bool
@@ -62,6 +67,14 @@ struct RecordArrayField {
 		this->tf = tf;
 		this->v.u = u;
 	}
+	void set(vmIP ip, eTypeField tf = tf_ip) {
+		this->tf = tf;
+		this->v_ip = ip;
+	}
+	void set(vmPort port, eTypeField tf = tf_port) {
+		this->tf = tf;
+		this->v_port = port;
+	}
 	void set(double d, eTypeField tf = tf_float) {
 		this->tf = tf;
 		this->v.d = d;
@@ -84,31 +97,45 @@ struct RecordArrayField {
 		}
 	}
 	int64_t get_int() {
-		return(tf == tf_int || tf == tf_uint || tf == tf_pointer || tf == tf_time ?
+		return(tf == tf_int || tf == tf_uint || tf == tf_pointer || 
+		       tf == tf_time || tf == tf_time_ms ?
 			v.i :
 		       tf == tf_float ?
 			(int64_t)v.d :
 			0);
 	}
 	u_int64_t get_uint() {
-		return(tf == tf_int || tf == tf_uint || tf == tf_pointer || tf == tf_time ?
+		return(tf == tf_int || tf == tf_uint || tf == tf_pointer || 
+		       tf == tf_time || tf == tf_time_ms ?
 			v.u :
 		       tf == tf_float ?
 			(u_int64_t)v.d :
 			0);
 	}
+	vmIP get_ip() {
+		return(tf == tf_ip || tf == tf_ip_n4 ?
+			v_ip :
+			0);
+	}
+	vmPort get_port() {
+		return(tf == tf_port ?
+			v_port :
+			vmPort(0));
+	}
 	bool get_bool() {
 		return(tf == tf_bool ? (bool)v.b : false);
 	}
 	double get_float() {
-		return(tf == tf_int || tf == tf_uint || tf == tf_pointer || tf == tf_time ?
+		return(tf == tf_int || tf == tf_uint || tf == tf_pointer || 
+		       tf == tf_time || tf == tf_time_ms ?
 			(double)v.i :
 		       tf == tf_float ?
 			v.d :
 			0);
 	}
 	void * get_pointer() {
-		return(tf == tf_int || tf == tf_uint || tf == tf_pointer || tf == tf_time ?
+		return(tf == tf_int || tf == tf_uint || tf == tf_pointer || 
+		       tf == tf_time || tf == tf_time_ms ?
 			v.p :
 			NULL);
 	}
@@ -130,7 +157,13 @@ struct RecordArrayField {
 				return(v.i == other.v.i);
 			case tf_uint:
 			case tf_time:
+			case tf_time_ms:
 				return(v.u == other.v.u);
+			case tf_ip:
+			case tf_ip_n4:
+				return(v_ip == other.v_ip);
+			case tf_port:
+				return(v_port == other.v_port);
 			case tf_float:
 				return(v.d == other.v.d);
 			case tf_pointer:
@@ -153,7 +186,13 @@ struct RecordArrayField {
 				return(v.i < other.v.i);
 			case tf_uint:
 			case tf_time:
+			case tf_time_ms:
 				return(v.u < other.v.u);
+			case tf_ip:
+			case tf_ip_n4:
+				return(v_ip < other.v_ip);
+			case tf_port:
+				return(v_port < other.v_port);
 			case tf_float:
 				return(v.d < other.v.d);
 			case tf_pointer:
@@ -179,6 +218,8 @@ struct RecordArrayField {
 		char *s;
 		bool b;
 	} v;
+	vmIP v_ip;
+	vmPort v_port;
 };
 
 struct RecordArrayField2 : public RecordArrayField {

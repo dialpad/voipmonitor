@@ -36,7 +36,8 @@ enum {
 	FIXED_JB_OK,
 	FIXED_JB_DROP,
 	FIXED_JB_INTERP,
-	FIXED_JB_NOFRAME
+	FIXED_JB_NOFRAME,
+	FIXED_JB_ERROR
 };
 
 
@@ -73,9 +74,9 @@ struct fixed_jb * fixed_jb_new(struct fixed_jb_conf *conf, struct ast_channel *c
 
 void fixed_jb_destroy(struct fixed_jb *jb);
 
-int fixed_jb_put_first(struct fixed_jb *jb, void *data, long ms, long ts, long now);
+int fixed_jb_put_first(struct fixed_jb *jb, void *data, long ms, long ts, long now, char marker);
 
-int fixed_jb_put(struct fixed_jb *jb, void *data, long ms, long ts, long now);
+int fixed_jb_put(struct fixed_jb *jb, void *data, long ms, long ts, long now, char marker);
 
 int fixed_jb_get(struct fixed_jb *jb, struct fixed_jb_frame *frame, long now, long interpl);
 

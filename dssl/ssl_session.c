@@ -34,6 +34,8 @@
 
 #include "../config.h"
 
+#include "tls-ext.h"
+
 void DSSL_SessionInit( DSSL_Env* env, DSSL_Session* s, DSSL_ServerInfo* si )
 {
 	_ASSERT( s );
@@ -77,6 +79,11 @@ void DSSL_SessionDeInit( DSSL_Session* s )
 	
 	ssls_handshake_data_free(s);
 	ssls_handshake_queue_free(s);
+	
+	if(s->tls_session)
+	{
+		tls_destroy_session(s);
+	}
 }
 
 
@@ -225,11 +232,13 @@ int ssls_set_session_version( DSSL_Session* sess, uint16_t ver )
 int ssls_decode_master_secret( DSSL_Session* sess )
 {
 	DSSL_CipherSuite* suite = NULL;
+	#ifdef HAVE_LIBGNUTLS
 	int rc;
 	gcry_md_hd_t gcry_h;
 	int gcry_algo;
 	unsigned int gcry_len;
 	void *gcry_data;
+	#endif
 
 	switch( sess->version )
 	{
@@ -252,9 +261,9 @@ int ssls_decode_master_secret( DSSL_Session* sess )
 			suite = DSSL_GetSSL3CipherSuite( sess->cipher_suite );
 		if( !suite ) return NM_ERROR( DSSL_E_SSL_CANNOT_DECRYPT );
 		
+		#ifdef HAVE_LIBGNUTLS
 		if((sess->flags & (SSF_TLS_SERVER_EXTENDED_MASTER_SECRET|SSF_TLS_CLIENT_EXTENDED_MASTER_SECRET)) == (SSF_TLS_SERVER_EXTENDED_MASTER_SECRET|SSF_TLS_CLIENT_EXTENDED_MASTER_SECRET) &&
 		   sess->handshake_data) {
-			#ifdef HAVE_LIBGNUTLS
 			gcry_md_open(&gcry_h, !strcmp(suite->digest, LN_sha384) ? GCRY_MD_SHA384 : GCRY_MD_SHA256, GCRY_MD_FLAG_SECURE);
 			gcry_md_write(gcry_h, sess->handshake_data, sess->handshake_data_size);
 			gcry_algo = gcry_md_get_algo(gcry_h);
@@ -262,7 +271,6 @@ int ssls_decode_master_secret( DSSL_Session* sess )
 			gcry_data = malloc(gcry_len);
 			memcpy(gcry_data, gcry_md_read(gcry_h,  gcry_algo), gcry_len);
 			gcry_md_close(gcry_h);
-			#endif
 			rc = tls12_PRF( EVP_get_digestbyname( suite->digest ), sess->PMS, SSL_MAX_MASTER_KEY_LENGTH, 
 						"extended " TLS_MD_MASTER_SECRET_CONST,
 						gcry_data, gcry_len, 
@@ -270,7 +278,9 @@ int ssls_decode_master_secret( DSSL_Session* sess )
 						sess->master_secret, sizeof( sess->master_secret ) );
 			free(gcry_data);
 			return(rc);
-		} else {
+		} else 
+		#endif
+		{
 			return tls12_PRF( EVP_get_digestbyname( suite->digest ), sess->PMS, SSL_MAX_MASTER_KEY_LENGTH, 
 						TLS_MD_MASTER_SECRET_CONST, 
 						sess->client_random, SSL3_RANDOM_SIZE, 
@@ -283,7 +293,7 @@ int ssls_decode_master_secret( DSSL_Session* sess )
 	}
 }
 
-
+/*
 static void ssl3_generate_export_iv( u_char* random1, u_char* random2, u_char* out )
 {
     MD5_CTX md5;
@@ -293,6 +303,7 @@ static void ssl3_generate_export_iv( u_char* random1, u_char* random2, u_char* o
 	MD5_Update( &md5, random2, SSL3_RANDOM_SIZE );
     MD5_Final( out, &md5 );
 }
+*/
 
 /* generate read/write keys for SSL v3+ session */
 #define TLS_MAX_KEYBLOCK_LEN ((EVP_MAX_KEY_LENGTH + EVP_MAX_IV_LENGTH + EVP_MAX_MD_SIZE*2)*2)
@@ -768,7 +779,7 @@ int ssls_get_decrypt_buffer( DSSL_Session* sess, u_char** data, uint32_t len )
 void ssls_release_decrypt_buffer( DSSL_Session* sess )
 {
 	/* no-op in a single threaded mode */
-	sess;
+	//sess;
 }
 
 int ssls_get_decompress_buffer( DSSL_Session* sess, u_char** data, uint32_t len )
@@ -788,7 +799,7 @@ int ssls_get_decompress_buffer( DSSL_Session* sess, u_char** data, uint32_t len 
 void ssls_release_decompress_buffer( DSSL_Session* sess )
 {
 	/* no-op in a single threaded mode */
-	sess;
+	//sess;
 }
 
 EVP_PKEY* ssls_try_ssl_keys( DSSL_Session* sess, u_char* data, uint32_t len)
@@ -919,7 +930,6 @@ int ssls_init_from_tls_ticket( DSSL_Session* sess )
 
 	memcpy( sess->master_secret, ticket_data->master_secret, SSL3_MASTER_SECRET_SIZE );
 	sess->master_key_len = SSL3_MASTER_SECRET_SIZE;
-
 	sess->cipher_suite = ticket_data->cipher_suite;
 	sess->version = ticket_data->protocol_version;
 	sess->compression_method = ticket_data->compression_method;

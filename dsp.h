@@ -27,6 +27,7 @@
 #define DSP_FEATURE_BUSY_DETECT		(1 << 1)
 #define DSP_FEATURE_DIGIT_DETECT	(1 << 3)
 #define DSP_FEATURE_FAX_DETECT		(1 << 4)
+#define DSP_FEATURE_ENERGYLEVEL		(1 << 5)
 
 #define	DSP_DIGITMODE_DTMF			0				/*!< Detect DTMF digits */
 #define DSP_DIGITMODE_MF			1				/*!< Detect MF digits */
@@ -74,13 +75,16 @@ enum prog_mode {
 enum freq_index {
 	/*! For US modes { */
 	HZ_350 = 0,
+	HZ_400,
+	HZ_425,
 	HZ_440,
+	HZ_450,
 	HZ_480,
 	HZ_620,
 	HZ_950,
 	HZ_1400,
 	HZ_1800, /*!< } */
-
+#if 0
 	/*! For CR/BR modes */
 	HZ_425 = 0,
 
@@ -88,6 +92,7 @@ enum freq_index {
 	HZ_350UK = 0,
 	HZ_400UK,
 	HZ_440UK
+#endif 
 };
 
 /*!\brief This value is the minimum threshold, calculated by averaging all
@@ -224,6 +229,7 @@ typedef struct
 	float threshold;	/* Energy of the tone relative to energy from all other signals to consider a hit */
 
 	int hit_count;		/* How many successive blocks we consider tone present */
+	int nohit_count;
 	int lhit;		/* Indicates if the last processed block was a hit */
 
 } tone_detect_state_t;
@@ -301,7 +307,7 @@ struct dsp {
 	struct dsp_busy_pattern busy_cadence;
 	int historicnoise[DSP_HISTORY];
 	int historicsilence[DSP_HISTORY];
-	goertzel_state_t freqs[7];
+	goertzel_state_t freqs[10];
 	int freqcount;
 	int gsamps;
 	enum gsamp_size gsamp_size;
@@ -319,6 +325,12 @@ struct dsp {
 	digit_detect_state_t digit_state;
 	tone_detect_state_t cng_tone_state;
 	tone_detect_state_t ced_tone_state;
+	unsigned int counter;
+	bool last_zero;
+	unsigned int loss;
+	unsigned short int loss_hist[32];
+	unsigned short int last_interval_loss_hist[32];
+	unsigned int received;
 };
 
 enum threshold {
@@ -326,6 +338,15 @@ enum threshold {
 	THRESHOLD_SILENCE = 0,
 	/* Always the last */
 	THRESHOLD_MAX = 1,
+};
+
+enum dsp_process_res {
+	DSP_PROCESS_RES_SILENCE        = 1 << 0,
+	DSP_PROCESS_RES_BUSY           = 1 << 1,
+	DSP_PROCESS_RES_DTMF           = 1 << 2,
+	DSP_PROCESS_RES_FAX            = 1 << 3,
+	DSP_PROCESS_RES_CALL_PROGRESSS = 1 << 4,
+	DSP_PROCESS_RES_WAITDIALTONE   = 1 << 5,
 };
 
 /*! \brief Allocates a new dsp with a specific internal sample rate used
@@ -358,7 +379,7 @@ int dsp_set_call_progress_zone(struct dsp *dsp, char *zone);
 
 /*! \brief Return AST_FRAME_NULL frames when there is silence, AST_FRAME_BUSY on
    busies, and call progress, all dependent upon which features are enabled */
-int dsp_process(struct dsp *dsp, short *data, int len, char *event_digit, int *event_len, int *silence, int *totalsilence, int *totalnoise);
+int dsp_process(struct dsp *dsp, short *data, int len, char *event_digit, int *event_len, int *silence, int *totalsilence, int *totalnoise, int *res_call_progress, u_int16_t *energylevel);
 
 /*! \brief Return non-zero if this is silence.  Updates "totalsilence" with the total
    number of seconds of silence  */

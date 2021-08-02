@@ -28,6 +28,7 @@ cConfigItem::cConfigItem(const char *name) {
 	set_in_json = false;
 	defaultValueStr_set = false;
 	naDefaultValueStr = false;
+	clearBeforeFirstSet = false;
 	minor = false;
 	minorGroupIfNotSet = false;
 	readOnly = false;
@@ -47,6 +48,11 @@ cConfigItem *cConfigItem::setDefaultValueStr(const char *defaultValueStr) {
 
 cConfigItem *cConfigItem::setNaDefaultValueStr() {
 	naDefaultValueStr = true;
+	return(this);
+}
+
+cConfigItem *cConfigItem::setClearBeforeFirstSet() {
+	clearBeforeFirstSet = true;
 	return(this);
 }
 
@@ -303,6 +309,12 @@ void cConfigItem::clearToDefaultValue() {
 	value_in_json.clear();
 }
 
+void cConfigItem::doClearBeforeFirstSet() {
+	if(clearBeforeFirstSet && !set) {
+		clear();
+	}
+}
+
 cConfigItem_yesno::cConfigItem_yesno(const char *name, bool *param) 
  : cConfigItem(name) {
 	init();
@@ -352,17 +364,20 @@ string cConfigItem_yesno::normalizeStringValueForCmp(string value) {
 	}
 }
 
-bool cConfigItem_yesno::setParamFromConfigFile(CSimpleIniA *ini) {
-	return(setParamFromValueStr(getValueFromConfigFile(ini)));
+bool cConfigItem_yesno::setParamFromConfigFile(CSimpleIniA *ini, bool enableClearBeforeFirstSet) {
+	return(setParamFromValueStr(getValueFromConfigFile(ini), enableClearBeforeFirstSet));
 }
 	
-bool cConfigItem_yesno::setParamFromValueStr(string value_str) {
+bool cConfigItem_yesno::setParamFromValueStr(string value_str, bool enableClearBeforeFirstSet) {
 	if(value_str.empty()) {
 		return(false);
 	}
 	int ok = 0;
 	const char *value = value_str.c_str();
 	if(value) {
+		if(enableClearBeforeFirstSet) {
+			doClearBeforeFirstSet();
+		}
 		int _value;
 		if(getValueFromMapValues(value, &_value)) {
 			if(param_bool) {
@@ -479,9 +494,6 @@ string cConfigItem_integer::getValueStr(bool /*configFile*/) {
 	if(yesValue && val == yesValue) {
 		return("yes");
 	}
-	if(ip) {
-		return(inet_ntostring(htonl(val)));
-	}
 	ostringstream outStr;
 	outStr << val;
 	return(outStr.str());
@@ -498,17 +510,20 @@ string cConfigItem_integer::normalizeStringValueForCmp(string value) {
 	return(value);
 }
 
-bool cConfigItem_integer::setParamFromConfigFile(CSimpleIniA *ini) {
-	return(setParamFromValueStr(getValueFromConfigFile(ini)));
+bool cConfigItem_integer::setParamFromConfigFile(CSimpleIniA *ini, bool enableClearBeforeFirstSet) {
+	return(setParamFromValueStr(getValueFromConfigFile(ini), enableClearBeforeFirstSet));
 }
 
-bool cConfigItem_integer::setParamFromValueStr(string value_str) {
+bool cConfigItem_integer::setParamFromValueStr(string value_str, bool enableClearBeforeFirstSet) {
 	if(value_str.empty()) {
 		return(false);
 	}
 	int ok = 0;
 	const char *value = value_str.c_str();
 	if(value) {
+		if(enableClearBeforeFirstSet) {
+			doClearBeforeFirstSet();
+		}
 		int _value;
 		if(getValueFromMapValues(value, &_value)) {
 			if(param_int) {
@@ -549,27 +564,21 @@ bool cConfigItem_integer::setParamFromValueStr(string value_str) {
 			++ok;
 		}
 		if(param_uint) {
-			if(ip) {
-				struct sockaddr_in sa;
-				inet_pton(AF_INET, value, &sa.sin_addr);
-				*param_uint = sa.sin_addr.s_addr;
-			} else  {
-				*param_uint = atol(value);
-				if(maximum && *param_uint > (unsigned)maximum) {
-					*param_uint = maximum;
-				}
-				if(minimum && *param_uint < (unsigned)minimum) {
-					*param_uint = minimum;
-				}
-				if(ifZeroOrNegative && *param_uint == 0) {
-					*param_uint = ifZeroOrNegative;
-				}
-				if(multiple) {
-					*param_uint *= multiple;
-				}
-				if(!*param_uint && yesValue && yesno(value)) {
-					*param_uint = yesValue;
-				}
+			*param_uint = atol(value);
+			if(maximum && *param_uint > (unsigned)maximum) {
+				*param_uint = maximum;
+			}
+			if(minimum && *param_uint < (unsigned)minimum) {
+				*param_uint = minimum;
+			}
+			if(ifZeroOrNegative && *param_uint == 0) {
+				*param_uint = ifZeroOrNegative;
+			}
+			if(multiple) {
+				*param_uint *= multiple;
+			}
+			if(!*param_uint && yesValue && yesno(value)) {
+				*param_uint = yesValue;
 			}
 			++ok;
 		}
@@ -656,17 +665,20 @@ string cConfigItem_float::normalizeStringValueForCmp(string value) {
 	return(outStr.str());
 }
 
-bool cConfigItem_float::setParamFromConfigFile(CSimpleIniA *ini) {
-	return(setParamFromValueStr(getValueFromConfigFile(ini)));
+bool cConfigItem_float::setParamFromConfigFile(CSimpleIniA *ini, bool enableClearBeforeFirstSet) {
+	return(setParamFromValueStr(getValueFromConfigFile(ini), enableClearBeforeFirstSet));
 }
 
-bool cConfigItem_float::setParamFromValueStr(string value_str) {
+bool cConfigItem_float::setParamFromValueStr(string value_str, bool enableClearBeforeFirstSet) {
 	if(value_str.empty()) {
 		return(false);
 	}
 	int ok = 0;
 	const char *value = value_str.c_str();
 	if(value) {
+		if(enableClearBeforeFirstSet) {
+			doClearBeforeFirstSet();
+		}
 		if(param_float) {
 			*param_float = atof(value);
 			++ok;
@@ -777,21 +789,24 @@ bool cConfigItem_string::enableMultiValues() {
 	return(param_vect_str && !explodeSeparator.empty());
 }
 
-bool cConfigItem_string::setParamFromConfigFile(CSimpleIniA *ini) {
+bool cConfigItem_string::setParamFromConfigFile(CSimpleIniA *ini, bool enableClearBeforeFirstSet) {
 	if(param_vect_str) {
-		return(setParamFromValuesStr(getValuesFromConfigFile(ini)));
+		return(setParamFromValuesStr(getValuesFromConfigFile(ini), enableClearBeforeFirstSet));
 	} else {
-		return(setParamFromValueStr(getValueFromConfigFile(ini)));
+		return(setParamFromValueStr(getValueFromConfigFile(ini), enableClearBeforeFirstSet));
 	}
 }
 
-bool cConfigItem_string::setParamFromValueStr(string value_str) {
+bool cConfigItem_string::setParamFromValueStr(string value_str, bool enableClearBeforeFirstSet) {
 	if(value_str.empty()) {
 		return(false);
 	}
 	int ok = 0;
 	const char *value = value_str.c_str();
 	if(value) {
+		if(enableClearBeforeFirstSet) {
+			doClearBeforeFirstSet();
+		}
 		if(param_str) {
 			*param_str = value;
 			if(!prefix.empty() && strncmp(param_str->c_str(), prefix.c_str(), prefix.length())) {
@@ -823,7 +838,7 @@ bool cConfigItem_string::setParamFromValueStr(string value_str) {
 	return(ok > 0);
 }
 
-bool cConfigItem_string::setParamFromValuesStr(vector<string> list_values_str) {
+bool cConfigItem_string::setParamFromValuesStr(vector<string> list_values_str, bool enableClearBeforeFirstSet) {
 	if(!param_vect_str) {
 		return(false);
 	}
@@ -834,6 +849,9 @@ bool cConfigItem_string::setParamFromValuesStr(vector<string> list_values_str) {
 	int ok = 0;
 	initBeforeSet();
 	for(vector<string>::iterator iter = list_values_str.begin(); iter != list_values_str.end(); iter++) {
+		if(!ok && enableClearBeforeFirstSet) {
+			doClearBeforeFirstSet();
+		}
 		param_vect_str->push_back(*iter);
 		++ok;
 	}
@@ -867,17 +885,20 @@ string cConfigItem_hour_interval::normalizeStringValueForCmp(string value) {
 	return(value);
 }
 
-bool cConfigItem_hour_interval::setParamFromConfigFile(CSimpleIniA *ini) {
-	return(setParamFromValueStr(getValueFromConfigFile(ini)));
+bool cConfigItem_hour_interval::setParamFromConfigFile(CSimpleIniA *ini, bool enableClearBeforeFirstSet) {
+	return(setParamFromValueStr(getValueFromConfigFile(ini), enableClearBeforeFirstSet));
 }
 
-bool cConfigItem_hour_interval::setParamFromValueStr(string value_str) {
+bool cConfigItem_hour_interval::setParamFromValueStr(string value_str, bool enableClearBeforeFirstSet) {
 	if(!param_from || !param_to ||
 	   value_str.empty()) {
 		return(false);
 	}
 	const char *value = value_str.c_str();
 	if(value) {
+		if(enableClearBeforeFirstSet) {
+			doClearBeforeFirstSet();
+		}
 		string fromTo = reg_replace(value, "([0-9]+)[- ]*([0-9]+)", "$1-$2", __FILE__, __LINE__);
 		if(fromTo.empty()) {
 			*param_from = *param_to = atoi(value);
@@ -902,6 +923,7 @@ cConfigItem_ports::cConfigItem_ports(const char* name, char *port_matrix)
  : cConfigItem(name) {
 	init();
 	param_port_matrix = port_matrix;
+	port_max = 65535;
 }
 
 string cConfigItem_ports::getValueStr(bool configFile) {
@@ -910,7 +932,7 @@ string cConfigItem_ports::getValueStr(bool configFile) {
 	}
 	ostringstream outStr;
 	int counter = 0;
-	for(unsigned i = 0; i < 65535; i++) {
+	for(unsigned i = 0; i <= port_max; i++) {
 		if(param_port_matrix[i]) {
 			if(counter) {
 				if(configFile) {
@@ -920,6 +942,12 @@ string cConfigItem_ports::getValueStr(bool configFile) {
 				}
 			}
 			outStr << i;
+			unsigned j;
+			for(j = i; j <= (port_max-1) && param_port_matrix[j+1]; j++);
+			if(j > i) {
+				outStr << '-' << j;
+				i = j;
+			}
 			++counter;
 		}
 	}
@@ -928,48 +956,122 @@ string cConfigItem_ports::getValueStr(bool configFile) {
 
 list<string> cConfigItem_ports::getValueListStr() {
 	list<string> l;
-	for(unsigned i = 0; i < 65535; i++) {
+	for(unsigned i = 0; i <= port_max; i++) {
 		if(param_port_matrix[i]) {
-			l.push_back(intToString(i));
+			unsigned j;
+			for(j = i; j <= (port_max-1) && param_port_matrix[j+1]; j++);
+			if(j > i) {
+				l.push_back(intToString(i) + "-" + intToString(j));
+				i = j;
+			} else  {
+				l.push_back(intToString(i));
+			}
 		}
 	}
 	return(l);
 }
 
-bool cConfigItem_ports::setParamFromConfigFile(CSimpleIniA *ini) {
-	return(setParamFromValuesStr(getValuesFromConfigFile(ini)));
+string cConfigItem_ports::normalizeStringValueForCmp(string value) {
+	char *port_matrix = new char[this->port_max + 1];
+	cConfigItem_ports::setPortMatrix(value.c_str(), port_matrix, this->port_max);
+	string rslt = getPortString(port_matrix, this->port_max);
+	delete [] port_matrix;
+	return(rslt);
 }
 
-bool cConfigItem_ports::setParamFromValueStr(string value_str) {
-	return(setParamFromValuesStr(split(value_str, ';')));
+string cConfigItem_ports::normalizeStringValuesForCmp(list<string> values) {
+	char *port_matrix = new char[this->port_max + 1];
+	memset(port_matrix, 0, this->port_max + 1);
+	for(list<string>::iterator iter = values.begin(); iter != values.end(); iter++) {
+		cConfigItem_ports::setPortMatrix(iter->c_str(), port_matrix, this->port_max);
+	}
+	string rslt = getPortString(port_matrix, this->port_max);
+	delete [] port_matrix;
+	return(rslt);
 }
 
-bool cConfigItem_ports::setParamFromValuesStr(vector<string> list_values_str) {
+unsigned cConfigItem_ports::setPortMatrix(const char *port_str, char *port_matrix, unsigned port_max) {
+	unsigned set = 0;
+	vector<string> ports_str = split(port_str, split(",|;", "|"), true);
+	for(unsigned i = 0; i < ports_str.size(); i++) {
+		if(ports_str[i].find('-') == string::npos) {
+			unsigned j = atoi(ports_str[i].c_str());
+			if(j <= port_max) {
+				port_matrix[j] = 1;
+				++set;
+			}
+		} else {
+			vector<string> ports_from_to = split(ports_str[i].c_str(), "-", true);
+			if(ports_from_to.size() >= 2) {
+				unsigned ports_from = atoi(ports_from_to[0].c_str());
+				unsigned ports_to = atoi(ports_from_to[1].c_str());
+				if(ports_from <= ports_to) {
+					for(unsigned j = ports_from; j <= ports_to && j <= port_max; j++) {
+						port_matrix[j] = 1;
+						++set;
+					}
+				}
+			}
+		}
+	}
+	return(set);
+}
+
+string cConfigItem_ports::getPortString(char *port_matrix, unsigned port_max) {
+	string rslt;
+	for(unsigned i = 0; i <= port_max; i++) {
+		if(port_matrix[i]) {
+			unsigned j;
+			for(j = i; j <= (port_max-1) && port_matrix[j+1]; j++);
+			if(!rslt.empty()) {
+				rslt += ',';
+			}
+			if(j > i) {
+				rslt += intToString(i) + "-" + intToString(j);
+				i = j;
+			} else  {
+				rslt += intToString(i);
+			}
+		}
+	}
+	return(rslt);
+}
+
+bool cConfigItem_ports::setParamFromConfigFile(CSimpleIniA *ini, bool enableClearBeforeFirstSet) {
+	return(setParamFromValuesStr(getValuesFromConfigFile(ini), enableClearBeforeFirstSet));
+}
+
+bool cConfigItem_ports::setParamFromValueStr(string value_str, bool enableClearBeforeFirstSet) {
+	return(setParamFromValuesStr(split(value_str, ';'), enableClearBeforeFirstSet));
+}
+
+bool cConfigItem_ports::setParamFromValuesStr(vector<string> list_values_str, bool enableClearBeforeFirstSet) {
 	if(!param_port_matrix) {
 		return(false);
 	}
 	if(list_values_str.empty()) {
-		initBeforeSet();
 		return(false);
 	}
 	int ok = 0;
 	initBeforeSet();
 	for(vector<string>::iterator iter = list_values_str.begin(); iter != list_values_str.end(); iter++) {
-		param_port_matrix[atoi(iter->c_str())] = 1;
-		++ok;
+		if(!ok && enableClearBeforeFirstSet) {
+			doClearBeforeFirstSet();
+		}
+		ok += setPortMatrix(iter->c_str(), param_port_matrix, this->port_max);
 	}
 	return(ok > 0);
 }
 
-void cConfigItem_ports::initBeforeSet() {
+void cConfigItem_ports::clear() {
 	if(param_port_matrix) {
-		for(unsigned i = 0; i < 65535; i++) {
+		for(unsigned i = 0; i <= this->port_max; i++) {
 			param_port_matrix[i] = 0;
 		}
 	}
 }
 
-cConfigItem_hosts::cConfigItem_hosts(const char* name, vector<u_int32_t> *adresses, vector<d_u_int32_t> *nets)
+cConfigItem_hosts::cConfigItem_hosts(const char* name, vector<vmIP> *adresses, vector<vmIPmask> *nets)
  : cConfigItem(name) {
 	init();
 	param_adresses = adresses;
@@ -984,7 +1086,7 @@ string cConfigItem_hosts::getValueStr(bool configFile) {
 	ostringstream outStr;
 	int counter = 0;
 	if(param_adresses) {
-		for(vector<u_int32_t>::iterator iter = param_adresses->begin(); iter != param_adresses->end(); iter++) {
+		for(vector<vmIP>::iterator iter = param_adresses->begin(); iter != param_adresses->end(); iter++) {
 			if(counter) {
 				if(configFile) {
 					outStr << endl << config_name << " = ";
@@ -992,12 +1094,12 @@ string cConfigItem_hosts::getValueStr(bool configFile) {
 					outStr << ';';
 				}
 			}
-			outStr << inet_ntostring(*iter);
+			outStr << iter->getString();
 			++counter;
 		}
 	}
 	if(param_nets) {
-		for(vector<d_u_int32_t>::iterator iter = param_nets->begin(); iter != param_nets->end(); iter ++) {
+		for(vector<vmIPmask>::iterator iter = param_nets->begin(); iter != param_nets->end(); iter ++) {
 			if(counter) {
 				if(configFile) {
 					outStr << endl << config_name << " = ";
@@ -1005,7 +1107,7 @@ string cConfigItem_hosts::getValueStr(bool configFile) {
 					outStr << ';';
 				}
 			}
-			outStr << inet_ntostring((*iter)[0]) << '/' << (*iter)[1];
+			outStr << iter->ip.getString() << '/' << iter->mask;
 			++counter;
 		}
 	}
@@ -1015,27 +1117,27 @@ string cConfigItem_hosts::getValueStr(bool configFile) {
 list<string> cConfigItem_hosts::getValueListStr() {
 	list<string> l;
 	if(param_adresses) {
-		for(vector<u_int32_t>::iterator iter = param_adresses->begin(); iter != param_adresses->end(); iter++) {
-			l.push_back(inet_ntostring(*iter));
+		for(vector<vmIP>::iterator iter = param_adresses->begin(); iter != param_adresses->end(); iter++) {
+			l.push_back(iter->getString());
 		}
 	}
 	if(param_nets) {
-		for(vector<d_u_int32_t>::iterator iter = param_nets->begin(); iter != param_nets->end(); iter ++) {
-			l.push_back(inet_ntostring((*iter)[0]) + "/" + intToString((*iter)[1]));
+		for(vector<vmIPmask>::iterator iter = param_nets->begin(); iter != param_nets->end(); iter ++) {
+			l.push_back(iter->ip.getString() + "/" + intToString(iter->mask));
 		}
 	}
 	return(l);
 }
 
-bool cConfigItem_hosts::setParamFromConfigFile(CSimpleIniA *ini) {
-	return(setParamFromValuesStr(getValuesFromConfigFile(ini)));
+bool cConfigItem_hosts::setParamFromConfigFile(CSimpleIniA *ini, bool enableClearBeforeFirstSet) {
+	return(setParamFromValuesStr(getValuesFromConfigFile(ini), enableClearBeforeFirstSet));
 }
 
-bool cConfigItem_hosts::setParamFromValueStr(string value_str) {
-	return(setParamFromValuesStr(split(value_str, ';')));
+bool cConfigItem_hosts::setParamFromValueStr(string value_str, bool enableClearBeforeFirstSet) {
+	return(setParamFromValuesStr(split(value_str, ';'), enableClearBeforeFirstSet));
 }
 
-bool cConfigItem_hosts::setParamFromValuesStr(vector<string> list_values_str) {
+bool cConfigItem_hosts::setParamFromValuesStr(vector<string> list_values_str, bool enableClearBeforeFirstSet) {
 	if(!param_adresses && !param_nets) {
 		return(false);
 	}
@@ -1046,30 +1148,24 @@ bool cConfigItem_hosts::setParamFromValuesStr(vector<string> list_values_str) {
 	int ok = 0;
 	initBeforeSet();
 	for(vector<string>::iterator iter = list_values_str.begin(); iter != list_values_str.end(); iter++) {
-		const char *iter_str_char = iter->c_str();
-		u_int32_t ip;
-		int lengthMask = 32;
-		char *pointToSeparatorLengthMask = strchr((char*)iter_str_char, '/');
-		if(pointToSeparatorLengthMask) {
-			*pointToSeparatorLengthMask = 0;
-			ip = htonl(inet_addr(iter_str_char));
-			lengthMask = atoi(pointToSeparatorLengthMask + 1);
-		} else {
-			ip = htonl(inet_addr(iter_str_char));
-		}
-		if(lengthMask < 32) {
-			ip = ip >> (32 - lengthMask) << (32 - lengthMask);
-		}
-		if(ip) {
-			if(lengthMask < 32) {
-				if(param_nets) {
-					param_nets->push_back(d_u_int32_t(ip, lengthMask));
-					++ok;
+		vector<string> ip_mask = split(iter->c_str(), "/", true);
+		if(ip_mask.size() >= 1) {
+			vmIP ip = str_2_vmIP(ip_mask[0].c_str());
+			unsigned lengthMask = ip_mask.size() >= 2 ? atoi(ip_mask[1].c_str()) : 0;
+			if(ip.isSet()) {
+				if(!ok && enableClearBeforeFirstSet) {
+					doClearBeforeFirstSet();
 				}
-			} else {
-				if(param_adresses) {
-					param_adresses->push_back(ip);
-					++ok;
+				if(ip.is_net_mask(lengthMask)) {
+					if(param_nets) {
+						param_nets->push_back(vmIPmask(ip.network(lengthMask), lengthMask));
+						++ok;
+					}
+				} else {
+					if(param_adresses) {
+						param_adresses->push_back(ip);
+						++ok;
+					}
 				}
 			}
 		}
@@ -1087,6 +1183,35 @@ void cConfigItem_hosts::initBeforeSet() {
 	if(param_adresses) {
 		param_adresses->clear();
 	}
+}
+
+cConfigItem_ip::cConfigItem_ip(const char* name, vmIP *param)
+ : cConfigItem(name) {
+	init();
+	param_ip = param;
+}
+
+vmIP cConfigItem_ip::getValue() {
+	return(*param_ip);
+}
+
+string cConfigItem_ip::getValueStr(bool /*configFile*/) {
+	return(param_ip->getString());
+}
+
+bool cConfigItem_ip::setParamFromConfigFile(CSimpleIniA *ini, bool enableClearBeforeFirstSet) {
+	return(setParamFromValueStr(getValueFromConfigFile(ini), enableClearBeforeFirstSet));
+}
+
+bool cConfigItem_ip::setParamFromValueStr(string value_str, bool enableClearBeforeFirstSet) {
+	if(value_str.empty()) {
+		return(false);
+	}
+	if(enableClearBeforeFirstSet) {
+		doClearBeforeFirstSet();
+	}
+	param_ip->setFromString(trim_str(value_str).c_str());
+	return(true);
 }
 
 cConfigItem_ip_port::cConfigItem_ip_port(const char* name, ip_port *param)
@@ -1108,11 +1233,11 @@ string cConfigItem_ip_port::getValueStr(bool /*configFile*/) {
 	return(outStr.str());
 }
 
-bool cConfigItem_ip_port::setParamFromConfigFile(CSimpleIniA *ini) {
-	return(setParamFromValueStr(getValueFromConfigFile(ini)));
+bool cConfigItem_ip_port::setParamFromConfigFile(CSimpleIniA *ini, bool enableClearBeforeFirstSet) {
+	return(setParamFromValueStr(getValueFromConfigFile(ini), enableClearBeforeFirstSet));
 }
 
-bool cConfigItem_ip_port::setParamFromValueStr(string value_str) {
+bool cConfigItem_ip_port::setParamFromValueStr(string value_str, bool enableClearBeforeFirstSet) {
 	if(!param_ip_port ||
 	   value_str.empty()) {
 		return(false);
@@ -1123,6 +1248,9 @@ bool cConfigItem_ip_port::setParamFromValueStr(string value_str) {
 		*pointToPortSeparator = 0;
 		int port = atoi(pointToPortSeparator + 1);
 		if(*value && port) {
+			if(enableClearBeforeFirstSet) {
+				doClearBeforeFirstSet();
+			}
 			param_ip_port->set_ip(trim_str(value));
 			param_ip_port->set_port(port);
 			return(true);
@@ -1131,27 +1259,20 @@ bool cConfigItem_ip_port::setParamFromValueStr(string value_str) {
 	return(false);
 }
 
-cConfigItem_ip_ports::cConfigItem_ip_ports(const char* name, vector<ip_port> *param)
+cConfigItem_ip_ports::cConfigItem_ip_ports(const char* name, vector<vmIPport> *param)
  : cConfigItem(name) {
 	init();
 	param_ip_ports = param;
 }
 
-cConfigItem_ip_ports::cConfigItem_ip_ports(const char* name, vector<ipn_port> *param)
- : cConfigItem(name) {
-	init();
-	param_ipn_ports = param;
-}
-
 string cConfigItem_ip_ports::getValueStr(bool configFile) {
-	if((!param_ip_ports || !param_ip_ports->size()) &&
-	   (!param_ipn_ports || !param_ipn_ports->size())) {
+	if(!param_ip_ports || !param_ip_ports->size()) {
 		return("");
 	}
 	ostringstream outStr;
 	int counter = 0;
 	if(param_ip_ports) {
-		for(vector<ip_port>::iterator iter = param_ip_ports->begin(); iter != param_ip_ports->end(); iter++) {
+		for(vector<vmIPport>::iterator iter = param_ip_ports->begin(); iter != param_ip_ports->end(); iter++) {
 			if(counter) {
 				if(configFile) {
 					outStr << endl << config_name << " = ";
@@ -1159,20 +1280,7 @@ string cConfigItem_ip_ports::getValueStr(bool configFile) {
 					outStr << ';';
 				}
 			}
-			outStr << iter->get_ip() << ':' << iter->get_port();
-			++counter;
-		}
-	}
-	if(param_ipn_ports) {
-		for(vector<ipn_port>::iterator iter = param_ipn_ports->begin(); iter != param_ipn_ports->end(); iter++) {
-			if(counter) {
-				if(configFile) {
-					outStr << endl << config_name << " = ";
-				} else {
-					outStr << ';';
-				}
-			}
-			outStr << inet_ntostring(iter->get_ip()) << ':' << iter->get_port();
+			outStr << iter->ip.getString(true) << ':' << iter->port.getString();
 			++counter;
 		}
 	}
@@ -1182,28 +1290,32 @@ string cConfigItem_ip_ports::getValueStr(bool configFile) {
 list<string> cConfigItem_ip_ports::getValueListStr() {
 	list<string> l;
 	if(param_ip_ports) {
-		for(vector<ip_port>::iterator iter = param_ip_ports->begin(); iter != param_ip_ports->end(); iter++) {
-			l.push_back(iter->get_ip() + ":" + intToString(iter->get_port()));
-		}
-	}
-	if(param_ipn_ports) {
-		for(vector<ipn_port>::iterator iter = param_ipn_ports->begin(); iter != param_ipn_ports->end(); iter++) {
-			l.push_back(inet_ntostring(iter->get_ip()) + ":" + intToString(iter->get_port()));
+		for(vector<vmIPport>::iterator iter = param_ip_ports->begin(); iter != param_ip_ports->end(); iter++) {
+			l.push_back(iter->ip.getString() + ":" + iter->port.getString());
 		}
 	}
 	return(l);
 }
 
-bool cConfigItem_ip_ports::setParamFromConfigFile(CSimpleIniA *ini) {
-	return(setParamFromValuesStr(getValuesFromConfigFile(ini)));
+string cConfigItem_ip_ports::normalizeStringValueForCmp(string value) {
+	find_and_replace(value, " :", ":");
+	find_and_replace(value, ": ", ":");
+	find_and_replace(value, "[", "");
+	find_and_replace(value, "]", "");
+	find_and_replace_all(value, "  ", " ");
+	return(value);
 }
 
-bool cConfigItem_ip_ports::setParamFromValueStr(string value_str) {
-	return(setParamFromValuesStr(split(value_str, ';')));
+bool cConfigItem_ip_ports::setParamFromConfigFile(CSimpleIniA *ini, bool enableClearBeforeFirstSet) {
+	return(setParamFromValuesStr(getValuesFromConfigFile(ini), enableClearBeforeFirstSet));
 }
 
-bool cConfigItem_ip_ports::setParamFromValuesStr(vector<string> list_values_str) {
-	if(!param_ip_ports && !param_ipn_ports) {
+bool cConfigItem_ip_ports::setParamFromValueStr(string value_str, bool enableClearBeforeFirstSet) {
+	return(setParamFromValuesStr(split(value_str, ';'), enableClearBeforeFirstSet));
+}
+
+bool cConfigItem_ip_ports::setParamFromValuesStr(vector<string> list_values_str, bool enableClearBeforeFirstSet) {
+	if(!param_ip_ports) {
 		return(false);
 	}
 	if(list_values_str.empty()) {
@@ -1213,24 +1325,19 @@ bool cConfigItem_ip_ports::setParamFromValuesStr(vector<string> list_values_str)
 	int ok = 0;
 	initBeforeSet();
 	for(vector<string>::iterator iter = list_values_str.begin(); iter != list_values_str.end(); iter++) {
-		const char *iter_str_char = iter->c_str();
-		char *pointToPortSeparator = (char*)strchr(iter_str_char, ':');
-		if(pointToPortSeparator) {
-			*pointToPortSeparator = 0;
-			int port = atoi(pointToPortSeparator + 1);
-			if(*iter_str_char && port) {
-				if(param_ip_ports) {
-					ip_port ipp;
-					ipp.set_ip(trim_str(iter_str_char));
-					ipp.set_port(port);
-					param_ip_ports->push_back(ipp);
+		vmIP ip;
+		const char *port_str;
+		if(ip.setFromString(iter->c_str(), &port_str)) {
+			while(*port_str == ' ' || *port_str == '\t' || *port_str == ':') {
+				++port_str;
+			}
+			unsigned port = atoi(port_str);
+			if(ip.isSet() && port) {
+				if(!ok && enableClearBeforeFirstSet) {
+					doClearBeforeFirstSet();
 				}
-				if(param_ipn_ports) {
-					ipn_port ipp;
-					ipp.set_ip(trim_str(iter_str_char));
-					ipp.set_port(port);
-					param_ipn_ports->push_back(ipp);
-				}
+				param_ip_ports->push_back(vmIPport(ip, port));
+				// cout << ip.getString() << " : " << port << endl;
 				++ok;
 			}
 		}
@@ -1242,12 +1349,9 @@ void cConfigItem_ip_ports::initBeforeSet() {
 	if(param_ip_ports) {
 		param_ip_ports->clear();
 	}
-	if(param_ipn_ports) {
-		param_ipn_ports->clear();
-	}
 }
 
-cConfigItem_ip_port_str_map::cConfigItem_ip_port_str_map(const char* name, map<d_u_int32_t, string> *ip_port_string_map)
+cConfigItem_ip_port_str_map::cConfigItem_ip_port_str_map(const char* name, map<vmIPport, string> *ip_port_string_map)
  : cConfigItem(name) {
 	init();
 	param_ip_port_string_map = ip_port_string_map;
@@ -1259,7 +1363,7 @@ string cConfigItem_ip_port_str_map::getValueStr(bool configFile) {
 	}
 	ostringstream outStr;
 	int counter = 0;
-	for(map<d_u_int32_t, string>::iterator iter = param_ip_port_string_map->begin(); iter != param_ip_port_string_map->end(); iter++) {
+	for(map<vmIPport, string>::iterator iter = param_ip_port_string_map->begin(); iter != param_ip_port_string_map->end(); iter++) {
 		if(counter) {
 			if(configFile) {
 				outStr << endl << config_name << " = ";
@@ -1267,8 +1371,8 @@ string cConfigItem_ip_port_str_map::getValueStr(bool configFile) {
 				outStr << ';';
 			}
 		}
-		d_u_int32_t ip_port = iter->first;
-		outStr << inet_ntostring(ip_port[0]) << ':' << ip_port[1];
+		vmIPport ip_port = iter->first;
+		outStr << ip_port.ip.getString(true) << ':' << ip_port.port.getString();
 		if(!iter->second.empty()) {
 			outStr << ' ' << iter->second;
 		}
@@ -1279,30 +1383,32 @@ string cConfigItem_ip_port_str_map::getValueStr(bool configFile) {
 
 list<string> cConfigItem_ip_port_str_map::getValueListStr() {
 	list<string> l;
-	for(map<d_u_int32_t, string>::iterator iter = param_ip_port_string_map->begin(); iter != param_ip_port_string_map->end(); iter++) {
-		d_u_int32_t ip_port = iter->first;
-		l.push_back(inet_ntostring(ip_port[0]) + ":" + intToString(ip_port[1]) + 
+	for(map<vmIPport, string>::iterator iter = param_ip_port_string_map->begin(); iter != param_ip_port_string_map->end(); iter++) {
+		vmIPport ip_port = iter->first;
+		l.push_back(ip_port.ip.getString() + ":" + ip_port.port.getString() + 
 			    (!iter->second.empty() ? " " + iter->second : ""));
 	}
 	return(l);
 }
 
 string cConfigItem_ip_port_str_map::normalizeStringValueForCmp(string value) {
-	find_and_replace(value, "  ", " ");
 	find_and_replace(value, " :", ":");
 	find_and_replace(value, ": ", ":");
+	find_and_replace(value, "[", "");
+	find_and_replace(value, "]", "");
+	find_and_replace_all(value, "  ", " ");
 	return(value);
 }
 
-bool cConfigItem_ip_port_str_map::setParamFromConfigFile(CSimpleIniA *ini) {
-	return(setParamFromValuesStr(getValuesFromConfigFile(ini)));
+bool cConfigItem_ip_port_str_map::setParamFromConfigFile(CSimpleIniA *ini, bool enableClearBeforeFirstSet) {
+	return(setParamFromValuesStr(getValuesFromConfigFile(ini), enableClearBeforeFirstSet));
 }
 
-bool cConfigItem_ip_port_str_map::setParamFromValueStr(string value_str) {
-	return(setParamFromValuesStr(split(value_str, ';')));
+bool cConfigItem_ip_port_str_map::setParamFromValueStr(string value_str, bool enableClearBeforeFirstSet) {
+	return(setParamFromValuesStr(split(value_str, ';'), enableClearBeforeFirstSet));
 }
 
-bool cConfigItem_ip_port_str_map::setParamFromValuesStr(vector<string> list_values_str) {
+bool cConfigItem_ip_port_str_map::setParamFromValuesStr(vector<string> list_values_str, bool enableClearBeforeFirstSet) {
 	if(!param_ip_port_string_map) {
 		return(false);
 	}
@@ -1313,30 +1419,28 @@ bool cConfigItem_ip_port_str_map::setParamFromValuesStr(vector<string> list_valu
 	int ok = 0;
 	initBeforeSet();
 	for(vector<string>::iterator iter = list_values_str.begin(); iter != list_values_str.end(); iter++) {
-		const char *iter_str_char = iter->c_str();
-		u_int32_t ip = 0;
-		u_int32_t port = 0;
-		string str;
-		char *pointToSeparator = strchr((char*)iter_str_char, ':');
-		if(pointToSeparator) {
-			*pointToSeparator = 0;
-			ip = htonl(inet_addr(iter_str_char));
-			++pointToSeparator;
-			while(*pointToSeparator && *pointToSeparator == ' ') {
-				++pointToSeparator;
+		vmIP ip;
+		const char *port_str_str;
+		if(ip.setFromString(iter->c_str(), &port_str_str)) {
+			while(*port_str_str == ' ' || *port_str_str == '\t' || *port_str_str == ':') {
+				++port_str_str;
 			}
-			port = atoi(pointToSeparator);
-			while(*pointToSeparator && *pointToSeparator != ' ') {
-				++pointToSeparator;
+			vector<string> port_str_array = split(port_str_str, " ", true);
+			if(port_str_array.size() >= 1) {
+				unsigned port = atoi(port_str_array[0].c_str());
+				string str;
+				if(port_str_array.size() >= 2) {
+					str = port_str_array[1];
+				}
+				if(ip.isSet() && port) {
+					if(!ok && enableClearBeforeFirstSet) {
+						doClearBeforeFirstSet();
+					}
+					(*param_ip_port_string_map)[vmIPport(ip, port)] = str;
+					// cout << ip.getString() << " : " << port << " " << str << endl;
+					++ok;
+				}
 			}
-			while(*pointToSeparator && *pointToSeparator == ' ') {
-				++pointToSeparator;
-			}
-			str = pointToSeparator;
-		}
-		if(ip && port) {
-			(*param_ip_port_string_map)[d_u_int32_t(ip, port)] = str;
-			++ok;
 		}
 	}
 	return(ok > 0);
@@ -1368,7 +1472,7 @@ string cConfigItem_nat_aliases::getValueStr(bool configFile) {
 				outStr << ';';
 			}
 		}
-		outStr << inet_ntostring(htonl(iter->first)) << ':' << inet_ntostring(htonl(iter->second));
+		outStr << iter->first.getString(true) << ':' << iter->second.getString(true);
 		++counter;
 	}
 	return(outStr.str());
@@ -1377,25 +1481,29 @@ string cConfigItem_nat_aliases::getValueStr(bool configFile) {
 list<string> cConfigItem_nat_aliases::getValueListStr() {
 	list<string> l;
 	for(nat_aliases_t::iterator iter = param_nat_aliases->begin(); iter != param_nat_aliases->end(); iter++) {
-		l.push_back(inet_ntostring(htonl(iter->first)) + ":" + inet_ntostring(htonl(iter->second)));
+		l.push_back(iter->first.getString() + ":" + iter->second.getString());
 	}
 	return(l);
 }
 
 string cConfigItem_nat_aliases::normalizeStringValueForCmp(string value) {
+	find_and_replace(value, "=", " ");
 	find_and_replace(value, ":", " ");
+	find_and_replace(value, "[", "");
+	find_and_replace(value, "]", "");
+	find_and_replace_all(value, "  ", " ");
 	return(value);
 }
 
-bool cConfigItem_nat_aliases::setParamFromConfigFile(CSimpleIniA *ini) {
-	return(setParamFromValuesStr(getValuesFromConfigFile(ini)));
+bool cConfigItem_nat_aliases::setParamFromConfigFile(CSimpleIniA *ini, bool enableClearBeforeFirstSet) {
+	return(setParamFromValuesStr(getValuesFromConfigFile(ini), enableClearBeforeFirstSet));
 }
 
-bool cConfigItem_nat_aliases::setParamFromValueStr(string value_str) {
-	return(setParamFromValuesStr(split(value_str, ';')));
+bool cConfigItem_nat_aliases::setParamFromValueStr(string value_str, bool enableClearBeforeFirstSet) {
+	return(setParamFromValuesStr(split(value_str, ';'), enableClearBeforeFirstSet));
 }
 
-bool cConfigItem_nat_aliases::setParamFromValuesStr(vector<string> list_values_str) {
+bool cConfigItem_nat_aliases::setParamFromValuesStr(vector<string> list_values_str, bool enableClearBeforeFirstSet) {
 	if(!param_nat_aliases) {
 		return(false);
 	}
@@ -1406,31 +1514,22 @@ bool cConfigItem_nat_aliases::setParamFromValuesStr(vector<string> list_values_s
 	int ok = 0;
 	initBeforeSet();
 	for(vector<string>::iterator iter = list_values_str.begin(); iter != list_values_str.end(); iter++) {
-		const char *iter_str_char = iter->c_str();
-		char local_ip[30], extern_ip[30];
-		char *s = local_ip;
-		int i, j = 0;
-		int len;
-		for(i = 0; i < 30; i++) {
-			local_ip[i] = '\0';
-			extern_ip[i] = '\0';
-		}
-		len = strlen(iter_str_char);
-		for(int i = 0; i < len; i++) {
-			if(iter_str_char[i] == ' ' or iter_str_char[i] == ':' or iter_str_char[i] == '=' or iter_str_char[i] == ' ') {
-				s = extern_ip;
-				j = 0;
-			} else {
-				s[j] = iter_str_char[i];
-				j++;
+		vmIP ip_nat[2];
+		const char *ip_nat_2_str;
+		if(ip_nat[0].setFromString(iter->c_str(), &ip_nat_2_str)) {
+			while(*ip_nat_2_str == ' ' || *ip_nat_2_str == '\t' || *ip_nat_2_str == ':' || *ip_nat_2_str == '=') {
+				++ip_nat_2_str;
 			}
-		}
-		in_addr_t nlocal_ip, nextern_ip;
-		if ((int32_t)(nlocal_ip = inet_addr(local_ip)) != -1 && (int32_t)(nextern_ip = inet_addr(extern_ip)) != -1 ){
-			(*param_nat_aliases)[nlocal_ip] = nextern_ip;
-			++ok;
-			if(verbosity > 3) {
-				printf("adding local_ip[%s][%u] = extern_ip[%s][%u]\n", local_ip, nlocal_ip, extern_ip, nextern_ip);
+			if(ip_nat[1].setFromString(ip_nat_2_str, NULL)) {
+				if(!ok && enableClearBeforeFirstSet) {
+					doClearBeforeFirstSet();
+				}
+				(*param_nat_aliases)[ip_nat[0]] = ip_nat[1];
+				// cout << ip_nat[0].getString() << " : " << ip_nat[1].getString() << endl;
+				++ok;
+				if(verbosity > 3) {
+					printf("adding local_ip[%s] = extern_ip[%s]\n", ip_nat[0].getString().c_str(), ip_nat[1].getString().c_str());
+				}
 			}
 		}
 	}
@@ -1441,6 +1540,123 @@ void cConfigItem_nat_aliases::initBeforeSet() {
 	if(param_nat_aliases) {
 		param_nat_aliases->clear();
 	}
+}
+
+cConfigItem_net_map::cConfigItem_net_map(const char* name, t_net_map *net_map)
+ : cConfigItem(name) {
+	init();
+	param_net_map = net_map;
+}
+
+string cConfigItem_net_map::getValueStr(bool configFile) {
+	if(!param_net_map || !param_net_map->size()) {
+		return("");
+	}
+	ostringstream outStr;
+	int counter = 0;
+	for(t_net_map::iterator iter = param_net_map->begin(); iter != param_net_map->end(); iter++) {
+		if(counter) {
+			if(configFile) {
+				outStr << endl << config_name << " = ";
+			} else {
+				outStr << ';';
+			}
+		}
+		outStr << iter->first.getString(true) << ':' << iter->second.getString(true);
+		++counter;
+	}
+	return(outStr.str());
+}
+
+list<string> cConfigItem_net_map::getValueListStr() {
+	list<string> l;
+	for(t_net_map::iterator iter = param_net_map->begin(); iter != param_net_map->end(); iter++) {
+		l.push_back(iter->first.getString() + ":" + iter->second.getString());
+	}
+	return(l);
+}
+
+string cConfigItem_net_map::normalizeStringValueForCmp(string value) {
+	find_and_replace(value, " /", "/");
+	find_and_replace(value, "/ ", "/");
+	find_and_replace(value, "=", " ");
+	find_and_replace(value, ":", " ");
+	find_and_replace(value, "[", "");
+	find_and_replace(value, "]", "");
+	find_and_replace_all(value, "  ", " ");
+	return(value);
+}
+
+bool cConfigItem_net_map::setParamFromConfigFile(CSimpleIniA *ini, bool enableClearBeforeFirstSet) {
+	return(setParamFromValuesStr(getValuesFromConfigFile(ini), enableClearBeforeFirstSet));
+}
+
+bool cConfigItem_net_map::setParamFromValueStr(string value_str, bool enableClearBeforeFirstSet) {
+	return(setParamFromValuesStr(split(value_str, ';'), enableClearBeforeFirstSet));
+}
+
+bool cConfigItem_net_map::setParamFromValuesStr(vector<string> list_values_str, bool enableClearBeforeFirstSet) {
+	if(!param_net_map) {
+		return(false);
+	}
+	if(list_values_str.empty()) {
+		initBeforeSet();
+		return(false);
+	}
+	int ok = 0;
+	initBeforeSet();
+	for(vector<string>::iterator iter = list_values_str.begin(); iter != list_values_str.end(); iter++) {
+		vmIPmask_order2 net[2];
+		const char *net_2_str;
+		if(net[0].setFromString(iter->c_str(), &net_2_str)) {
+			while(*net_2_str == ' ' || *net_2_str == '\t' || *net_2_str == ':' || *net_2_str == '=') {
+				++net_2_str;
+			}
+			if(net[1].setFromString(net_2_str, NULL)) {
+				if(!ok && enableClearBeforeFirstSet) {
+					doClearBeforeFirstSet();
+				}
+				(*param_net_map)[net[0]] = net[1];
+				// cout << net[0].getString() << " : " << net[1].getString() << endl;
+				++ok;
+				if(verbosity > 3) {
+					printf("adding net[%s] => net[%s]\n", net[0].getString().c_str(), net[1].getString().c_str());
+				}
+			}
+		}
+	}
+	return(ok > 0);
+}
+
+void cConfigItem_net_map::initBeforeSet() {
+	if(param_net_map) {
+		param_net_map->clear();
+	}
+}
+
+vmIP cConfigItem_net_map::convIP(vmIP ip, t_net_map *net_map) {
+	if(!net_map->size()) {
+		return(ip);
+	}
+	vmIPmask_order2 ip_mask = vmIPmask_order2(ip, ip.bits());
+	t_net_map::iterator iter = net_map->find(ip_mask);
+	if(iter != net_map->end()) {
+		return(iter->second.ip);
+	}
+	for(t_net_map::reverse_iterator iter = net_map->rbegin(); iter != net_map->rend(); iter++) {
+		if(ip.network(iter->first.mask, true) == ((vmIP)iter->first.ip).network(iter->first.mask, true)) {
+			if(iter->second.ip.is_v6() != ip.is_v6()) {
+				if(iter->second.ip.is_v6()) {
+					ip.set_to_v6();
+				} else {
+					ip.set_to_v4();
+				}
+			}
+			return(((vmIP)iter->second.ip).network(iter->second.mask)
+						      ._or(ip._and(ip.wildcard_mask(iter->second.mask))));
+		}
+	}
+	return(ip);
 }
 
 cConfigItem_custom_headers::cConfigItem_custom_headers(const char* name, vector<dstring> *custom_headers)
@@ -1477,11 +1693,11 @@ string cConfigItem_custom_headers::normalizeStringValueForCmp(string value) {
 	return(rslt);
 }
 
-bool cConfigItem_custom_headers::setParamFromConfigFile(CSimpleIniA *ini) {
-	return(setParamFromValueStr(getValueFromConfigFile(ini)));
+bool cConfigItem_custom_headers::setParamFromConfigFile(CSimpleIniA *ini, bool enableClearBeforeFirstSet) {
+	return(setParamFromValueStr(getValueFromConfigFile(ini), enableClearBeforeFirstSet));
 }
 
-bool cConfigItem_custom_headers::setParamFromValueStr(string value_str) {
+bool cConfigItem_custom_headers::setParamFromValueStr(string value_str, bool enableClearBeforeFirstSet) {
 	if(!param_custom_headers ||
 	   value_str.empty()) {
 		return(false);
@@ -1491,6 +1707,9 @@ bool cConfigItem_custom_headers::setParamFromValueStr(string value_str) {
 	const char *value = value_str.c_str();
 	char *pos = (char*)value;
 	while(pos && *pos) {
+		if(!ok && enableClearBeforeFirstSet) {
+			doClearBeforeFirstSet();
+		}
 		char *posSep = strchr(pos, ';');
 		if(posSep) {
 			*posSep = 0;
@@ -1576,20 +1795,36 @@ string cConfigMap::getItems(const char *name, const char */*separator*/, bool to
 	return("");
 }
 
-string cConfigMap::comp(cConfigMap *other, cConfig *config) {
+string cConfigMap::comp(cConfigMap *other, cConfig *config, cConfig *defaultConfig) {
 	ostringstream outStr;
 	map<string, cItem>::iterator iter1;
 	map<string, cItem>::iterator iter2;
 	for(iter1 = config_map.begin(); iter1 != config_map.end(); iter1++) {
 		iter2 = other->config_map.find(iter1->first);
 		if(iter2 == other->config_map.end()) {
-			outStr << "(++) " << iter1->first << endl;
+			outStr << "(++) " << iter1->first << " = " << iter1->second.valuesToStr();
+			if(isObsoleteParameter(iter1->first)) {
+				outStr << " // (obsolete)";
+			}
+			if(defaultConfig) {
+				cConfigItem *item = defaultConfig->getItem(iter1->first.c_str());
+				if(item) {
+					string defaultValue = item->getValueStr();
+					if(!defaultValue.empty()) {
+						outStr << " // (default value:) "
+						       << defaultValue;
+					}
+				}
+			}
+			outStr << endl;
 		} else if(!(iter1->second == iter2->second)) {
 			if(!config ||
 			   !config->testEqValues(iter1->first, iter1->second.values, iter2->second.values)) {
 				outStr << "(//) " << iter1->first 
-				       << "   " << iter1->second.valuesToStr()
-				       << " // " << iter2->second.valuesToStr() << endl;
+				       << " = " 
+				       << iter1->second.valuesToStr()
+				       << (defaultConfig ? " // (default value:) " : " // ")
+				       << iter2->second.valuesToStr() << endl;
 			}
 		}
 	}
@@ -1597,30 +1832,43 @@ string cConfigMap::comp(cConfigMap *other, cConfig *config) {
 		if(iter2->first == "new-config") {
 			continue;
 		}
-		const char *obsoleteParameters[] = {
-			"autocleanspool",
-			"packetbuffer_enable",
-			"destroy_call_at_bye",
-			"sip-register-active-nologbin",
-			"mysqltable",
-			"vmbuffer",
-			NULL
-		};
 		iter1 = config_map.find(iter2->first);
 		if(iter1 == config_map.end()) {
-			bool obsolete = false;
-			for(size_t io = 0; obsoleteParameters[io]; ++io) {
-				if(string(obsoleteParameters[io]) == iter2->first) {
-					obsolete = true;
-					break;
+			if(!isObsoleteParameter(iter2->first)) {
+				outStr << "(--) " << iter2->first << " = " << iter2->second.valuesToStr();
+				if(defaultConfig) {
+					cConfigItem *item = defaultConfig->getItem(iter2->first.c_str());
+					if(item) {
+						string defaultValue = item->getValueStr();
+						if(!defaultValue.empty()) {
+							outStr << " // (default value:) "
+							       << defaultValue;
+						}
+					}
 				}
-			}
-			if(!obsolete) {
-				outStr << "(--) " << iter2->first << endl;
+				outStr << endl;
 			}
 		}
 	}
 	return(outStr.str());
+}
+
+bool cConfigMap::isObsoleteParameter(string parameter) {
+	const char *obsoleteParameters[] = {
+		"autocleanspool",
+		"packetbuffer_enable",
+		"destroy_call_at_bye",
+		"sip-register-active-nologbin",
+		"mysqltable",
+		"vmbuffer",
+		NULL
+	};
+	for(size_t io = 0; obsoleteParameters[io]; ++io) {
+		if(string(obsoleteParameters[io]) == parameter) {
+			return(true);
+		}
+	}
+	return(false);
 }
 
 
@@ -1629,6 +1877,7 @@ cConfig::cConfig() {
 	defaultMinor = false;
 	defaultMinorGroupIfNotSet = false;
 	setFromMysqlOk = false;
+	diffValuesTrack = true;
 }
 
 cConfig::~cConfig() {
@@ -1819,7 +2068,7 @@ bool cConfig::loadFromConfigFile(const char *filename, string *error, bool silen
 	}
 	
 	for(map<string, cConfigItem*>::iterator iter = config_map.begin(); iter != config_map.end(); iter++) {
-		if(iter->second->setParamFromConfigFile(&ini)) {
+		if(iter->second->setParamFromConfigFile(&ini, true)) {
 			iter->second->set = true;
 			iter->second->set_in_config = true;
 			iter->second->value_in_config = iter->second->getValueFromConfigFile(&ini);
@@ -1877,7 +2126,7 @@ bool cConfig::loadConfigMapFromConfigFile(cConfigMap *configMap, const char *fil
 		return(false);
 	}
 	unsigned lineBufferSize = 100000;
-	char *lineBuffer = new char[lineBufferSize];
+	char *lineBuffer = new FILE_LINE(0) char[lineBufferSize];
 	while(fgets(lineBuffer, lineBufferSize, fp)) {
 		char *pointerToBegin = lineBuffer;
 		while(*pointerToBegin == ' ' || *pointerToBegin == '\t') {
@@ -1983,10 +2232,22 @@ string cConfig::getContentConfig(bool configFile, bool putDefault) {
 	return(outStr.str());
 }
 
-string cConfig::getJson(bool onlyIfSet) {
+string cConfig::getJson(bool onlyIfSet, vector<string> *filter) {
 	JsonExport json;
 	int counter = 1;
 	for(list<string>::iterator iter = config_list.begin(); iter != config_list.end(); iter++) {
+		if(filter && filter->size()) {
+			bool filter_ok = false;
+			for(vector<string>::iterator iter_filter = filter->begin(); iter_filter != filter->end(); iter_filter++) {
+				if(!strcasecmp(iter_filter->c_str(), iter->c_str())) {
+					filter_ok = true;
+					break;
+				}
+			}
+			if(!filter_ok) {
+				continue;
+			}
+		}
 		map<string, cConfigItem*>::iterator iter_map = config_map.find(*iter);
 		if(iter_map != config_map.end()) {
 			if(!onlyIfSet || iter_map->second->set) {
@@ -1997,25 +2258,63 @@ string cConfig::getJson(bool onlyIfSet) {
 			}
 		}
 	}
-	JsonExport nextData;
-	nextData.add("setFromMysqlOk", setFromMysqlOk);
-	json.addJson("nextData", nextData.getJson());
+	bool okNextData = false;
+	if(filter && filter->size()) {
+		for(vector<string>::iterator iter_filter = filter->begin(); iter_filter != filter->end(); iter_filter++) {
+			if(!strcasecmp(iter_filter->c_str(), "nextData")) {
+				okNextData = true;
+				break;
+			}
+		}
+	} else {
+		okNextData = true;
+	}
+	if(okNextData) {
+		JsonExport nextData;
+		nextData.add("setFromMysqlOk", setFromMysqlOk);
+		json.addJson("nextData", nextData.getJson());
+	}
 	return(json.getJson());
 }
 
 void cConfig::setFromJson(const char *jsonStr, bool onlyIfSet) {
+	map<string, vector<string>* > params;
 	JsonItem jsonData;
 	jsonData.parse(jsonStr);
 	for(size_t i = 0; i < jsonData.getLocalCount(); i++) {
 		JsonItem *item = jsonData.getLocalItem(i);
 		string config_name = item->getValue("name");
 		string value = item->getValue("value");
-		int set = atoi(item->getValue("set").c_str());
+		int set = 0;
+		if(!config_name.empty() || !value.empty()) {
+			set = atoi(item->getValue("set").c_str());
+		} else {
+			if(item->getLocalCount() > 0) {
+				config_name = item->getLocalItem(0)->getLocalName();
+				value = item->getLocalItem(0)->getLocalValue();
+				set = 1;
+			}
+		}
+		if(!config_name.empty()) {
+			if(set) {
+				if(!params[config_name]) {
+					params[config_name] = new FILE_LINE(0) vector<string>;
+				}
+				params[config_name]->push_back(value);
+			} else if(params.find(config_name) == params.end()) {
+				params[config_name] = NULL;
+			}
+		}
+	}
+	for(map<string, vector<string>* >::iterator iter = params.begin(); iter != params.end(); iter++) {
+		string config_name = iter->first;
+		bool set = iter->second != NULL && iter->second->size() > 0;
 		if(!onlyIfSet || set) {
 			map<string, cConfigItem*>::iterator iter_map = config_map.find(config_name);
 			if(iter_map != config_map.end()) {
 				if(set) {
-					if(iter_map->second->setParamFromValueStr(value)) {
+					string value = iter->second->size() == 1 ? (*iter->second)[0] : implode(*iter->second, ";");
+					if(iter_map->second->setParamFromValueStr(value, true)) {
 						iter_map->second->set = true;
 						iter_map->second->set_in_json = true;
 						iter_map->second->value_in_json = value;
@@ -2026,6 +2325,11 @@ void cConfig::setFromJson(const char *jsonStr, bool onlyIfSet) {
 					evSetConfigItem(iter_map->second);
 				}
 			}
+		}
+	}
+	for(map<string, vector<string>* >::iterator iter = params.begin(); iter != params.end(); iter++) {
+		if(iter->second) {
+			delete iter->second;
 		}
 	}
 }
@@ -2059,7 +2363,17 @@ void cConfig::setFromMysql(bool checkConnect, bool onlyIfSet) {
 					map<string, cConfigItem*>::iterator iter_map = config_map.find(column);
 					if(iter_map != config_map.end()) {
 						if(!row.isNull(column)) {
-							if(iter_map->second->setParamFromValueStr(row[column])) {
+							bool oldSet = iter_map->second->set;
+							string oldValueStr = iter_map->second->getValueStr();
+							if(iter_map->second->setParamFromValueStr(row[column], true)) {
+								if((!iter_map->second->naDefaultValueStr || oldSet) &&
+								   oldValueStr != row[column] && diffValuesTrack) {
+									sDiffValue diffValue;
+									diffValue.config_name = iter_map->second->config_name;
+									diffValue.old_value = oldValueStr;
+									diffValue.new_value = row[column];
+									diffValues.push_back(diffValue);
+								}
 								iter_map->second->set = true;
 								iter_map->second->set_in_db = true;
 								iter_map->second->value_in_db = row[column];
@@ -2181,9 +2495,31 @@ cConfigItem *cConfig::getItem(const char *itemName) {
 	return(NULL);
 }
 
+bool cConfig::isSet() {
+	return(config_map.size() > 0);
+}
+
 bool cConfig::isSet(const char *itemName) {
 	cConfigItem *item = getItem(itemName);
 	return(item ? item->set : false);
+}
+
+void cConfig::beginTrackDiffValues() {
+	diffValuesTrack = true;
+	diffValues.clear();
+}
+
+void cConfig::endTrackDiffValues(list<sDiffValue> *diffValues) {
+	if(diffValues) {
+		diffValues->clear();
+		if(this->diffValues.size()) {
+			for(list<sDiffValue>::iterator iter = this->diffValues.begin(); iter != this->diffValues.end(); iter++) {
+				diffValues->push_back(*iter);
+			}
+		}
+	}
+	diffValuesTrack = false;
+	this->diffValues.clear();
 }
 
 bool cConfig::testEqValues(const char *itemName, const char *value1, const char *value2) {
@@ -2205,6 +2541,17 @@ bool cConfig::testEqValues(const char *itemName, const char *value1, const char 
 
 bool cConfig::testEqValues(string itemName, list<string> values1, list<string> values2) {
 	if(values1.size() != values2.size()) {
+		map<string, cConfigItem*>::iterator iter = config_map.find(itemName);
+		if(iter == config_map.end()) {
+			return(false);
+		}
+		if(iter->second->enable_normalizeStringValuesForCmp()) {
+			string value1_str = iter->second->normalizeStringValuesForCmp(values1);
+			string value2_str = iter->second->normalizeStringValuesForCmp(values2);
+			if(value1_str == value2_str) {
+				return(true);
+			}
+		}
 		return(false);
 	}
 	values1.sort();
