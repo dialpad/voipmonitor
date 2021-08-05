@@ -1495,7 +1495,7 @@ Call::read_rtcp(packet_s *packetS, int iscaller, char enable_save_packet) {
 
 /* analyze rtp packet */
 bool
-Call::read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_in_multiple_calls, s_sdp_flags_base sdp_flags, char enable_save_packet, char *ifname) {
+Call::read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_in_multiple_calls, s_sdp_flags_base sdp_flags, char is_fax, char enable_save_packet, char *ifname) {
 	extern int opt_enable_ssl;
 	extern bool opt_srtp_rtp_dtls_decrypt;
 	if(opt_enable_ssl && opt_srtp_rtp_dtls_decrypt && packetS->isDtls()) {
@@ -1526,7 +1526,7 @@ Call::read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_i
 	unsigned datalen_orig = packetS->datalen_();
 	bool rtp_read_rslt = _read_rtp(packetS, iscaller, sdp_flags, find_by_dest, stream_in_multiple_calls, ifname, &record_dtmf, &disable_save, &is_video);
 	if(!disable_save) {
-		_save_rtp(packetS, sdp_flags, enable_save_packet, record_dtmf, is_video, packetS->datalen_() != datalen_orig);
+		_save_rtp(packetS, is_fax, sdp_flags, enable_save_packet, record_dtmf, is_video, packetS->datalen_() != datalen_orig);
 	}
 	if(packetS->pid.flags & FLAG_FRAGMENTED) {
 		this->rtp_fragmented = true;
@@ -1658,7 +1658,6 @@ Call::_read_rtp(packet_s *packetS, int iscaller, s_sdp_flags_base sdp_flags, boo
 				if(this->ip_port[rtp[i]->index_call_ip_port].type_addr == ip_port_call_info::_ta_base_video) {
 					*is_video = true;
 				}
-
 				if(rtp_i->iscaller) {
 					last_rtp_a_packet_time_us = getTimeUS(packetS->header_pt);
 				} else {
@@ -2047,7 +2046,7 @@ Call::read_dtls(struct packet_s *packetS) {
 }
 
 void
-Call::_save_rtp(packet_s *packetS, s_sdp_flags_base sdp_flags, char enable_save_packet, bool record_dtmf, bool is_video, u_int8_t forceVirtualUdp) {
+Call::_save_rtp(packet_s *packetS, char is_fax, s_sdp_flags_base sdp_flags, char enable_save_packet, bool record_dtmf, bool is_video, u_int8_t forceVirtualUdp) {
 	extern int opt_fax_create_udptl_streams;
 	extern int opt_fax_dup_seq_check;
 	if(opt_fax_create_udptl_streams) {

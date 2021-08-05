@@ -1757,6 +1757,8 @@ int mimeSubtypeToInt(char *mimeSubtype) {
 	       return PAYLOAD_AMR;
        else if(strcasecmp(mimeSubtype,"AMR-WB") == 0)
 	       return PAYLOAD_AMRWB;
+	     else if(strcasecmp(mimeSubtype,"VP8") == 0)
+	       return PAYLOAD_VP8;
        else if(strcasecmp(mimeSubtype,"telephone-event") == 0)
 	       return PAYLOAD_TELEVENT;
        else if(strcasecmp(mimeSubtype,"MP4A-LATM") == 0)
@@ -3219,6 +3221,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 									       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
 									       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
 						}
+						//m=video support
 						if (tmp_port2)
 						{
 							call->add_ip_port_hash(packetS->saddr, tmp_addr, ip_port_call_info::_ta_base_video, tmp_port2, packetS->header_pt,
@@ -5015,8 +5018,8 @@ inline int process_packet__rtp_call_info(packet_s_process_calls_info *call_info,
 		call = call_info->calls[call_info_index].call;
 		iscaller = call_info->calls[call_info_index].iscaller;
 		sdp_flags = call_info->calls[call_info_index].sdp_flags;
-		is_rtcp = call_info->calls[call_info_index].is_rtcp || 
-			  ((sdp_flags.is_audio() || sdp_flags.is_video()) && packetS->datalen_() > 1 && RTP::isRTCP_enforce(packetS->data_()));
+		is_rtcp = call_info[call_info_index].is_rtcp || (sdp_flags.rtcp_mux && packetS->datalen > 1 &&
+				((u_char)packetS->data_()[1] == 0xC8 || (u_char)packetS->data_()[1] == 0xC9));
 		stream_in_multiple_calls = call_info->calls[call_info_index].multiple_calls;
 		
 		if(!call_info->find_by_dest && iscaller_is_set(iscaller)) {
