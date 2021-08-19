@@ -1521,10 +1521,11 @@ Call::read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_i
 	}
 	bool record_dtmf = false;
 	bool disable_save = false;
+	bool is_video = false;
 	unsigned datalen_orig = packetS->datalen_();
-	bool rtp_read_rslt = _read_rtp(packetS, iscaller, sdp_flags, find_by_dest, stream_in_multiple_calls, ifname, &record_dtmf, &disable_save);
+	bool rtp_read_rslt = _read_rtp(packetS, iscaller, sdp_flags, find_by_dest, stream_in_multiple_calls, ifname, &record_dtmf, &disable_save, &is_video);
 	if(!disable_save) {
-		_save_rtp(packetS, sdp_flags, enable_save_packet, record_dtmf, packetS->datalen_() != datalen_orig);
+		_save_rtp(packetS, sdp_flags, enable_save_packet, record_dtmf, is_video, packetS->datalen_() != datalen_orig);
 	}
 	if(packetS->pid.flags & FLAG_FRAGMENTED) {
 		this->rtp_fragmented = true;
@@ -1533,7 +1534,7 @@ Call::read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_i
 }
  
 bool
-Call::_read_rtp(packet_s *packetS, int iscaller, s_sdp_flags_base sdp_flags, bool find_by_dest, bool stream_in_multiple_calls, char *ifname, bool *record_dtmf, bool *disable_save) {
+Call::_read_rtp(packet_s *packetS, int iscaller, s_sdp_flags_base sdp_flags, bool find_by_dest, bool stream_in_multiple_calls, char *ifname, bool *record_dtmf, bool *disable_save, bool *is_video) {
  
 	removeRTP_ifSetFlag();
  
@@ -1554,7 +1555,8 @@ Call::_read_rtp(packet_s *packetS, int iscaller, s_sdp_flags_base sdp_flags, boo
 	
 	*record_dtmf = false;
 	*disable_save = false;
-	
+	*is_video = false;
+
 	if(opt_vlan_siprtpsame && VLAN_IS_SET(this->vlan) &&
 	   packetS->pid.vlan != this->vlan) {
 		*disable_save = true;
@@ -1647,6 +1649,9 @@ Call::_read_rtp(packet_s *packetS, int iscaller, s_sdp_flags_base sdp_flags, boo
 					return(false);
 				}
 
+				if(this->ip_port[rtp_i->index_call_ip_port].type_addr == ip_port_call_info::_ta_base_video) {
+					*is_video = true;
+				}
 				if(opt_dscp) {
 					rtp_i->dscp = packetS->header_ip_()->get_tos() >> 2;
 					if(sverb.dscp) {
@@ -2025,7 +2030,7 @@ Call::read_dtls(struct packet_s *packetS) {
 }
 
 void
-Call::_save_rtp(packet_s *packetS, s_sdp_flags_base sdp_flags, char enable_save_packet, bool record_dtmf, u_int8_t forceVirtualUdp) {
+Call::_save_rtp(packet_s *packetS, s_sdp_flags_base sdp_flags, char enable_save_packet, bool record_dtmf, bool is_video, u_int8_t forceVirtualUdp) {
 	extern int opt_fax_create_udptl_streams;
 	extern int opt_fax_dup_seq_check;
 	if(opt_fax_create_udptl_streams) {
@@ -2119,7 +2124,7 @@ Call::_save_rtp(packet_s *packetS, s_sdp_flags_base sdp_flags, char enable_save_
 		}
 	}
 	if(enable_save_packet) {
-		if((this->silencerecording || (this->flags & (sdp_flags.is_video() ? FLAG_SAVERTP_VIDEO_HEADER : FLAG_SAVERTPHEADER))) && 
+		if((this->silencerecording || (is_video && !opt_video_recording) || (this->flags & (sdp_flags.is_video() ? FLAG_SAVERTP_VIDEO_HEADER : FLAG_SAVERTPHEADER))) &&
 		   !this->isfax && !record_dtmf) {
 			if(packetS->isStun()) {
 				save_packet(this, packetS, _t_packet_rtp, forceVirtualUdp);
