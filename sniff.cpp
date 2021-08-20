@@ -1947,7 +1947,7 @@ int get_rtpmap_from_sdp(char *sdp_text, unsigned long len, bool is_video, RTPMAP
 }
 
 int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, size_t sdp_text_len,
-			 unsigned short *port2, int sip_method, char *sessid,
+			 int sip_method, char *sessid,
 			 s_sdp_media_data *sdp_media_data,
 			 list<s_sdp_media_data*> **next_sdp_media_data) {
 	unsigned long l;
@@ -2106,12 +2106,12 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 			}
 		}
 
-		// Video Segment is optional in SDP
-		s = _gettag(sdp_media_text, sdp_media_text_len, "m=video ", &l);
-		if (l == 0 || (*port2 = atoi(s)) == 0)
-		{
-			*port2 = 0;
-		}
+//		// Video Segment is optional in SDP
+//		s = _gettag(sdp_media_text, sdp_media_text_len, "m=video ", &l);
+//		if (l == 0 || (sdp_media_data_item->port = atoi(s)) == 0)
+//		{
+//			sdp_media_data_item->port = 0;
+//		}
 
 		s = _gettag(sdp_media_text, sdp_media_text_len, "a=label:", &l);
 		if(l > 0) {
@@ -3162,8 +3162,8 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 	char sessid[MAXLEN_SDP_SESSID];
 	s_sdp_media_data sdp_media_data;
 	list<s_sdp_media_data*> *next_sdp_media_data = NULL;
-	unsigned short tmp_port2 = 0;
-	if(get_ip_port_from_sdp(call, packetS, sdp, sdplen, &tmp_port2,
+//	unsigned short tmp_port2 = 0;
+	if(get_ip_port_from_sdp(call, packetS, sdp, sdplen,
 				packetS->sip_method, sessid,
 				&sdp_media_data,
 				&next_sdp_media_data)) {
@@ -3229,27 +3229,27 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 									       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
 						}
 						//m=video support
-						if (tmp_port2)
-						{
-							call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base, tmp_port2, packetS->getTimeval_pt(),
-								       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
-								       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
-								       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
-							// check if the IP address is listed in nat_aliases
-							vmIP alias = match_nat_aliases(sdp_media_data_item->ip);
-							if(alias.isSet()) {
-								call->add_ip_port_hash(packetS->saddr_(), alias, ip_port_call_info::_ta_natalias, tmp_port2, packetS->getTimeval_pt(),
-										       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
-										       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
-										       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
-							}
-							if(opt_sdp_reverse_ipport) {
-								call->add_ip_port_hash(packetS->saddr_(), packetS->saddr_(), ip_port_call_info::_ta_sdp_reverse_ipport, tmp_port2, packetS->getTimeval_pt(),
-										       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
-										       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
-										       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
-							}
-						}
+//						if (tmp_port2)
+//						{
+//							call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base, tmp_port2, packetS->getTimeval_pt(),
+//								       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
+//								       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
+//								       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
+//							// check if the IP address is listed in nat_aliases
+//							vmIP alias = match_nat_aliases(sdp_media_data_item->ip);
+//							if(alias.isSet()) {
+//								call->add_ip_port_hash(packetS->saddr_(), alias, ip_port_call_info::_ta_natalias, tmp_port2, packetS->getTimeval_pt(),
+//										       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
+//										       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
+//										       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
+//							}
+//							if(opt_sdp_reverse_ipport) {
+//								call->add_ip_port_hash(packetS->saddr_(), packetS->saddr_(), ip_port_call_info::_ta_sdp_reverse_ipport, tmp_port2, packetS->getTimeval_pt(),
+//										       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
+//										       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
+//										       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
+//							}
+//						}
 					}
 				}
 			} else if(!sdp_media_data_item->ip.isSet()) {
