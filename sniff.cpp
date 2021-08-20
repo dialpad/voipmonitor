@@ -3231,7 +3231,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 						//m=video support
 						if (tmp_port2)
 						{
-							call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base, sdp_media_data_item->port, packetS->getTimeval_pt(),
+							call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base, tmp_port2, packetS->getTimeval_pt(),
 								       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
 								       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
 								       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
@@ -3244,7 +3244,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 										       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
 							}
 							if(opt_sdp_reverse_ipport) {
-								call->add_ip_port_hash(packetS->saddr_(), packetS->saddr_(), ip_port_call_info::_ta_sdp_reverse_ipport, stmp_port2, packetS->getTimeval_pt(),
+								call->add_ip_port_hash(packetS->saddr_(), packetS->saddr_(), ip_port_call_info::_ta_sdp_reverse_ipport, tmp_port2, packetS->getTimeval_pt(),
 										       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
 										       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
 										       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
