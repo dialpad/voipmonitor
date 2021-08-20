@@ -2107,7 +2107,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		}
 
 		// Video Segment is optional in SDP
-		s = gettag(sdp_media_text, sdp_media_text_len, "m=video ", &l);
+		s = _gettag(sdp_media_text, sdp_media_text_len, "m=video ", &l);
 		if (l == 0 || (*port2 = atoi(s)) == 0)
 		{
 			*port2 = 0;
