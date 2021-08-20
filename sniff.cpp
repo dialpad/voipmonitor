@@ -3163,7 +3163,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 	s_sdp_media_data sdp_media_data;
 	list<s_sdp_media_data*> *next_sdp_media_data = NULL;
 	unsigned short tmp_port2 = 0;
-	if(get_ip_port_from_sdp(call, packetS, sdp, sdplen, &tmp_port2
+	if(get_ip_port_from_sdp(call, packetS, sdp, sdplen, &tmp_port2,
 				packetS->sip_method, sessid,
 				&sdp_media_data,
 				&next_sdp_media_data)) {
