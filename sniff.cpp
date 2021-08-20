@@ -4991,7 +4991,7 @@ inline int process_packet__rtp_call_info(packet_s_process_calls_info *call_info,
 		return 0;
 	}
 
-	for(call_info_index = 0; call_info_index < call_info_length; call_info_index++) {
+	for(call_info_index = 0; call_info_index < call_info->length; call_info_index++) {
 		if(threadIndex &&
 		   call_info->calls[call_info_index].call->thread_num_rd != (threadIndex - 1)) {
 			continue;
@@ -10004,5 +10004,5 @@ void *checkSizeOfLivepacketTables(void */*arg*/) {
 	usersniffer_checksize_sync = 0;
 	return(NULL);
 }
-}
+
 
