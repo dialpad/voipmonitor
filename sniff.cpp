@@ -3161,7 +3161,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 
 	char sessid[MAXLEN_SDP_SESSID];
 	s_sdp_media_data sdp_media_data;
-	list<s_sdp_media_data*> *next_sdp_media_data = NULL
+	list<s_sdp_media_data*> *next_sdp_media_data = NULL;
 	if(get_ip_port_from_sdp(call, packetS, sdp, sdplen,
 				packetS->sip_method, sessid,
 				&sdp_media_data,
@@ -5027,7 +5027,7 @@ inline int process_packet__rtp_call_info(packet_s_process_calls_info *call_info,
 		sdp_flags = call_info->calls[call_info_index].sdp_flags;
 		is_rtcp = call_info->calls[call_info_index].is_rtcp || 
 			  ((sdp_flags.is_audio() || sdp_flags.is_video()) && packetS->datalen_() > 1 &&
-			  ((u_char)packetS->data_()[1] == 0xC8 || (u_char)packetS->data_()[1] == 0xC9)) && RTP::isRTCP_enforce(packetS->data_()));
+			  ((u_char)packetS->data_()[1] == 0xC8 || (u_char)packetS->data_()[1] == 0xC9) && RTP::isRTCP_enforce(packetS->data_()));
 		stream_in_multiple_calls = call_info->calls[call_info_index].multiple_calls;
 		
 		if(!call_info->find_by_dest && iscaller_is_set(iscaller)) {
