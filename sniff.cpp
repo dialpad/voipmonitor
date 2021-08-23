@@ -3208,28 +3208,8 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 					   (opt_rtp_firstleg &&
 					    ((call->saddr == packetS->saddr_() && call->sport == packetS->source_()) || 
 					     (call->saddr == packetS->daddr_() && call->sport == packetS->dest_())))) {
-						//printf("sdp [%u] port[%u]\n", tmp_addr, tmp_port);
-						call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base, sdp_media_data_item->port, packetS->getTimeval_pt(), 
-								       sessid, sdp_media_data_item->label, sdp_media_data_count > 1, 
-								       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
-								       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
-						// check if the IP address is listed in nat_aliases
-						vmIP alias = match_nat_aliases(sdp_media_data_item->ip);
-						if(alias.isSet()) {
-							call->add_ip_port_hash(packetS->saddr_(), alias, ip_port_call_info::_ta_natalias, sdp_media_data_item->port, packetS->getTimeval_pt(), 
-									       sessid, sdp_media_data_item->label, sdp_media_data_count > 1, 
-									       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
-									       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
-						}
-						if(opt_sdp_reverse_ipport) {
-							call->add_ip_port_hash(packetS->saddr_(), packetS->saddr_(), ip_port_call_info::_ta_sdp_reverse_ipport, sdp_media_data_item->port, packetS->getTimeval_pt(), 
-									       sessid, sdp_media_data_item->label, sdp_media_data_count > 1, 
-									       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
-									       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
-						}
-						//m=video support
-						if (sdp_media_data_item->sdp_flags.is_video())
-						{
+					   //m=video support
+						if (sdp_media_data_item->sdp_flags.is_video()){
 							call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base_video, sdp_media_data_item->port, packetS->getTimeval_pt(),
 								       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
 								       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
@@ -3243,6 +3223,29 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 								syslog(LOG_ERR, "[%s] sdp_reverse_ipport is not supported for video", call->fbasename);
 							}
 						}
+
+						else{
+							//printf("sdp [%u] port[%u]\n", tmp_addr, tmp_port);
+							call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base, sdp_media_data_item->port, packetS->getTimeval_pt(),
+									       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
+									       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
+									       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
+							// check if the IP address is listed in nat_aliases
+							vmIP alias = match_nat_aliases(sdp_media_data_item->ip);
+							if(alias.isSet()) {
+								call->add_ip_port_hash(packetS->saddr_(), alias, ip_port_call_info::_ta_natalias, sdp_media_data_item->port, packetS->getTimeval_pt(),
+										       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
+										       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
+										       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
+							}
+							if(opt_sdp_reverse_ipport) {
+								call->add_ip_port_hash(packetS->saddr_(), packetS->saddr_(), ip_port_call_info::_ta_sdp_reverse_ipport, sdp_media_data_item->port, packetS->getTimeval_pt(),
+										       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
+										       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
+										       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
+							}
+						}
+
 					}
 				}
 			} else if(!sdp_media_data_item->ip.isSet()) {
