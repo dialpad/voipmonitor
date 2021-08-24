@@ -2036,7 +2036,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 	}
 
 	unsigned sdp_media_counter = 0;
-//	syslog(LOG_DEBUG,'sdp_media_start_count: %u',sdp_media_start_count);
+	syslog(LOG_DEBUG,'sdp_media_start_count: %d',(int)sdp_media_start_count);
 	for(unsigned sdp_media_i = 0; sdp_media_i < sdp_media_start_count; sdp_media_i++) {
 		syslog(LOG_DEBUG,"I am inside loop at count: %u",sdp_media_i);
 		syslog(LOG_DEBUG,"sdp_media_type= %d, processing_rtp_video=%d",(int)sdp_media_type[sdp_media_i],(int)processing_rtp_video(call));
@@ -3237,9 +3237,10 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 									       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
 						}
 						//m=video support
-						syslog(LOG_DEBUG,"sdf_flags.is_video():[%d]",sdp_media_data_item->sdp_flags.is_video());
-						if (sdp_media_data_item->sdp_flags.is_video())
+						syslog(LOG_DEBUG,"From process_sdp sdf_flags.is_video():[%d]",sdp_media_data_item->sdp_flags.is_video());
+						if (sdp_media_data_item->sdp_flags.media_type == sdp_media_type_video)
 						{
+						  syslog(LOG_DEBUG,"media_type is video");
 							call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base_video, sdp_media_data_item->port, packetS->getTimeval_pt(),
 								       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
 								       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
