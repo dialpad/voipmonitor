@@ -2838,8 +2838,10 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 								       sessid, rtp_crypto_config_list, to, branch, iscaller, rtpmap, sdp_flags);
 					}
 					//m=video support
+					syslog(LOG_DEBUG,"Outside video support - tmp_port2 = [%d]",tmp_port2);
 					if (tmp_port2)
 					{
+					  syslog(LOG_DEBUG,"Inside video support - tmp_port2 = [%d]",tmp_port2);
 						call->add_ip_port_hash(packetS->saddr, tmp_addr, ip_port_call_info::_ta_base_video, tmp_port2, packetS->header_pt,
 											   sessid, rtp_crypto_config_list, to, branch, iscaller, rtpmap, sdp_flags);
 						// check if the IP address is listed in nat_aliases
