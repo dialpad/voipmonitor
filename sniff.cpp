@@ -2101,7 +2101,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		sdp_media_data_item->ip = ip;
 		sdp_media_data_item->port = sdp_media_port[sdp_media_i];
 		sdp_media_data_item->sdp_flags.media_type = sdp_media_type[sdp_media_i];
-		syslog(LOG_DEBUG,"port: %s, media_type: %s",to_string(sdp_media_port[sdp_media_i]),to_string(sdp_media_type[sdp_media_i]);
+		syslog(LOG_DEBUG,"port: %s, media_type: %s",to_string(sdp_media_port[sdp_media_i]),to_string(sdp_media_type[sdp_media_i]));
 
 		sdp_media_data_item->sdp_flags.protocol = sdp_protocol;
 
