@@ -3232,7 +3232,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 									       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
 						}
 						//m=video support
-						syslog(LOG_DEBUG,"sdf_flags.is_video():[%d]",sdp_media_data_item->sdp_flags.is_video())
+						syslog(LOG_DEBUG,"sdf_flags.is_video():[%d]",sdp_media_data_item->sdp_flags.is_video());
 						if (sdp_media_data_item->sdp_flags.is_video())
 						{
 							call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base_video, sdp_media_data_item->port, packetS->getTimeval_pt(),
