@@ -1998,6 +1998,15 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 			    sdp_text_len - (sdp_media_start_count ? sdp_media_start[sdp_media_start_count - 1] + 1 - sdp_text: 0),
 			    "\nm=", &l);
 		if(l > 0) {
+		 if(strncasecmp(s, "audio", 5))
+		    syslog(LOG_DEBUG,"audio");
+		 if(strncasecmp(s, "image", 5))
+		    syslog(LOG_DEBUG,"image");
+		 if(strncasecmp(s, "video", 5))
+		    syslog(LOG_DEBUG,"video");
+		 if(strncasecmp(s, "application", 11))
+		    syslog(LOG_DEBUG,"application");
+
 			e_sdp_media_type media_type = l > 5 ?
 						       (!strncasecmp(s, "audio", 5) ? sdp_media_type_audio :
 							!strncasecmp(s, "image", 5) ? sdp_media_type_image :
@@ -3223,6 +3232,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 									       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
 						}
 						//m=video support
+						syslog(LOG_DEBUG,"sdf_flags.is_video():[%d]",sdp_media_data_item->sdp_flags.is_video())
 						if (sdp_media_data_item->sdp_flags.is_video())
 						{
 							call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base_video, sdp_media_data_item->port, packetS->getTimeval_pt(),
