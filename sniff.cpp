@@ -2016,8 +2016,8 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 				sdp_media_type[sdp_media_start_count] = media_type;
 				sdp_media_port[sdp_media_start_count] = port;
 				++sdp_media_start_count;
-				syslog(LOG_DEBUG,"sdp_media_start_count: [%d]",sdp_media_start_count);
-				syslog(LOG_DEBUG,"sdp_media_start: [%s], sdp_media_type=[%s], sdp_media_port = [%s]",to_string(sdp_media_start[sdp_media_start_count]),to_string(sdp_media_type[sdp_media_start_count]),to_string(sdp_media_port[sdp_media_start_count]));
+				syslog(LOG_DEBUG,"sdp_media_start_count: %d",sdp_media_start_count);
+				syslog(LOG_DEBUG,"sdp_media_start: %c, sdp_media_type= %s, sdp_media_port = %s",sdp_media_start[sdp_media_start_count],to_string(sdp_media_type[sdp_media_start_count]),to_string(sdp_media_port[sdp_media_start_count]));
 			} else {
 				break;
 			}
