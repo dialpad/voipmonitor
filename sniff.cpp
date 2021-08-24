@@ -2036,7 +2036,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 	}
 
 	unsigned sdp_media_counter = 0;
-	syslog(LOG_DEBUG,'sdp_media_start_count: %s',to_string(sdp_media_start_count));
+	syslog(LOG_DEBUG,'sdp_media_start_count: %i',sdp_media_start_count);
 	for(unsigned sdp_media_i = 0; sdp_media_i < sdp_media_start_count; sdp_media_i++) {
 		syslog(LOG_DEBUG,"I am inside loop at count: %s",to_string(sdp_media_i));
 		if(sdp_media_type[sdp_media_i] == sdp_media_type_video && !processing_rtp_video(call)) {
