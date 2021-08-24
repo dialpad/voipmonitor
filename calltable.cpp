@@ -1522,7 +1522,7 @@ Call::read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_i
 	bool record_dtmf = false;
 	bool disable_save = false;
 	unsigned datalen_orig = packetS->datalen_();
-	syslog(LOG_DEBUG,"From read_rtp: %d",sdp_flags.is_video());
+//	syslog(LOG_DEBUG,"From read_rtp: %d",sdp_flags.is_video());
 	bool rtp_read_rslt = _read_rtp(packetS, iscaller, sdp_flags, find_by_dest, stream_in_multiple_calls, ifname, &record_dtmf, &disable_save);
 	if(!disable_save) {
 		_save_rtp(packetS, sdp_flags, enable_save_packet, record_dtmf, packetS->datalen_() != datalen_orig);
@@ -1535,7 +1535,7 @@ Call::read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_i
  
 bool
 Call::_read_rtp(packet_s *packetS, int iscaller, s_sdp_flags_base sdp_flags, bool find_by_dest, bool stream_in_multiple_calls, char *ifname, bool *record_dtmf, bool *disable_save) {
-  syslog(LOG_DEBUG,"From save_rtp: %d",sdp_flags.is_video());
+//  syslog(LOG_DEBUG,"From save_rtp: %d",sdp_flags.is_video());
 	removeRTP_ifSetFlag();
  
 	if(iscaller < 0) {
@@ -2030,7 +2030,7 @@ void
 Call::_save_rtp(packet_s *packetS, s_sdp_flags_base sdp_flags, char enable_save_packet, bool record_dtmf, u_int8_t forceVirtualUdp) {
 	extern int opt_fax_create_udptl_streams;
 	extern int opt_fax_dup_seq_check;
-	syslog(LOG_DEBUG,"From save_rtp: %d",sdp_flags.is_video());
+//	syslog(LOG_DEBUG,"From save_rtp: %d",sdp_flags.is_video());
 	if(opt_fax_create_udptl_streams) {
 		if(sdp_flags.is_image() && packetS->okDataLenForUdptl()) {
 			sUdptlDumper *udptlDumper;
