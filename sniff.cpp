@@ -1999,13 +1999,13 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 			    "\nm=", &l);
 		if(l > 0) {
 		 if(strncasecmp(s, "audio", 5))
-		    syslog(LOG_DEBUG,"audio");
+		    syslog(LOG_DEBUG,"Logging audio");
 		 if(strncasecmp(s, "image", 5))
-		    syslog(LOG_DEBUG,"image");
+		    syslog(LOG_DEBUG,"Logging image");
 		 if(strncasecmp(s, "video", 5))
-		    syslog(LOG_DEBUG,"video");
+		    syslog(LOG_DEBUG,"Logging video");
 		 if(strncasecmp(s, "application", 11))
-		    syslog(LOG_DEBUG,"application");
+		    syslog(LOG_DEBUG,"Logging application");
 
 			e_sdp_media_type media_type = l > 5 ?
 						       (!strncasecmp(s, "audio", 5) ? sdp_media_type_audio :
