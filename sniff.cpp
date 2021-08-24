@@ -2016,6 +2016,8 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 				sdp_media_type[sdp_media_start_count] = media_type;
 				sdp_media_port[sdp_media_start_count] = port;
 				++sdp_media_start_count;
+				syslog(LOG_DEBUG,"sdp_media_start_count: [%d]",sdp_media_start_count)
+				syslog(LOG_DEBUG,"sdp_media_start: [%s], sdp_media_type=[%s], sdp_media_port = [%s]",to_string(sdp_media_start[sdp_media_start_count]),to_string(sdp_media_type[sdp_media_start_count]),to_string(sdp_media_port[sdp_media_start_count]))
 			} else {
 				break;
 			}
@@ -3227,6 +3229,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 								       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
 								       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
 								       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
+							syslog(LOG_DEBUG,"Logging from sniff.cpp, process_sdp")
 							// check if the IP address is listed in nat_aliases
 							vmIP alias = match_nat_aliases(sdp_media_data_item->ip);
 							if(alias.isSet()) {
