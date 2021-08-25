@@ -3247,6 +3247,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 
 						syslog(LOG_DEBUG,"media_type = %d",(int)sdp_media_data_item->sdp_flags.media_type);
 						syslog(LOG_DEBUG,"sdp_media_type_video = %d",(int)sdp_media_type_video);
+						syslog(LOG_DEBUG,"sdp_flags is_video(): %d",sdp_media_data_item->sdp_flags.is_video())
 //						if (sdp_media_data_item->sdp_flags.media_type == sdp_media_type_video)
 //						{
 //						  syslog(LOG_DEBUG,"media_type is video");
