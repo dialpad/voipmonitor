@@ -3233,6 +3233,12 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 					    ((call->saddr == packetS->saddr_() && call->sport == packetS->source_()) || 
 					     (call->saddr == packetS->daddr_() && call->sport == packetS->dest_())))) {
 						//printf("sdp [%u] port[%u]\n", tmp_addr, tmp_port);
+						syslog(LOG_DEBUG,"From process_sdp");
+
+						syslog(LOG_DEBUG,"media_type = %d",(int)sdp_media_data_item->sdp_flags.media_type);
+						syslog(LOG_DEBUG,"sdp_media_type_video = %d",(int)sdp_media_type_video);
+						syslog(LOG_DEBUG,"sdp_flags is_video(): %d",sdp_media_data_item->sdp_flags.is_video());
+						syslog(LOG_DEBUG,"sdp_media_data_item->rtpmap.payload= %d , sdp_media_data_item->rtpmap.codec = %d", (int)sdp_media_data_item->rtpmap.payload, (int)sdp_media_data_item->rtpmap.codec)
 						call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base, sdp_media_data_item->port, packetS->getTimeval_pt(), 
 								       sessid, sdp_media_data_item->label, sdp_media_data_count > 1, 
 								       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
@@ -3252,28 +3258,24 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 									       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
 						}
 						//m=video support
-						syslog(LOG_DEBUG,"From process_sdp");
 
-						syslog(LOG_DEBUG,"media_type = %d",(int)sdp_media_data_item->sdp_flags.media_type);
-						syslog(LOG_DEBUG,"sdp_media_type_video = %d",(int)sdp_media_type_video);
-						syslog(LOG_DEBUG,"sdp_flags is_video(): %d",sdp_media_data_item->sdp_flags.is_video());
-//						if (sdp_media_data_item->sdp_flags.is_video())
-//						{
-//						  syslog(LOG_DEBUG,"media_type is video");
-//							call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base_video, sdp_media_data_item->port, packetS->getTimeval_pt(),
-//								       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
-//								       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
-//								       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
-//							syslog(LOG_DEBUG,"Logging inside if condition for video support in process_sdp");
-//							// check if the IP address is listed in nat_aliases
-//							vmIP alias = match_nat_aliases(sdp_media_data_item->ip);
-//							if(alias.isSet()) {
-//								syslog(LOG_ERR, "[%s] nat_aliases is not supported for video", call->fbasename);
-//							}
-//							if(opt_sdp_reverse_ipport) {
-//								syslog(LOG_ERR, "[%s] sdp_reverse_ipport is not supported for video", call->fbasename);
-//							}
-//						}
+						if (sdp_media_data_item->sdp_flags.is_video())
+						{
+						  syslog(LOG_DEBUG,"media_type is video");
+							call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base_video, sdp_media_data_item->port, packetS->getTimeval_pt(),
+								       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
+								       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
+								       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
+							syslog(LOG_DEBUG,"Logging inside if condition for video support in process_sdp");
+							// check if the IP address is listed in nat_aliases
+							vmIP alias = match_nat_aliases(sdp_media_data_item->ip);
+							if(alias.isSet()) {
+								syslog(LOG_ERR, "[%s] nat_aliases is not supported for video", call->fbasename);
+							}
+							if(opt_sdp_reverse_ipport) {
+								syslog(LOG_ERR, "[%s] sdp_reverse_ipport is not supported for video", call->fbasename);
+							}
+						}
 					}
 				}
 			} else if(!sdp_media_data_item->ip.isSet()) {
