@@ -3238,7 +3238,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 						syslog(LOG_DEBUG,"media_type = %d",(int)sdp_media_data_item->sdp_flags.media_type);
 						syslog(LOG_DEBUG,"sdp_media_type_video = %d",(int)sdp_media_type_video);
 						syslog(LOG_DEBUG,"sdp_flags is_video(): %d",sdp_media_data_item->sdp_flags.is_video());
-						syslog(LOG_DEBUG,"sdp_media_data_item->rtpmap.payload= %d , sdp_media_data_item->rtpmap.codec = %d", (int)sdp_media_data_item->rtpmap.payload, (int)sdp_media_data_item->rtpmap.codec)
+						syslog(LOG_DEBUG,"sdp_media_data_item->rtpmap.payload= %d , sdp_media_data_item->rtpmap.codec = %d", (int)sdp_media_data_item->rtpmap.payload, (int)sdp_media_data_item->rtpmap.codec);
 						call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base, sdp_media_data_item->port, packetS->getTimeval_pt(), 
 								       sessid, sdp_media_data_item->label, sdp_media_data_count > 1, 
 								       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
