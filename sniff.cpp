@@ -1810,9 +1810,9 @@ int get_rtpmap_from_sdp(char *sdp_text, unsigned long len, bool is_video, RTPMAP
 		codec = 0;
 		if (sscanf(s, "%30u %254[^/]/%d", &payload, mimeSubtype, &rate) == 3) {
 			// store payload type and its codec into one integer with 1000 offset
-			if(is_video) {
-				codec = PAYLOAD_VIDEO;
-			} else {
+//			if(is_video) {
+//				codec = PAYLOAD_VIDEO;
+//			} else {
 				codec = mimeSubtypeToInt(mimeSubtype);
 				if(codec == PAYLOAD_G7221) {
 					switch(rate) {
@@ -1925,7 +1925,7 @@ int get_rtpmap_from_sdp(char *sdp_text, unsigned long len, bool is_video, RTPMAP
 				} else if(codec == PAYLOAD_TELEVENT && existsPayloadTelevent) {
 					*existsPayloadTelevent = true;
 				}
-			}
+//			}
 		}
 		// return CR/LF into sdp_text
 		*z = zchr;
@@ -1999,6 +1999,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		s = _gettag(sdp_media_start_count ? sdp_media_start[sdp_media_start_count - 1] + 1 : sdp_text,
 			    sdp_text_len - (sdp_media_start_count ? sdp_media_start[sdp_media_start_count - 1] + 1 - sdp_text: 0),
 			    "\nm=", &l);
+		syslog(LOG_DEBUG,"s=%s",s)
 		if(l > 0) {
 		 if(strncasecmp(s, "audio", 5))
 		    syslog(LOG_DEBUG,"Logging audio");

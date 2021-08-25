@@ -1522,7 +1522,7 @@ Call::read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_i
 	bool record_dtmf = false;
 	bool disable_save = false;
 	unsigned datalen_orig = packetS->datalen_();
-//	syslog(LOG_DEBUG,"From read_rtp: %d",sdp_flags.is_video());
+	syslog(LOG_DEBUG,"From read_rtp: %d",sdp_flags.is_video());
 	bool rtp_read_rslt = _read_rtp(packetS, iscaller, sdp_flags, find_by_dest, stream_in_multiple_calls, ifname, &record_dtmf, &disable_save);
 	if(!disable_save) {
 		_save_rtp(packetS, sdp_flags, enable_save_packet, record_dtmf, packetS->datalen_() != datalen_orig);
@@ -1535,7 +1535,7 @@ Call::read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_i
  
 bool
 Call::_read_rtp(packet_s *packetS, int iscaller, s_sdp_flags_base sdp_flags, bool find_by_dest, bool stream_in_multiple_calls, char *ifname, bool *record_dtmf, bool *disable_save) {
-//  syslog(LOG_DEBUG,"From save_rtp: %d",sdp_flags.is_video());
+  syslog(LOG_DEBUG,"From save_rtp: %d",sdp_flags.is_video());
 	removeRTP_ifSetFlag();
  
 	if(iscaller < 0) {
@@ -2028,6 +2028,7 @@ Call::read_dtls(struct packet_s *packetS) {
 
 void
 Call::_save_rtp(packet_s *packetS, s_sdp_flags_base sdp_flags, char enable_save_packet, bool record_dtmf, u_int8_t forceVirtualUdp) {
+	syslog(LOG_DEBUG,"Starting _save_rtp");
 	extern int opt_fax_create_udptl_streams;
 	extern int opt_fax_dup_seq_check;
 //	syslog(LOG_DEBUG,"From save_rtp: %d",sdp_flags.is_video());
@@ -2124,6 +2125,7 @@ Call::_save_rtp(packet_s *packetS, s_sdp_flags_base sdp_flags, char enable_save_
 	if(enable_save_packet) {
 		if((this->silencerecording || (this->flags & (sdp_flags.is_video() ? FLAG_SAVERTP_VIDEO_HEADER : FLAG_SAVERTPHEADER))) &&
 		   !this->isfax && !record_dtmf) {
+		   syslog(LOG_DEBUG,"From _save_rtp-> is_video: %d",sdp_flags.is_video());
 			if(packetS->isStun()) {
 				save_packet(this, packetS, _t_packet_rtp, forceVirtualUdp);
 			} else if(packetS->datalen_() >= RTP_FIXED_HEADERLEN &&
@@ -2136,8 +2138,10 @@ Call::_save_rtp(packet_s *packetS, s_sdp_flags_base sdp_flags, char enable_save_
 			}
 		} else if((this->flags & (sdp_flags.is_video() ? FLAG_SAVERTP_VIDEO : FLAG_SAVERTP)) || this->isfax || record_dtmf) {
 			save_packet(this, packetS, _t_packet_rtp, forceVirtualUdp);
+			syslog(LOG_DEBUG,"saving video packet");
 		}
 	}
+	syslog(LOG_DEBUG,"Going out of _save_rtp");
 }
 
 void Call::stoprecording() {
