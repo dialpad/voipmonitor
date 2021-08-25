@@ -3273,7 +3273,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 //							if(opt_sdp_reverse_ipport) {
 //								syslog(LOG_ERR, "[%s] sdp_reverse_ipport is not supported for video", call->fbasename);
 //							}
-						}
+//						}
 					}
 				}
 			} else if(!sdp_media_data_item->ip.isSet()) {
