@@ -2025,7 +2025,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 			vmPort port;
 			syslog(LOG_DEBUG,"Checking for port.isSet()");
 			if(port.setFromString(s).isSet()) {
-			  syslog(LOG_DEBUG,"Inside port.isSet()")
+			  syslog(LOG_DEBUG,"Inside port.isSet()");
 				sdp_media_start[sdp_media_start_count] = s;
 				sdp_media_type[sdp_media_start_count] = media_type;
 				sdp_media_port[sdp_media_start_count] = port;
