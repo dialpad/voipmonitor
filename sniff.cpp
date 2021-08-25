@@ -3173,7 +3173,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 
 	char sessid[MAXLEN_SDP_SESSID];
 	s_sdp_media_data sdp_media_data;
-	syslog(LOG_DEBUG,"Starting process_sdp()")
+	syslog(LOG_DEBUG,"Starting process_sdp()");
 	syslog(LOG_DEBUG,"media_type = %d",(int)sdp_media_data.sdp_flags.media_type);
 //	syslog(LOG_DEBUG,"sdp_media_type_video = %d",(int)sdp_media_type_video);
 	list<s_sdp_media_data*> *next_sdp_media_data = NULL;
