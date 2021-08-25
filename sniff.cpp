@@ -1999,7 +1999,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		s = _gettag(sdp_media_start_count ? sdp_media_start[sdp_media_start_count - 1] + 1 : sdp_text,
 			    sdp_text_len - (sdp_media_start_count ? sdp_media_start[sdp_media_start_count - 1] + 1 - sdp_text: 0),
 			    "\nm=", &l);
-		syslog(LOG_DEBUG,"s=%s",s)
+		syslog(LOG_DEBUG,"s=%s",s);
 		if(l > 0) {
 		 if(strncasecmp(s, "audio", 5))
 		    syslog(LOG_DEBUG,"Logging audio");
