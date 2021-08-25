@@ -1535,7 +1535,7 @@ Call::read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_i
  
 bool
 Call::_read_rtp(packet_s *packetS, int iscaller, s_sdp_flags_base sdp_flags, bool find_by_dest, bool stream_in_multiple_calls, char *ifname, bool *record_dtmf, bool *disable_save) {
-  syslog(LOG_DEBUG,"From save_rtp: %d",sdp_flags.is_video());
+  syslog(LOG_DEBUG,"From _read_rtp: %d",sdp_flags.is_video());
 	removeRTP_ifSetFlag();
  
 	if(iscaller < 0) {
@@ -2126,6 +2126,7 @@ Call::_save_rtp(packet_s *packetS, s_sdp_flags_base sdp_flags, char enable_save_
 		if((this->silencerecording || (this->flags & (sdp_flags.is_video() ? FLAG_SAVERTP_VIDEO_HEADER : FLAG_SAVERTPHEADER))) &&
 		   !this->isfax && !record_dtmf) {
 		   syslog(LOG_DEBUG,"From _save_rtp-> is_video: %d",sdp_flags.is_video());
+		   syslog(LOG_DEBUG,"If condition for fax");
 			if(packetS->isStun()) {
 				save_packet(this, packetS, _t_packet_rtp, forceVirtualUdp);
 			} else if(packetS->datalen_() >= RTP_FIXED_HEADERLEN &&
