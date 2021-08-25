@@ -2003,6 +2003,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		    syslog(LOG_DEBUG,"Logging audio");
 		 if(strncasecmp(s, "image", 5))
 		    syslog(LOG_DEBUG,"Logging image");
+			syslog(LOG_DEBUG,"sdp_media_start_count: %d",(int)sdp_media_start_count);
 		 if(strncasecmp(s, "video", 5))
 		    syslog(LOG_DEBUG,"Logging video");
 		 if(strncasecmp(s, "application", 11))
@@ -2026,6 +2027,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 				sdp_media_type[sdp_media_start_count] = media_type;
 				sdp_media_port[sdp_media_start_count] = port;
 				++sdp_media_start_count;
+				syslog(LOG_DEBUG,"count incremented");
 //				syslog(LOG_DEBUG,"sdp_media_start_count: %d",sdp_media_start_count);
 //				syslog(LOG_DEBUG,"sdp_media_start: %c, sdp_media_type= %s, sdp_media_port = %s",sdp_media_start[sdp_media_start_count],to_string(sdp_media_type[sdp_media_start_count]),to_string(sdp_media_port[sdp_media_start_count]));
 			} else {
@@ -2039,11 +2041,11 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 	unsigned sdp_media_counter = 0;
 	syslog(LOG_DEBUG,"sdp_media_start_count: %d",(int)sdp_media_start_count);
 	for(unsigned sdp_media_i = 0; sdp_media_i < sdp_media_start_count; sdp_media_i++) {
-		syslog(LOG_DEBUG,"I am inside loop at count: %u",sdp_media_i);
+		syslog(LOG_DEBUG,"I am inside for loop at count: %u",sdp_media_i);
 		syslog(LOG_DEBUG,"sdp_media_type= %d, processing_rtp_video=%d",(int)sdp_media_type[sdp_media_i],(int)processing_rtp_video(call));
 		if(sdp_media_type[sdp_media_i] == sdp_media_type_video && !processing_rtp_video(call)) {
 			syslog(LOG_DEBUG,"I am in if condition");
-			continue;
+//			continue;
 		}
 		syslog(LOG_DEBUG,"After if condition");
 
@@ -3171,6 +3173,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 
 	char sessid[MAXLEN_SDP_SESSID];
 	s_sdp_media_data sdp_media_data;
+	syslog(LOG_DEBUG,"Starting process_sdp()")
 	syslog(LOG_DEBUG,"media_type = %d",(int)sdp_media_data.sdp_flags.media_type);
 //	syslog(LOG_DEBUG,"sdp_media_type_video = %d",(int)sdp_media_type_video);
 	list<s_sdp_media_data*> *next_sdp_media_data = NULL;
