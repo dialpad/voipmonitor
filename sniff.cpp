@@ -1931,6 +1931,7 @@ int get_rtpmap_from_sdp(char *sdp_text, unsigned long len, bool is_video, RTPMAP
 		*z = zchr;
 		if(codec || payload) {
 			rtpmap[i].codec = codec;
+			syslog(LOG_DEBUG,"Inside get_rtpmap_from_sdp(), codec = %d",codec);
 			rtpmap[i].payload = payload;
 			if(codec == PAYLOAD_ILBC) {
 				char tagFmtpWithPayload[100];
@@ -2022,7 +2023,9 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 				++s;
 			}
 			vmPort port;
+			syslog(LOG_DEBUG,"Checking for port.isSet()");
 			if(port.setFromString(s).isSet()) {
+			  syslog(LOG_DEBUG,"Inside port.isSet()")
 				sdp_media_start[sdp_media_start_count] = s;
 				sdp_media_type[sdp_media_start_count] = media_type;
 				sdp_media_port[sdp_media_start_count] = port;
@@ -2031,9 +2034,11 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 //				syslog(LOG_DEBUG,"sdp_media_start_count: %d",sdp_media_start_count);
 //				syslog(LOG_DEBUG,"sdp_media_start: %c, sdp_media_type= %s, sdp_media_port = %s",sdp_media_start[sdp_media_start_count],to_string(sdp_media_type[sdp_media_start_count]),to_string(sdp_media_port[sdp_media_start_count]));
 			} else {
+				syslog(LOG_DEBUG,"First break");
 				break;
 			}
 		} else {
+			syslog(LOG_DEBUG,"Second break");
 			break;
 		}
 	}
@@ -2221,6 +2226,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		}
 
 		if(sdp_media_type[sdp_media_i] != sdp_media_type_application) {
+			syslog(LOG_DEBUG,"getting rtpmap");
 			get_rtpmap_from_sdp(sdp_media_text, sdp_media_text_len, sdp_media_type[sdp_media_i] == sdp_media_type_video, sdp_media_data_item->rtpmap, &sdp_media_data_item->exists_payload_televent);
 		}
 
@@ -2231,6 +2237,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		++sdp_media_counter;
 
 	}
+	syslog(LOG_DEBUG,"sdp_media_counter=%u",sdp_media_counter);
 	syslog(LOG_DEBUG,"Getting out of get_ip_port function");
 	return sdp_media_counter;
 }
@@ -3248,23 +3255,23 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 						syslog(LOG_DEBUG,"media_type = %d",(int)sdp_media_data_item->sdp_flags.media_type);
 						syslog(LOG_DEBUG,"sdp_media_type_video = %d",(int)sdp_media_type_video);
 						syslog(LOG_DEBUG,"sdp_flags is_video(): %d",sdp_media_data_item->sdp_flags.is_video());
-//						if (sdp_media_data_item->sdp_flags.media_type == sdp_media_type_video)
-//						{
-//						  syslog(LOG_DEBUG,"media_type is video");
-//							call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base_video, sdp_media_data_item->port, packetS->getTimeval_pt(),
-//								       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
-//								       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
-//								       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
-//							syslog(LOG_DEBUG,"Logging from sniff.cpp, process_sdp");
-//							// check if the IP address is listed in nat_aliases
-//							vmIP alias = match_nat_aliases(sdp_media_data_item->ip);
-//							if(alias.isSet()) {
-//								syslog(LOG_ERR, "[%s] nat_aliases is not supported for video", call->fbasename);
-//							}
-//							if(opt_sdp_reverse_ipport) {
-//								syslog(LOG_ERR, "[%s] sdp_reverse_ipport is not supported for video", call->fbasename);
-//							}
-//						}
+						if (sdp_media_data_item->sdp_flags.is_video())
+						{
+						  syslog(LOG_DEBUG,"media_type is video");
+							call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base_video, sdp_media_data_item->port, packetS->getTimeval_pt(),
+								       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
+								       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
+								       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
+							syslog(LOG_DEBUG,"Logging inside if condition for video support in process_sdp");
+							// check if the IP address is listed in nat_aliases
+							vmIP alias = match_nat_aliases(sdp_media_data_item->ip);
+							if(alias.isSet()) {
+								syslog(LOG_ERR, "[%s] nat_aliases is not supported for video", call->fbasename);
+							}
+							if(opt_sdp_reverse_ipport) {
+								syslog(LOG_ERR, "[%s] sdp_reverse_ipport is not supported for video", call->fbasename);
+							}
+						}
 					}
 				}
 			} else if(!sdp_media_data_item->ip.isSet()) {
