@@ -1810,9 +1810,9 @@ int get_rtpmap_from_sdp(char *sdp_text, unsigned long len, bool is_video, RTPMAP
 		codec = 0;
 		if (sscanf(s, "%30u %254[^/]/%d", &payload, mimeSubtype, &rate) == 3) {
 			// store payload type and its codec into one integer with 1000 offset
-//			if(is_video) {
-//				codec = PAYLOAD_VIDEO;
-//			} else {
+			if(is_video) {
+				codec = PAYLOAD_VIDEO;
+			} else {
 				codec = mimeSubtypeToInt(mimeSubtype);
 				if(codec == PAYLOAD_G7221) {
 					switch(rate) {
@@ -1925,7 +1925,7 @@ int get_rtpmap_from_sdp(char *sdp_text, unsigned long len, bool is_video, RTPMAP
 				} else if(codec == PAYLOAD_TELEVENT && existsPayloadTelevent) {
 					*existsPayloadTelevent = true;
 				}
-//			}
+			}
 		}
 		// return CR/LF into sdp_text
 		*z = zchr;
@@ -3220,6 +3220,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 									       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
 									       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
 						}
+						syslog(LOG_DEBUG,"is_video() flag %d",sdp_media_data_item->sdp_flags.is_video());
 						//m=video support
 //						if (sdp_media_data_item->sdp_flags.is_video())
 //						{
