@@ -10021,5 +10021,3 @@ void *checkSizeOfLivepacketTables(void */*arg*/) {
 	usersniffer_checksize_sync = 0;
 	return(NULL);
 }
-
-

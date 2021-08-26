@@ -1647,7 +1647,6 @@ Call::_read_rtp(packet_s *packetS, int iscaller, s_sdp_flags_base sdp_flags, boo
 					return(false);
 				}
 
-
 				if(opt_dscp) {
 					rtp_i->dscp = packetS->header_ip_()->get_tos() >> 2;
 					if(sverb.dscp) {
