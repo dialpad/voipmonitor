@@ -3220,22 +3220,6 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 									       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
 									       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
 						}
-						//m=video support
-						if (sdp_media_data_item->sdp_flags.is_video())
-						{
-							call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base_video, sdp_media_data_item->port, packetS->getTimeval_pt(),
-								       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
-								       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
-								       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
-							// check if the IP address is listed in nat_aliases
-							vmIP alias = match_nat_aliases(sdp_media_data_item->ip);
-							if(alias.isSet()) {
-								syslog(LOG_ERR, "[%s] nat_aliases is not supported for video", call->fbasename);
-							}
-							if(opt_sdp_reverse_ipport) {
-								syslog(LOG_ERR, "[%s] sdp_reverse_ipport is not supported for video", call->fbasename);
-							}
-						}
 					}
 				}
 			} else if(!sdp_media_data_item->ip.isSet()) {
