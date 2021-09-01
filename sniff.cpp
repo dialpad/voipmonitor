@@ -1811,10 +1811,12 @@ int get_rtpmap_from_sdp(char *sdp_text, unsigned long len, bool is_video, RTPMAP
 		if (sscanf(s, "%30u %254[^/]/%d", &payload, mimeSubtype, &rate) == 3) {
 			// store payload type and its codec into one integer with 1000 offset
 			if(is_video) {
+				syslog(LOG_DEBUG,"Inside is_vided check for codec");
 			  if (mimeSubtypeToInt(mimeSubtype) == PAYLOAD_VP8)
 			    codec = PAYLOAD_VP8;
 			  else
 					codec = PAYLOAD_VIDEO;
+				syslog(LOG_DEBUG,"codec = %d",codec);
 			} else {
 				codec = mimeSubtypeToInt(mimeSubtype);
 				if(codec == PAYLOAD_G7221) {
@@ -3226,6 +3228,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 												//m=video support
 						if (sdp_media_data_item->sdp_flags.is_video())
 						{
+						  syslog(LOG_DEBUG,"Inside process_sdp is_video check");
 							call->add_ip_port_hash(packetS->saddr_(), sdp_media_data_item->ip, ip_port_call_info::_ta_base_video, sdp_media_data_item->port, packetS->getTimeval_pt(),
 								       sessid, sdp_media_data_item->label, sdp_media_data_count > 1,
 								       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
