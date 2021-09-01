@@ -1690,6 +1690,7 @@ int get_ip_port_from_sdp(Call *call, char *sdp_text, size_t sdp_text_len,
     // Video Segment is optional in SDP
 	s = gettag(sdp_text, sdp_text_len, NULL,
 			   "m=video ", &l, &gettagLimitLen);
+	syslog(LOG_DEBUG,"1st port2 = %d",port2);
 	if (l == 0 || (*port2 = atoi(s)) == 0)
 	{
 		*port2 = 0;
@@ -1762,6 +1763,7 @@ int get_ip_port_from_sdp(Call *call, char *sdp_text, size_t sdp_text_len,
 	if(!*addr && memmem(sdp_text, sdp_text_len, "a=inactive", 10)) {
 		*inactive_ip0 = true;
 	}
+	syslog(LOG_DEBUG,"2nd port2 = %d",port2);
 
 	return 0;
 }

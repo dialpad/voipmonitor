@@ -2574,6 +2574,7 @@ int main(int argc, char *argv[]) {
 			}
 		}
 	}
+	syslog(LOG_DEBUG,"1st attempt");
 	for(int i = 0; i < argc; i++) {
 		if(strstr(argv[i], "heapchunk")) {
 			HeapChunk = true;
