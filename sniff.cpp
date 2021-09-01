@@ -1761,8 +1761,8 @@ int mimeSubtypeToInt(char *mimeSubtype) {
 	       return PAYLOAD_VP8;
        else if(strcasecmp(mimeSubtype,"telephone-event") == 0)
 	       return PAYLOAD_TELEVENT;
-//       else if(strcasecmp(mimeSubtype,"MP4A-LATM") == 0)
-//	       return PAYLOAD_MP4ALATM128;
+       else if(strcasecmp(mimeSubtype,"MP4A-LATM") == 0)
+	       return PAYLOAD_MP4ALATM128;
        else if(strcasecmp(mimeSubtype,"G726-16") == 0)
 	       return PAYLOAD_G72616;
        else if(strcasecmp(mimeSubtype,"G726-24") == 0)
