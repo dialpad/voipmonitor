@@ -3226,7 +3226,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 									       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
 						}
 						//m=video support
-						syslog(LOG_DEBUG,"process _sdp is_video: %d", (int)sdp_media_data_item->sdp_flags.is_video());
+						syslog(LOG_DEBUG,"process_sdp is_video: %d", (int)sdp_media_data_item->sdp_flags.is_video());
 						if (sdp_media_data_item->sdp_flags.is_video())
 						{
 						  syslog(LOG_DEBUG,"Inside process_sdp is_video check");
