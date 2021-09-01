@@ -1607,7 +1607,8 @@ int get_ip_port_from_sdp(Call *call, char *sdp_text, size_t sdp_text_len,
 	if(!sdp_text_len) {
 		sdp_text_len = strlen(sdp_text);
 	}
-	
+
+	syslog(LOG_DEBUG,"sdp_text=%s",sdp_text);
 	*protocol = 0;
 	*fax = 0;
 	*rtcp_mux = 0;
@@ -2010,6 +2011,7 @@ int get_rtpmap_from_sdp(char *sdp_text, unsigned long len, RTPMAP *rtpmap){
 		// return '\r' into sdp_text
 		*z = zchr;
 		if(codec || payload) {
+		  syslog(LOG_DEBUG,"codec=%d , payload=%d",codec,payload);
 			rtpmap[i].codec = codec;
 			rtpmap[i].payload = payload;
 			if(codec == PAYLOAD_ILBC) {
@@ -2825,6 +2827,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 					get_sip_peername(packetS, "\nTo:", "\nt:", to, sizeof(to), ppntt_to, ppndt_called);
 					char branch[100];
 					get_sip_branch(packetS, "via:", branch, sizeof(branch));
+					syslog(LOG_DEBUG,"tmp_port= %d, tmp_port2 = %d",tmp_port,tmp_port2);
 					call->add_ip_port_hash(packetS->saddr, tmp_addr, ip_port_call_info::_ta_base, tmp_port, packetS->header_pt, 
 							       sessid, rtp_crypto_config_list, to, branch, iscaller, rtpmap, sdp_flags);
 					// check if the IP address is listed in nat_aliases
@@ -2840,6 +2843,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 					//m=video support
 					if (tmp_port2)
 					{
+						syslog(LOG_DEBUG,"Inside if condition tmp_port= %d, tmp_port2 = %d",tmp_port,tmp_port2);
 						call->add_ip_port_hash(packetS->saddr, tmp_addr, ip_port_call_info::_ta_base_video, tmp_port2, packetS->header_pt,
 											   sessid, rtp_crypto_config_list, to, branch, iscaller, rtpmap, sdp_flags);
 						// check if the IP address is listed in nat_aliases

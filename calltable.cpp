@@ -1393,7 +1393,7 @@ Call::_read_rtp(packet_s *packetS, int iscaller, bool find_by_dest, bool stream_
 						cout << "rtpdscp " << (int)(packetS->header_ip_()->tos>>2) << endl;
 					}
 				}
-				
+				syslog(LOG_DEBUG,"from _read_rtp is_video=%d",is_video);
 				// check if codec did not changed but ignore payload 13 and 19 which is CNG and 101 which is DTMF
 				int oldcodec = rtp[i]->codec;
 				if(curpayload == 13 or curpayload == 19 or rtp[i]->codec == PAYLOAD_TELEVENT or rtp[i]->payload2 == curpayload) {
@@ -1788,6 +1788,7 @@ Call::_save_rtp(packet_s *packetS, char is_fax, char enable_save_packet, bool re
 			}
 		}
 	}
+	syslog(LOG_DEBUG,"from save_rtp is_video=%d",is_video);
 	if(enable_save_packet) {
 		if((this->silencerecording || (is_video && !opt_video_recording) || (this->flags & FLAG_SAVERTPHEADER)) && !this->isfax && !record_dtmf) {
 			if(packetS->datalen >= RTP_FIXED_HEADERLEN &&
