@@ -2974,7 +2974,7 @@ bool cHeapVM::initHugepages() {
 
 
 int main(int argc, char *argv[]) {
-	syslog(LOG_DEBUG,"Starting from here");
+	syslog(LOG_DEBUG,"Starting from here 2nd ");
 	extern unsigned int HeapSafeCheck;
 	extern unsigned int MemoryStatQuick;
 	extern unsigned int HeapChunk;
