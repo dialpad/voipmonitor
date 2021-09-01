@@ -2032,9 +2032,9 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 	unsigned sdp_media_counter = 0;
 	for(unsigned sdp_media_i = 0; sdp_media_i < sdp_media_start_count; sdp_media_i++) {
 
-		if(sdp_media_type[sdp_media_i] == sdp_media_type_video && !processing_rtp_video(call)) {
-			continue;
-		}
+//		if(sdp_media_type[sdp_media_i] == sdp_media_type_video && !processing_rtp_video(call)) {
+////			continue;
+//		}
 
 		char *sdp_media_text = sdp_media_start[sdp_media_i];
 		unsigned sdp_media_text_len = sdp_media_i < sdp_media_start_count - 1 ?
@@ -3225,7 +3225,8 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 									       sdp_media_data_item->srtp_crypto_config_list, sdp_media_data_item->srtp_fingerprint,
 									       to, branch, iscaller, sdp_media_data_item->rtpmap, sdp_media_data_item->sdp_flags);
 						}
-												//m=video support
+						//m=video support
+						syslog(LOG_DEBUG,"process _sdp is_video: %d", (int)sdp_media_data_item->sdp_flags.is_video());
 						if (sdp_media_data_item->sdp_flags.is_video())
 						{
 						  syslog(LOG_DEBUG,"Inside process_sdp is_video check");
