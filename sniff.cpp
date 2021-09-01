@@ -1926,7 +1926,7 @@ int get_rtpmap_from_sdp(char *sdp_text, unsigned long len, bool is_video, RTPMAP
 						case 64000:
 							codec = PAYLOAD_MP4ALATM64;
 							break;
-//					}
+					}
 				} else if(codec == PAYLOAD_TELEVENT && existsPayloadTelevent) {
 					*existsPayloadTelevent = true;
 				}
