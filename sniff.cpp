@@ -2032,9 +2032,9 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 	unsigned sdp_media_counter = 0;
 	for(unsigned sdp_media_i = 0; sdp_media_i < sdp_media_start_count; sdp_media_i++) {
 
-//		if(sdp_media_type[sdp_media_i] == sdp_media_type_video && !processing_rtp_video(call)) {
-////			continue;
-//		}
+		if(sdp_media_type[sdp_media_i] == sdp_media_type_video && !processing_rtp_video(call)) {
+			continue;
+		}
 
 		char *sdp_media_text = sdp_media_start[sdp_media_i];
 		unsigned sdp_media_text_len = sdp_media_i < sdp_media_start_count - 1 ?
