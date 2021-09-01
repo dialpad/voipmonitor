@@ -127,9 +127,9 @@ inline const char *codec2text(int codec) {
 		return "VP8";
 	case PAYLOAD_TELEVENT:
 		return "TELEPHONE EVENT";
-	case PAYLOAD_MP4ALATM128:
-	case PAYLOAD_MP4ALATM64:
-		return "MP4A-LATM";
+//	case PAYLOAD_MP4ALATM128:
+//	case PAYLOAD_MP4ALATM64:
+//		return "MP4A-LATM";
 	case PAYLOAD_G72616:
 	case PAYLOAD_G72624:
 	case PAYLOAD_G72632:
