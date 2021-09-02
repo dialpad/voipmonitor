@@ -2804,9 +2804,12 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 	if (!get_ip_port_from_sdp(call, sdp, sdplen,
 				  &tmp_addr, &tmp_port, &tmp_port2, &sdp_flags.protocol, &sdp_flags.is_fax, &inactive_ip0,
 				  sessid, &rtp_crypto_config_list, &sdp_flags.rtcp_mux, packetS->sip_method)){
+		syslog(LOG_DEBUG,"1st tmp_port= %d, tmp_port2 = %d",tmp_port,tmp_port2);
 		if(tmp_addr > 0 && tmp_port > 0) {
+		syslog(LOG_DEBUG,"2nd tmp_port= %d, tmp_port2 = %d",tmp_port,tmp_port2);
 			bool ok_ip_port = true;
 			if(opt_sdp_ignore_ip_port.size()) {
+			syslog(LOG_DEBUG,"3rd tmp_port= %d, tmp_port2 = %d",tmp_port,tmp_port2);
 				for(vector<ipn_port>::iterator iter = opt_sdp_ignore_ip_port.begin(); iter != opt_sdp_ignore_ip_port.end(); iter++) {
 					if(iter->ip == htonl(tmp_addr) && iter->port == tmp_port) {
 						ok_ip_port = false;
@@ -2814,6 +2817,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 					}
 				}
 			}
+			syslog(LOG_DEBUG,"4rth tmp_port= %d, tmp_port2 = %d",tmp_port,tmp_port2);
 			if((opt_sdp_ignore_ip.size() || opt_sdp_ignore_net.size()) &&
 			   check_ip_in(htonl(tmp_addr), &opt_sdp_ignore_ip, &opt_sdp_ignore_net, false)) {
 				ok_ip_port = false;
@@ -2836,7 +2840,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 				     (call->saddr == packetS->daddr && call->sport == packetS->dest)))) {
 
 					//printf("sdp [%u] port[%u]\n", tmp_addr, tmp_port);
-					syslog(LOG_DEBUG,"tmp_port= %d, tmp_port2 = %d",tmp_port,tmp_port2);
+					syslog(LOG_DEBUG,"5th tmp_port= %d, tmp_port2 = %d",tmp_port,tmp_port2);
 					// store RTP stream
 					get_rtpmap_from_sdp(sdp, sdplen, rtpmap);
 
