@@ -1604,6 +1604,8 @@ int get_ip_port_from_sdp(Call *call, char *sdp_text, size_t sdp_text_len,
 	char s1[20];
 	unsigned long gettagLimitLen = 0;
 
+	syslog(LOG_DEBUG,"starting get_ip_port_from_sdp");
+
 	if(!sdp_text_len) {
 		sdp_text_len = strlen(sdp_text);
 	}
@@ -1615,6 +1617,7 @@ int get_ip_port_from_sdp(Call *call, char *sdp_text, size_t sdp_text_len,
 	*inactive_ip0 = 0;
 	s = gettag(sdp_text,sdp_text_len, NULL,
 		   "o=", &l, &gettagLimitLen);
+	syslog(LOG_DEBUG,"For o= s is %s", s);
 	if(l == 0) return 1;
 	while(l > 0 && *s != ' ') {
 		++s;
@@ -1644,6 +1647,7 @@ int get_ip_port_from_sdp(Call *call, char *sdp_text, size_t sdp_text_len,
 	}
 	s = gettag(sdp_text, sdp_text_len, NULL,
 		   "m=audio ", &l, &gettagLimitLen);
+	syslog(LOG_DEBUG,"For m=audio s is %s", s);
 	if (l == 0 || (*port = atoi(s)) == 0){
 		unsigned long l2;
 		s = gettag(sdp_text, sdp_text_len, NULL,
@@ -1690,11 +1694,15 @@ int get_ip_port_from_sdp(Call *call, char *sdp_text, size_t sdp_text_len,
     // Video Segment is optional in SDP
 	s = gettag(sdp_text, sdp_text_len, NULL,
 			   "m=video ", &l, &gettagLimitLen);
-	syslog(LOG_DEBUG,"1st port2 = %d",port2);
+	syslog(LOG_DEBUG,"Before port2 = %d",port2);
 	if (l == 0 || (*port2 = atoi(s)) == 0)
 	{
 		*port2 = 0;
 	}
+
+	syslog(LOG_DEBUG,"For m=video s is %s", s);
+	syslog(LOG_DEBUG,"After port2 = %d",port2);
+
 
 	s = gettag(sdp_text, sdp_text_len, NULL,
 		   "a=crypto:", &l, &gettagLimitLen);
@@ -1763,7 +1771,7 @@ int get_ip_port_from_sdp(Call *call, char *sdp_text, size_t sdp_text_len,
 	if(!*addr && memmem(sdp_text, sdp_text_len, "a=inactive", 10)) {
 		*inactive_ip0 = true;
 	}
-	syslog(LOG_DEBUG,"2nd port2 = %d",port2);
+	syslog(LOG_DEBUG,"end get_ip_port_from_sdp");
 
 	return 0;
 }
@@ -1885,16 +1893,19 @@ int get_rtpmap_from_sdp(char *sdp_text, unsigned long len, RTPMAP *rtpmap){
 	int i = 0;
 	int rate = 0;
 	unsigned long gettagLimitLen = 0;
-
+	syslog(LOG_DEBUG,"Starting get_rtpmap_from_sdp");
 	s = gettag(sdp_text, len, NULL,
 		   "m=audio ", &l, &gettagLimitLen);
+	syslog(LOG_DEBUG,"s=%s",s);
 	if(!l) {
 		return 0;
 	}
+
 	do {
 		s = gettag(s, len - (s - sdp_text), NULL,
 			   "a=rtpmap:", &l, &gettagLimitLen);
-		
+		syslog(LOG_DEBUG,"Inside do while loop in get_rtpmap_from_sdp i=%d",i);
+		syslog(LOG_DEBUG,"s= %s",s);
 		char zchr;
 		if(l && 
 		   ((z = strnchr(s, '\r', len - (s - sdp_text))) ||
@@ -2027,6 +2038,8 @@ int get_rtpmap_from_sdp(char *sdp_text, unsigned long len, RTPMAP *rtpmap){
 			//printf("PAYLOAD: rtpmap[%d]:%d payload:%d, mimeSubtype [%d] [%s]\n", i, rtpmap[i], payload, codec, mimeSubtype);
 		}
 	 } while(l && i < (MAX_RTPMAP - 2));
+	 syslog(LOG_DEBUG,"Loop completed in get_rtpmap_from_sdp");
+	 syslog(LOG_DEBUG,"End get_rtpmap_from_sdp");
 	 rtpmap[i].clear(); //terminate rtpmap field
 	 return 0;
 }
@@ -2761,6 +2774,8 @@ inline Call *new_invite_register(packet_s_process *packetS, int sip_method, char
 }
 
 void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from, char *callidstr) {
+
+	syslog(LOG_DEBUG,"Starting process_sdp");
  
 	unsigned int datalen;
 	char *sdp;
@@ -2821,7 +2836,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 				     (call->saddr == packetS->daddr && call->sport == packetS->dest)))) {
 
 					//printf("sdp [%u] port[%u]\n", tmp_addr, tmp_port);
-
+					syslog(LOG_DEBUG,"tmp_port= %d, tmp_port2 = %d",tmp_port,tmp_port2);
 					// store RTP stream
 					get_rtpmap_from_sdp(sdp, sdplen, rtpmap);
 
@@ -2829,7 +2844,6 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 					get_sip_peername(packetS, "\nTo:", "\nt:", to, sizeof(to), ppntt_to, ppndt_called);
 					char branch[100];
 					get_sip_branch(packetS, "via:", branch, sizeof(branch));
-					syslog(LOG_DEBUG,"tmp_port= %d, tmp_port2 = %d",tmp_port,tmp_port2);
 					call->add_ip_port_hash(packetS->saddr, tmp_addr, ip_port_call_info::_ta_base, tmp_port, packetS->header_pt, 
 							       sessid, rtp_crypto_config_list, to, branch, iscaller, rtpmap, sdp_flags);
 					// check if the IP address is listed in nat_aliases
@@ -2888,6 +2902,7 @@ void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from
 			syslog(LOG_ERR, "callid[%s] Can't get ip/port from SDP:\n%s\n\n", callidstr, sdp);
 		}
 	}
+	syslog(LOG_DEBUG,"end process_sdp");
 }
 
 static inline void process_packet__parse_custom_headers(Call *call, packet_s_process *packetS);
