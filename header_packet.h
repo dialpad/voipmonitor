@@ -6,13 +6,28 @@
 #include "md5.h"
 
 
+#define VLAN_UNSET 0xFFFF
+#define VLAN_NOSET 0xFFFE
+#define VLAN_IS_SET(vlan) ((vlan & 0xFFF) == vlan)
+
+
+struct sPacketInfoData {
+	u_int16_t vlan;
+	u_int8_t flags;
+	inline void clear() {
+		vlan = VLAN_UNSET;
+		flags = 0;
+	}
+};
+
 struct sHeaderPacket {
 	void *stack;
 	u_int32_t packet_alloc_size;
 	u_int8_t detect_headers;
-	u_int16_t header_ip_first_offset;
+	u_int16_t header_ip_encaps_offset;
 	u_int16_t header_ip_offset;
-	int eth_protocol;
+	u_int16_t eth_protocol;
+	sPacketInfoData pid;
 	uint16_t md5[MD5_DIGEST_LENGTH / (sizeof(uint16_t) / sizeof(unsigned char))];
 	pcap_pkthdr header;
 	u_char packet[1];

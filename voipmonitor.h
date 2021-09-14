@@ -1,10 +1,11 @@
 #ifndef VOIPMONITOR_H
 #define VOIPMONITOR_H
 
-
+#include <climits>
 #include <sys/types.h>
 #include <string>
 #include <netdb.h>
+#include <unistd.h>
 #include "config.h"
 #include "common.h"
 #include "heap_safe.h"
@@ -21,8 +22,6 @@
 using namespace std;
 
 void reload_config(const char *jsonConfig = NULL);
-bool cloud_register();
-bool cloud_activecheck_send();
 void hot_restart();
 void hot_restart_with_json_config(const char *jsonConfig);
 void set_request_for_reload_capture_rules();
@@ -30,68 +29,16 @@ void reload_capture_rules();
 
 void terminate_packetbuffer();
 
-/* For compatibility with Linux definitions... */
 
-#ifdef FREEBSD
-# include <sys/endian.h>
-# define __BYTE_ORDER _BYTE_ORDER
-# define __BIG_ENDIAN _BIG_ENDIAN
-# define __LITTLE_ENDIAN _LITTLE_ENDIAN
-#else
-# include <endian.h>
-#endif
-
-#if __BYTE_ORDER == __BIG_ENDIAN
-# ifndef __BIG_ENDIAN_BITFIELD
-#  define __BIG_ENDIAN_BITFIELD
-# endif
-#else
-# ifndef __LITTLE_ENDIAN_BITFIELD
-#  define __LITTLE_ENDIAN_BITFIELD
-# endif
-#endif
-#if defined(__BIG_ENDIAN_BITFIELD) && defined(__LITTLE_ENDIAN_BITFIELD)
-# error Cannot define both __BIG_ENDIAN_BITFIELD and __LITTLE_ENDIAN_BITFIELD
-#endif
+#include "endian.h"
+#include "ip.h"
 
 
 #ifndef ulong 
 #define ulong unsigned long 
 #endif
 
-struct tcphdr2
-  {
-    u_int16_t source;
-    u_int16_t dest;
-    u_int32_t seq;
-    u_int32_t ack_seq;
-#  if __BYTE_ORDER == __LITTLE_ENDIAN
-    u_int16_t res1:4;
-    u_int16_t doff:4;
-    u_int16_t fin:1;
-    u_int16_t syn:1;
-    u_int16_t rst:1;
-    u_int16_t psh:1;
-    u_int16_t ack:1;
-    u_int16_t urg:1;
-    u_int16_t res2:2;
-#  elif __BYTE_ORDER == __BIG_ENDIAN
-    u_int16_t doff:4;
-    u_int16_t res1:4;
-    u_int16_t res2:2;
-    u_int16_t urg:1;
-    u_int16_t ack:1;
-    u_int16_t psh:1;
-    u_int16_t rst:1;
-    u_int16_t syn:1;
-    u_int16_t fin:1;
-#  else
-#   error "Adjust your <bits/endian.h> defines"
-#  endif
-    u_int16_t window;
-    u_int16_t check;
-    u_int16_t urg_ptr;
-};
+
 
 #ifndef GLOBAL_DECLARATION
 extern 
@@ -101,33 +48,33 @@ sVerbose sverb;
 void vm_terminate();
 void vm_terminate_error(const char *terminate_error);
 inline void set_terminating() {
-	extern int terminating;
+	extern volatile int terminating;
 	terminating = 1;
 }
 inline void inc_terminating() {
-	extern int terminating;
+	extern volatile int terminating;
 	++terminating;
 }
 inline void clear_terminating() {
-	extern int terminating;
+	extern volatile int terminating;
 	terminating = 0;
 }
 inline int is_terminating() {
-	extern int terminating;
+	extern volatile int terminating;
 	return(terminating);
 }
 bool is_terminating_without_error();
 
 inline void set_readend() {
-	extern int readend;
+	extern volatile int readend;
 	readend = 1;
 }
 inline void clear_readend() {
-	extern int readend;
+	extern volatile int readend;
 	readend = 0;
 }
 inline bool is_readend() {
-	extern int readend;
+	extern volatile int readend;
 	return(readend);
 }
 
@@ -149,7 +96,10 @@ bool is_sender();
 bool is_server();
 bool is_client();
 bool is_client_packetbuffer_sender();
+bool is_load_pcap_via_client(const char *sensor_string);
+bool is_remote_chart_server();
 int check_set_rtp_threads(int num_rtp_threads);
+bool is_support_for_mysql_new_store();
 
 bool use_mysql_2();
 bool use_mysql_2_http();
@@ -174,6 +124,11 @@ enum eTypeSpoolFile {
 	tsf_graph,
 	tsf_audio,
 	tsf_all
+};
+
+struct portMatrixDefaultPort {
+	char *portMatrix;
+	int defaultPort;
 };
 
 #define MAX_TYPE_SPOOL_FILE (int)tsf_all
@@ -364,22 +319,41 @@ inline unsigned spooldir_group_id() {
 	return(opt_spooldir_group_id);
 }
 
-inline bool isCloudRouter() {
+inline bool isCloud() {
 	extern bool cloud_router;
 	extern char cloud_host[256];
 	extern unsigned cloud_router_port;
 	extern char cloud_token[256];
 	return(cloud_router && cloud_host[0] && cloud_router_port && cloud_token[0]);
 }
-inline bool isCloudSsh() {
-	extern bool cloud_router;
-	extern char cloud_host[256];
-	extern char cloud_url[256];
-	extern char cloud_token[256];
-	return(!cloud_router && cloud_host[0] && cloud_url[0] && cloud_token[0]);
+
+int useNewStore();
+bool useSetId();
+bool useCsvStoreFormat();
+bool useChartsCacheInProcessCall();
+bool useChartsCacheInStore();
+bool useChartsCacheProcessThreads();
+bool existsChartsCacheServer();
+
+typedef struct mysqlSSLOptions {
+	char key[PATH_MAX];
+	char cert[PATH_MAX];
+	char caCert[PATH_MAX];
+	char caPath[PATH_MAX];
+	string ciphers;
+} mysqlSSLOptions;
+
+#define numa_balancing_set_autodisable 1
+#define numa_balancing_set_enable 2
+#define numa_balancing_set_disable 3
+
+#define numa_balancing_config_filename "/proc/sys/kernel/numa_balancing"
+
+
+inline void inc_counter_user_packets(unsigned user_index) {
+	extern volatile u_int64_t counter_user_packets[5];
+	__sync_add_and_fetch(&counter_user_packets[user_index], 1);
 }
-inline bool isCloud() {
-	return(isCloudRouter() || isCloudSsh());
-}
+
 
 #endif //VOIPMONITOR_H

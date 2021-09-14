@@ -11,6 +11,8 @@
 
 #include "tools.h"
 #include "dsp.h"
+#include "codecs.h"
+#include "calltable_base.h"
 
 //#include "jitterbuffer/asterisk/channel.h"
 #include "jitterbuffer/asterisk/abstract_jb.h"
@@ -25,7 +27,7 @@ int get_ticks_bycodec(int);
 void burstr_calculate(struct ast_channel *chan, u_int32_t received, double *burstr, double *lossr, int lastinterval);
 int calculate_mos_fromrtp(RTP *rtp, int jittertype, int lastinterval);
 double calculate_mos_g711(double ppl, double burstr, int version);
-double calculate_mos(double ppl, double burstr, int codec, unsigned int received);
+double calculate_mos(double ppl, double burstr, int codec, unsigned int received, bool call_is_connected);
 
 
 /*
@@ -115,6 +117,12 @@ The RTP header has the following format:
 #define MAX_MISORDER 100
 #define MAX_DROPOUT 3000
 
+#define ROT_SEQ(seq) ((seq) & (RTP_SEQ_MOD - 1))
+
+#define FIRST_RTCP_CONFLICT_PAYLOAD_TYPE 72
+#define LAST_RTCP_CONFLICT_PAYLOAD_TYPE  76
+
+
 struct RTPFixedHeader {
 #if     __BYTE_ORDER == __BIG_ENDIAN
 	// For big endian boxes
@@ -183,24 +191,49 @@ struct RTPMAP {
 };
 
 
+enum eRtpMarkType {
+	_mark_rtp = 1,
+	_forcemark_diff_seq = 2,
+	_forcemark_sip_sdp = 3
+};
+
+
 /**
  * This class implements operations on RTP strem
  */
 class RTP {
        /* extension header */
-       typedef struct {
-	       u_int16_t profdef;
-	       u_int16_t length; // length of extension in 32bits, this header exluded.
-       } extension_hdr_t;
+	typedef struct {
+		u_int16_t profdef;
+		u_int16_t length; // length of extension in 32bits, this header exluded.
+	} extension_hdr_t;
+	struct sRSA {
+		sRSA() {
+			counter = 0;
+			first_packet_time_us = 0;
+			last_packet_time_us = 0;
+			first_timestamp = 0;
+			last_timestamp = 0;
+			jitter = 0;
+			prev_seq = 0;
+		}
+		u_int32_t counter;
+		u_int64_t first_packet_time_us;
+		u_int64_t last_packet_time_us;
+		u_int32_t first_timestamp;
+		u_int32_t last_timestamp;
+		u_int16_t prev_seq;
+		double jitter;
+	};
 public: 
 	u_int32_t ssrc;		//!< ssrc of this RTP class
 	u_int32_t ssrc2;	//!< ssrc of this RTP class
-	u_int32_t saddr;	//!< last source IP adress 
-	u_int32_t daddr;	//!< last source IP adress 
-	u_int16_t sport;
-	u_int16_t dport;
-	u_int16_t prev_sport;
-	u_int16_t prev_dport;
+	vmIP saddr;	//!< last source IP adress 
+	vmIP daddr;	//!< last source IP adress 
+	vmPort sport;
+	vmPort dport;
+	vmPort prev_sport;
+	vmPort prev_dport;
 	bool change_src_port;
 	bool find_by_dest;
 	bool ok_other_ip_side_by_sip;
@@ -208,6 +241,8 @@ public:
 	u_int32_t avg_ptime_count;
 	RtpGraphSaver graph;
 	FILE *gfileRAW;	 //!< file for storing RTP payload in RAW format
+	bool initRAW;
+	bool needInitRawForChannelRecord;
 	char *gfileRAW_buffer;
 	char gfilename[1024];	//!< file name of this file 
 	char basefilename[1024];
@@ -226,7 +261,7 @@ public:
 	int packetization;	//!< packetization in millisenocds
 	int last_packetization;	//!< last packetization in millisenocds
 	int last_ts;		//!< last timestamp 
-	u_int64_t last_pcap_header_ts;
+	u_int64_t last_pcap_header_us;
 	bool pcap_header_ts_bad_time;
 	int packetization_iterator;	
 	int prev_payload;
@@ -234,10 +269,12 @@ public:
 	int payload2;
 	int first_codec;
 	int codec;
+	s_sdp_flags_base sdp_flags;
 	int frame_size;
 	RTPMAP rtpmap[MAX_RTPMAP];
 	RTPMAP rtpmap_other_side[MAX_RTPMAP];
 	unsigned char* data;    //!< pointer to UDP payload
+	iphdr2 *header_ip;
 	int len;		//!< lenght of UDP payload
 	unsigned char* payload_data;    //!< pointer to RTP payload
 	int payload_len;	//!< lenght of RTP payload
@@ -250,12 +287,12 @@ public:
 	int sid;
 	int prev_sid;
 	int pinformed;
-	unsigned int first_packet_time;
-	unsigned int first_packet_usec;
+	u_int64_t first_packet_time_us;
+	u_int64_t last_packet_time_us;
 	unsigned int last_end_timestamp;
 	char lastdtmf;
-	bool forcemark;
-	bool forcemark2;
+	u_int8_t forcemark;
+	u_int8_t forcemark2;
 	bool forcemark_by_owner;
 	bool forcemark_by_owner_set;
 	unsigned forcemark_owner_used;
@@ -266,9 +303,11 @@ public:
 	uint8_t	mosf1_min;
 	uint8_t	mosf2_min;
 	uint8_t	mosAD_min;
+	uint8_t	mosSilence_min;
 	float	mosf1_avg;
 	float	mosf2_avg;
 	float	mosAD_avg;
+	float	mosSilence_avg;
 	uint32_t	mos_counter;
 	char save_mos_graph_wait;
 	timeval _last_ts;
@@ -287,10 +326,13 @@ public:
 	bool stream_in_multiple_calls;
 	uint32_t tailedframes;
 	uint8_t change_packetization_iterator;
+	bool last_was_silence;
+	uint32_t sum_silence_changes;
+	bool confirm_both_sides_by_sdp;
 
 	/* RTCP data */
 	struct rtcp_t {
-		unsigned int loss;
+		int loss;
 		unsigned int maxfr;
 		double avgfr;
 		unsigned int maxjitter;
@@ -298,6 +340,16 @@ public:
 		unsigned int counter;
 		unsigned int jitt_counter;
 		unsigned int fraclost_pkt_counter;
+		u_int32_t lsr4compare;
+		u_int32_t last_lsr;
+		u_int32_t last_lsr_delay;
+		struct timeval sniff_ts;
+		unsigned int rtd_sum;	/* roundtrip delay */
+		unsigned int rtd_count;
+		unsigned int rtd_max;
+		unsigned int rtd_w_sum;	/* roundtrip delay by wireshark*/
+		unsigned int rtd_w_count;
+		unsigned int rtd_w_max;
 	} rtcp;
 
 	struct rtcp_xr_t {
@@ -305,7 +357,8 @@ public:
 		double 		avgfr;
 		uint8_t		minmos;
 		double 		avgmos;
-		unsigned int counter;
+		unsigned int counter_fr;
+		unsigned int counter_mos;
 	} rtcp_xr;
 
 	unsigned int samplerate;
@@ -357,6 +410,7 @@ public:
 	unsigned char last_interval_mosf1;
 	unsigned char last_interval_mosf2;
 	unsigned char last_interval_mosAD;
+	unsigned char last_interval_mosSilence;
 
 	struct dsp *DSP;
 
@@ -366,7 +420,7 @@ public:
 	* constructor which allocates and zeroing stats structure
 	*
 	*/
-	RTP(int sensor_id, u_int32_t sensor_ip);
+	RTP(int sensor_id, vmIP sensor_ip);
 
 	/**
 	* destructor
@@ -384,7 +438,7 @@ public:
 	 * @param channel pointer to the channel structure which holds statistics and jitterbuffer data
 	 *
 	*/
-	void jitterbuffer(struct ast_channel *channel, int savePayload);
+	void jitterbuffer(struct ast_channel *channel, bool save_audio, bool energylevels, bool mos_lqo);
 
 	void process_dtmf_rfc2833();
 
@@ -398,8 +452,8 @@ public:
 	 * @param saddr source IP adress of the packet
 	 *
 	*/
-	bool read(unsigned char* data, unsigned *len, struct pcap_pkthdr *header, u_int32_t saddr, u_int32_t daddr, u_int16_t sport, u_int16_t dport,
-		  int sensor_id, u_int32_t sensor_ip, char *ifname = NULL);
+	bool read(unsigned char* data, iphdr2 *header_ip, unsigned *len, struct pcap_pkthdr *header, vmIP saddr, vmIP daddr, vmPort sport, vmPort dport,
+		  int sensor_id, vmIP sensor_ip, char *ifname = NULL);
 
 
 	/**
@@ -407,12 +461,11 @@ public:
 	 *
 	 * Used for temporary operations on RTP packet
 	 *
-	 * @param data pointer to the packet buffer
-	 * @param header header structure of the packet
-	 * @param saddr source IP adress of the packet
+	 * @param data pointer to the data packet buffer
+	 * @param len data length
 	 *
 	*/
-	void fill(unsigned char* data, int len, struct pcap_pkthdr *header, u_int32_t saddr, u_int32_t daddr, u_int16_t sport, u_int16_t dport);
+	void fill_data(unsigned char* data, int len);
 
 	/**
 	 * @brief get version
@@ -422,6 +475,7 @@ public:
 	 * @return padding RTP version
 	*/
 	const unsigned char getVersion() { return getHeader()->version; };
+	static const unsigned char getVersion(void *data) { return getHeader(data)->version; };
 	
 	/**
 	 * @brief get sequence sumber
@@ -449,6 +503,7 @@ public:
 	 * @return SSRC
 	*/
 	const u_int32_t getSSRC() { return htonl(getHeader()->sources[0]); };
+	static const u_int32_t getSSRC(void *data) { return htonl(getHeader(data)->sources[0]); };
 
 	/**
 	 * @brief get Payload 
@@ -457,9 +512,10 @@ public:
 	 *
 	 * @return SSRC
 	*/
-	const int getPayload() { return getHeader()->payload; };
+	inline const int getPayload() { return getHeader()->payload; };
+	static inline const int getPayload(void *data) { return getHeader(data)->payload; };
 	/**
-	 * @brief get SSRC
+	 * @brief get Received
 	 *
 	 * this function gets number of received packets
 	 *
@@ -467,14 +523,18 @@ public:
 	*/
 	const u_int32_t getReceived() { return s->received; };
 
-	/**
-	 * @brief get SSRC
-	 *
-	 * this function gets number of received packets
-	 *
-	 * @return received packets
-	*/
-	const int getMarker() { return forcemark ? 1 : getHeader()->marker; };
+	inline const int getMarker() { return getHeader()->marker ? 1 : forcemark; };
+	
+	inline const bool isSetMarkerInHeader() { return getHeader()->marker; };
+	static inline const bool isSetMarkerInHeader(void *data) { return getHeader(data)->marker; };
+	
+	static inline const bool isRTCP_enforce(void *data) { 
+		if(isSetMarkerInHeader(data)) {
+			int payload = getPayload(data);
+			return(payload >= FIRST_RTCP_CONFLICT_PAYLOAD_TYPE && payload <= LAST_RTCP_CONFLICT_PAYLOAD_TYPE);
+		}
+		return(false);
+	};
 
 	/**
 	 * @brief get padding
@@ -550,7 +610,7 @@ public:
 	
 	inline void clearAudioBuff(class Call *call, ast_channel *channel);
 	
-	bool eqAddrPort(u_int32_t saddr, u_int32_t daddr, u_int16_t sport, u_int16_t dport) {
+	bool eqAddrPort(vmIP saddr, vmIP daddr, vmPort sport, vmPort dport) {
 		return(this->saddr == saddr && this->daddr == daddr &&
 		       this->sport == sport && this->dport == dport);
 	}
@@ -576,6 +636,34 @@ public:
 		return(true);
 	}
 
+	void rtp_stream_analysis_output();
+	
+	double mos_min_from_avg(bool *null, bool prefer_f2 = false);
+	double mos_min_from_min(bool *null, bool prefer_f2 = false);
+	double mos_xr_min(bool *null);
+	double mos_xr_avg(bool *null);
+	double mos_silence_min(bool *null);
+	double mos_silence_avg(bool *null);
+	double packet_loss(bool *null);
+	double jitter_avg(bool *null);
+	double jitter_max(bool *null);
+	double delay_sum(bool *null);
+	double delay_cnt(bool *null);
+	double jitter_rtcp_avg(bool *null);
+	double jitter_rtcp_max(bool *null);
+	double fr_rtcp_avg(bool *null);
+	double fr_rtcp_max(bool *null);
+	
+	void addEnergyLevel(u_int16_t energyLevel, u_int16_t seq);
+	void addEnergyLevel(void *data, int datalen, int codec);
+	
+	bool is_video() {
+		return(sdp_flags.is_video());
+	}
+	bool allowed_for_ab() {
+		return(!is_video());
+	}
+
 private: 
 	/*
 	* Per-source state information
@@ -586,6 +674,7 @@ private:
 	int nintervals;
 
 	inline RTPFixedHeader* getHeader() const { return reinterpret_cast<RTPFixedHeader*>(data); }
+	static inline RTPFixedHeader* getHeader(void *data) { return reinterpret_cast<RTPFixedHeader*>(data); }
 	
 	void update_stats();
 	void update_graph_silence();
@@ -594,18 +683,26 @@ private:
 	int update_seq(u_int16_t seq);
 
 	int sensor_id;
-	u_int32_t sensor_ip;
+	vmIP sensor_ip;
 	int index_call_ip_port;
 	bool index_call_ip_port_by_dest;
 	
 	int _last_sensor_id;
 	char _last_ifname[10];
 	
-	u_long lastTimeSyslog;
+	u_int64_t lastTimeSyslog;
 	
 	bool stopReadProcessing;
 	
 	class RTPsecure *srtp_decrypt;
+	
+	sRSA rsa;
+	
+	SimpleChunkBuffer *energylevels;
+	u_int16_t energylevels_last_seq;
+	bool energylevels_via_jb;
+	u_int32_t energylevels_counter;
+	
 friend class Call;
 };
 
@@ -643,18 +740,21 @@ public:
 	void unlock() {
 		pthread_mutex_unlock(&mlock);
 	}
-	void update(uint32_t saddr, uint32_t time, uint8_t mosf1, uint8_t mosf2, uint8_t mosAD, uint16_t jitter, double loss);
-	void flush_and_clean(map<uint32_t, node_t> *map, bool needLock = true);
+	void update(vmIP saddr, uint32_t time, uint8_t mosf1, uint8_t mosf2, uint8_t mosAD, uint16_t jitter, double loss);
+	void flush_and_clean(map<vmIP, node_t> *map, bool needLock = true);
 	void flush();
 
 private:
-	map<uint32_t, node_t>	saddr_map[2];
-	map<uint32_t, node_t>	*maps[2];
+	map<vmIP, node_t> saddr_map[2];
+	map<vmIP, node_t> *maps[2];
 	int mod;
 	pthread_mutex_t mlock;
 	uint32_t lasttime1;
 	uint32_t lasttime2;
 };
+
+
+u_int16_t get_energylevel(u_char *data, int datalen, int codec);
 
 
 #endif

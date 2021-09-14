@@ -11,16 +11,21 @@
 #include "tools.h"
 #include "voipmonitor.h"
 #include "md5.h"
+#include "header_packet.h"
 
 #define PCAP_BLOCK_STORE_HEADER_STRING		"pcap_block_store"
 #define PCAP_BLOCK_STORE_HEADER_STRING_LEN	16
-#define PCAP_BLOCK_STORE_HEADER_VERSION		3
+#define PCAP_BLOCK_STORE_HEADER_VERSION		7
+
+#define FLAG_AUDIOCODES 1
+#define FLAG_FRAGMENTED 2
 
 
 extern int opt_enable_ss7;
 extern int opt_enable_http;
 extern int opt_enable_webrtc;
 extern int opt_enable_ssl;
+extern bool opt_ipfix;
 
 struct pcap_pkthdr_fix_size {
 	uint32_t ts_tv_sec;
@@ -33,7 +38,14 @@ struct pcap_pkthdr_fix_size {
 
 struct pcap_pkthdr_plus {
 	inline pcap_pkthdr_plus() {
+		#if __GNUC__ >= 8
+		#pragma GCC diagnostic push
+		#pragma GCC diagnostic ignored "-Wclass-memaccess"
+		#endif
 		memset(this, 0, sizeof(pcap_pkthdr_plus));
+		#if __GNUC__ >= 8
+		#pragma GCC diagnostic pop
+		#endif
 	}
 	inline void convertFromStdHeader(pcap_pkthdr *header) {
 		this->std = 0;
@@ -52,15 +64,26 @@ struct pcap_pkthdr_plus {
 			this->header_std = header;
 			this->std = 1;
 		}
+		#if __GNUC__ >= 8
+		#pragma GCC diagnostic push
+		#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
+		#endif
 		return(&this->header_std);
+		#if __GNUC__ >= 8
+		#pragma GCC diagnostic pop
+		#endif
 	}
 	inline pcap_pkthdr getStdHeader() {
-		pcap_pkthdr header;
-		header.ts.tv_sec = this->header_fix_size.ts_tv_sec;
-		header.ts.tv_usec = this->header_fix_size.ts_tv_usec;
-		header.caplen = this->header_fix_size.caplen;
-		header.len = this->header_fix_size.len;
-		return(header);
+		if(this->std) {
+			return(this->header_std);
+		} else {
+			pcap_pkthdr header;
+			header.ts.tv_sec = this->header_fix_size.ts_tv_sec;
+			header.ts.tv_usec = this->header_fix_size.ts_tv_usec;
+			header.caplen = this->header_fix_size.caplen;
+			header.len = this->header_fix_size.len;
+			return(header);
+		}
 	}
 	inline uint32_t get_caplen() {
 		return(std ? this->header_std.caplen : this->header_fix_size.caplen);
@@ -88,16 +111,18 @@ struct pcap_pkthdr_plus {
 	inline uint32_t get_tv_usec() {
 		return(std ? this->header_std.ts.tv_usec : this->header_fix_size.ts_tv_usec);
 	}
-	inline u_long get_time_ms() {
-		return(get_tv_sec() * 1000ul + get_tv_usec() / 1000);
+	inline u_int64_t get_time_ms() {
+		return(get_tv_sec() * 1000ull + get_tv_usec() / 1000);
 	}
 	union {
 		pcap_pkthdr_fix_size header_fix_size;
 		pcap_pkthdr header_std;
-	};
+	}  __attribute__((packed));
+	u_int16_t header_ip_encaps_offset;
 	u_int16_t header_ip_offset;
 	int16_t std;
 	u_int16_t dlink;
+	sPacketInfoData pid;
 };
 
 struct pcap_pkthdr_plus2 : public pcap_pkthdr_plus {
@@ -108,9 +133,9 @@ struct pcap_pkthdr_plus2 : public pcap_pkthdr_plus {
 		detect_headers = 0;
 		md5[0] = 0;
 		ignore = false;
+		pid.clear();
 	}
 	u_int8_t detect_headers;
-	u_int16_t header_ip_first_offset;
 	u_int16_t eth_protocol;
 	uint16_t md5[MD5_DIGEST_LENGTH / (sizeof(uint16_t) / sizeof(unsigned char))];
 	u_int8_t ignore;
@@ -137,7 +162,14 @@ struct pcap_block_store {
 	struct pcap_block_store_header {
 		pcap_block_store_header() {
 			extern bool opt_pcap_queues_mirror_require_confirmation;
+			#if __GNUC__ >= 8
+			#pragma GCC diagnostic push
+			#pragma GCC diagnostic ignored "-Wstringop-truncation"
+			#endif
 			strncpy(this->title, PCAP_BLOCK_STORE_HEADER_STRING, PCAP_BLOCK_STORE_HEADER_STRING_LEN);
+			#if __GNUC__ >= 8
+			#pragma GCC diagnostic pop
+			#endif
 			this->version = PCAP_BLOCK_STORE_HEADER_VERSION;
 			this->hm = plus;
 			this->size = 0;
@@ -170,6 +202,12 @@ struct pcap_block_store {
 		this->offsets = NULL;
 		this->block = NULL;
 		this->is_voip = NULL;
+		#if DEBUG_SYNC_PCAP_BLOCK_STORE
+		this->_sync_packets_lock = NULL;
+		#if DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH
+		this->_sync_packets_flag = NULL;
+		#endif
+		#endif
 		this->destroy();
 		this->restoreBuffer = NULL;
 		this->destroyRestoreBuffer();
@@ -177,20 +215,10 @@ struct pcap_block_store {
 		this->filePosition = 0;
 		this->timestampMS = getTimeMS_rdtsc();
 		this->_sync_packet_lock = 0;
-		#if DEBUG_SYNC_PCAP_BLOCK_STORE
-		this->_sync_packets_lock = new FILE_LINE(17001) volatile int8_t[DEBUG_SYNC_PCAP_BLOCK_STORE_LOCK_LENGTH];
-		memset((void*)this->_sync_packets_lock, 0, sizeof(int8_t) * DEBUG_SYNC_PCAP_BLOCK_STORE_LOCK_LENGTH);
-		this->_sync_packets_flag = new FILE_LINE(17002) volatile int8_t[DEBUG_SYNC_PCAP_BLOCK_STORE_LOCK_LENGTH * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH];
-		memset((void*)this->_sync_packets_flag, 0, sizeof(int8_t) * DEBUG_SYNC_PCAP_BLOCK_STORE_LOCK_LENGTH * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH);
-		#endif
 	}
 	~pcap_block_store() {
 		this->destroy();
 		this->destroyRestoreBuffer();
-		#if DEBUG_SYNC_PCAP_BLOCK_STORE
-		delete [] this->_sync_packets_lock;
-		delete [] this->_sync_packets_flag;
-		#endif
 	}
 	inline bool add_hp(pcap_pkthdr_plus *header, u_char *packet, int memcpy_packet_size = 0);
 	inline void inc_h(pcap_pkthdr_plus2 *header);
@@ -210,6 +238,9 @@ struct pcap_block_store {
 	}
 	inline u_char* get_packet(size_t indexItem) {
 		return((u_char*)(this->block + this->offsets[indexItem] + (hm == plus2 ? sizeof(pcap_pkthdr_plus2) : sizeof(pcap_pkthdr_plus))));
+	}
+	inline u_char* get_space_after_packet(size_t indexItem) {
+		return(get_packet(indexItem) + get_header(indexItem)->get_caplen());
 	}
 	inline bool is_ignore(size_t indexItem) {
 		return(((pcap_pkthdr_plus2*)(this->block + this->offsets[indexItem]))->ignore);
@@ -232,9 +263,14 @@ struct pcap_block_store {
 	size_t getUseSize() {
 		return(this->size_compress ? this->size_compress : this->size);
 	}
+	size_t getUseAllSize() {
+		return((this->size_compress ? this->size_compress : this->size) + 
+		       sizeof(uint32_t) * offsets_size + 
+		       sizeof(*this));
+	}
 	u_char *getSaveBuffer(uint32_t block_counter = 0);
 	void restoreFromSaveBuffer(u_char *saveBuffer);
-	int addRestoreChunk(u_char *buffer, size_t size, size_t *offset = NULL, bool autoRestore = true);
+	int addRestoreChunk(u_char *buffer, size_t size, size_t *offset = NULL, bool restoreFromStore = false, string *error = NULL);
 	string addRestoreChunk_getErrorString(int errorCode);
 	inline bool compress();
 	bool compress_snappy();
@@ -250,10 +286,19 @@ struct pcap_block_store {
 		}
 		return(this->offsets[this->offsets_size - 1] < this->size);
 	}
-	bool check_headers() {
+	bool check_headers(string **error) {
 		for(size_t i = 0; i < this->count; i++) {
 			pcap_pkthdr_plus *header = (pcap_pkthdr_plus*)(this->block + this->offsets[i]);
-			if(header->header_fix_size.caplen > 65535 || header->header_ip_offset > 1000) {
+			if(header->header_fix_size.caplen > 65535) {
+				if(error) {
+					*error = new FILE_LINE(0) string("caplen = " + intToString(header->header_fix_size.caplen));
+				}
+				return(false);
+			}
+			if(header->header_ip_offset > 1000) {
+				if(error) {
+					*error = new FILE_LINE(0) string("header_ip_offset = " + intToString(header->header_ip_offset));
+				}
 				return(false);
 			}
 		}
@@ -267,10 +312,12 @@ struct pcap_block_store {
 		__sync_add_and_fetch(&this->_sync_packet_lock, 1);
 		#if DEBUG_SYNC_PCAP_BLOCK_STORE
 		__sync_add_and_fetch(&this->_sync_packets_lock[index], 1);
+		#if DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH
 		if(flag && this->_sync_packets_flag[index * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH] < DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH - 1) {
-			this->_sync_packets_flag[index * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH + this->_sync_packets_flag[index * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH] + 1] = flag;
-			++this->_sync_packets_flag[index * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH];
+			__sync_add_and_fetch(&this->_sync_packets_flag[index * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH + this->_sync_packets_flag[index * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH] + 1], flag);
+			__sync_add_and_fetch(&this->_sync_packets_flag[index * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH], 1);
 		}
+		#endif
 		#endif
 	}
 	#if DEBUG_SYNC_PCAP_BLOCK_STORE
@@ -295,10 +342,12 @@ struct pcap_block_store {
 	void add_flag(int /*index*/, int /*flag*/) {
 	#endif
 		#if DEBUG_SYNC_PCAP_BLOCK_STORE
+		#if DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH
 		if(flag && this->_sync_packets_flag[index * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH] < DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH - 1) {
-			this->_sync_packets_flag[index * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH + this->_sync_packets_flag[index * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH] + 1] = flag;
-			++this->_sync_packets_flag[index * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH];
+			__sync_add_and_fetch(&this->_sync_packets_flag[index * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH + this->_sync_packets_flag[index * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH] + 1], flag);
+			__sync_add_and_fetch(&this->_sync_packets_flag[index * DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH], 1);
 		}
+		#endif
 		#endif
 	}
 	bool enableDestroy() {
@@ -325,9 +374,9 @@ struct pcap_block_store {
 			is_voip[index] = 1;
 		}
 	}
-	u_long getLastPacketHeaderTimeMS() {
+	u_int64_t getLastPacketHeaderTimeMS() {
 		pcap_pkthdr_plus *pkthdr = (pcap_pkthdr_plus*)(this->block + this->offsets[this->count - 1]);
-		return(pkthdr->header_fix_size.ts_tv_sec * 1000ul + pkthdr->header_fix_size.ts_tv_usec / 1000);
+		return(getTimeMS(pkthdr->header_fix_size.ts_tv_sec, pkthdr->header_fix_size.ts_tv_usec));
 	}
 	header_mode hm;
 	uint32_t *offsets;
@@ -340,7 +389,7 @@ struct pcap_block_store {
 	bool full;
 	uint16_t dlink;
 	int16_t sensor_id;
-	uint32_t sensor_ip;
+	vmIP sensor_ip;
 	char ifname[10];
 	u_int32_t block_counter;
 	bool require_confirmation;
@@ -348,12 +397,14 @@ struct pcap_block_store {
 	size_t restoreBufferSize;
 	size_t restoreBufferAllocSize;
 	u_int idFileStore;
-	u_long filePosition;
-	u_long timestampMS;
+	u_int64_t filePosition;
+	u_int64_t timestampMS;
 	volatile int _sync_packet_lock;
 	#if DEBUG_SYNC_PCAP_BLOCK_STORE
 	volatile int8_t *_sync_packets_lock;
+	#if DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH
 	volatile int8_t *_sync_packets_flag;
+	#endif
 	#endif
 	u_int8_t *is_voip;
 };

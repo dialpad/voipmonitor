@@ -587,19 +587,26 @@ PACKAGE_URL=''
 ac_unique_file="voipmonitor.cpp"
 ac_subst_vars='LTLIBOBJS
 LIBOBJS
+HEAPPROF_CXXFLAG
 LIBTCMALLOC
 LIBGNUTLSSTATIC
 LIBGNUTLS
-LIBSSH
 LIBLZO
 LIBLZMA
 LIBFFT
 LIBPNG
+MYSQL_WITHOUT_SSL_SUPPORT
 MYSQLINCLUDE
 MYSQLLIB
 MYSQLCFLAGS
+DPDKLIBRARY
+DPDKINCLUDE
+LIBCDIRINC
+LIBCDIRLIB
 LIBJSON_NAME
 LIBLD
+OPENSSLDIRINC
+OPENSSLDIRLIB
 SET_MAKE
 INSTALL_DATA
 INSTALL_SCRIPT
@@ -633,6 +640,7 @@ infodir
 docdir
 oldincludedir
 includedir
+runstatedir
 localstatedir
 sharedstatedir
 sysconfdir
@@ -655,7 +663,12 @@ SHELL'
 ac_subst_files=''
 ac_user_opts='
 enable_option_checking
+with_openssl_dir
+with_libc_dir
+with_dpdk_include
+with_dpdk_lib
 with_mysql
+with_heap_profiler
 '
       ac_precious_vars='build_alias
 host_alias
@@ -706,6 +719,7 @@ datadir='${datarootdir}'
 sysconfdir='${prefix}/etc'
 sharedstatedir='${prefix}/com'
 localstatedir='${prefix}/var'
+runstatedir='${localstatedir}/run'
 includedir='${prefix}/include'
 oldincludedir='/usr/include'
 docdir='${datarootdir}/doc/${PACKAGE_TARNAME}'
@@ -958,6 +972,15 @@ do
   | -silent | --silent | --silen | --sile | --sil)
     silent=yes ;;
 
+  -runstatedir | --runstatedir | --runstatedi | --runstated \
+  | --runstate | --runstat | --runsta | --runst | --runs \
+  | --run | --ru | --r)
+    ac_prev=runstatedir ;;
+  -runstatedir=* | --runstatedir=* | --runstatedi=* | --runstated=* \
+  | --runstate=* | --runstat=* | --runsta=* | --runst=* | --runs=* \
+  | --run=* | --ru=* | --r=*)
+    runstatedir=$ac_optarg ;;
+
   -sbindir | --sbindir | --sbindi | --sbind | --sbin | --sbi | --sb)
     ac_prev=sbindir ;;
   -sbindir=* | --sbindir=* | --sbindi=* | --sbind=* | --sbin=* \
@@ -1095,7 +1118,7 @@ fi
 for ac_var in	exec_prefix prefix bindir sbindir libexecdir datarootdir \
 		datadir sysconfdir sharedstatedir localstatedir includedir \
 		oldincludedir docdir infodir htmldir dvidir pdfdir psdir \
-		libdir localedir mandir
+		libdir localedir mandir runstatedir
 do
   eval ac_val=\$$ac_var
   # Remove trailing slashes.
@@ -1248,6 +1271,7 @@ Fine tuning of the installation directories:
   --sysconfdir=DIR        read-only single-machine data [PREFIX/etc]
   --sharedstatedir=DIR    modifiable architecture-independent data [PREFIX/com]
   --localstatedir=DIR     modifiable single-machine data [PREFIX/var]
+  --runstatedir=DIR       modifiable per-process data [LOCALSTATEDIR/run]
   --libdir=DIR            object code libraries [EPREFIX/lib]
   --includedir=DIR        C header files [PREFIX/include]
   --oldincludedir=DIR     C header files for non-gcc [/usr/include]
@@ -1276,7 +1300,12 @@ if test -n "$ac_init_help"; then
 Optional Packages:
   --with-PACKAGE[=ARG]    use PACKAGE [ARG=yes]
   --without-PACKAGE       do not use PACKAGE (same as --with-PACKAGE=no)
+  --with-openssl-dir=PATH path to openssl lib directory
+  --with-libc-dir=PATH path to explicit libc directory (for static building)
+  --with-dpdk-include=PATH path to explicit include files
+  --with-dpdk-lib=PATH path to explicit lib files
   --with-mysql=PATH path to mysql_config binary or mysql prefix dir
+  --with-heap_profiler    use tcmalloc library with heap profiler
 
 Some influential environment variables:
   CXX         C++ compiler command
@@ -1891,6 +1920,9 @@ ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
 ac_config_headers="$ac_config_headers config.h"
 
+
+# test platform
+PLATFORM=`uname`
 
 # Checks for programs.
 ac_ext=cpp
@@ -3093,8 +3125,26 @@ $as_echo "no" >&6; }
 fi
 
 
+
 LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/lib"
 LDFLAGS="$LDFLAGS -L/usr/local/lib"
+
+
+# Check whether --with-openssl-dir was given.
+if test "${with_openssl_dir+set}" = set; then :
+  withval=$with_openssl_dir;
+	TMPOPENSSLDIRLIB=-L$withval/lib
+	TMPOPENSSLDIRINC=-I$withval/include
+	OPENSSLDIRLIB=$TMPOPENSSLDIRLIB
+
+	OPENSSLDIRINC=$TMPOPENSSLDIRINC
+
+	LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$TMPOPENSSLDIRLIB"
+	LDFLAGS="$LDFLAGS $TMPOPENSSLDIRLIB"
+
+fi
+
+
 
 # Checks for libraries.
 # FIXME: Replace `main' with a function in `-lc':
@@ -3504,7 +3554,42 @@ _ACEOF
 fi
 
 # FIXME: Replace `main' with a function in `-lssl':
-#AC_CHECK_LIB([ssl], [main])
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for main in -lssl" >&5
+$as_echo_n "checking for main in -lssl... " >&6; }
+if ${ac_cv_lib_ssl_main+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  ac_check_lib_save_LIBS=$LIBS
+LIBS="-lssl  $LIBS"
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+
+int
+main ()
+{
+return main ();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  ac_cv_lib_ssl_main=yes
+else
+  ac_cv_lib_ssl_main=no
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+LIBS=$ac_check_lib_save_LIBS
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_ssl_main" >&5
+$as_echo "$ac_cv_lib_ssl_main" >&6; }
+if test "x$ac_cv_lib_ssl_main" = xyes; then :
+  HAVE_OPENSSL=1
+else
+  as_fn_error $? "Unable to find ssl library. apt-get install libssl-dev | yum install openssl-devel" "$LINENO" 5
+fi
+
 # FIXME: Replace `main' with a function in `-lvorbis':
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for main in -lvorbis" >&5
 $as_echo_n "checking for main in -lvorbis... " >&6; }
@@ -3725,49 +3810,6 @@ if test $CURL_VER_MAJOR -eq 7 && test $CURL_VER_MINOR -ge 34; then
 $as_echo "$as_me: Curl version is ok ($CURL_VER_MAJOR.$CURL_VER_MINOR)." >&6;}
 else
 	as_fn_error $? "Bad curl version ($CURL_VER_MAJOR.$CURL_VER_MINOR). Version 7.34 or higher is required." "$LINENO" 5
-fi
-
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for ssh_forward_accept in -lssh" >&5
-$as_echo_n "checking for ssh_forward_accept in -lssh... " >&6; }
-if ${ac_cv_lib_ssh_ssh_forward_accept+:} false; then :
-  $as_echo_n "(cached) " >&6
-else
-  ac_check_lib_save_LIBS=$LIBS
-LIBS="-lssh  $LIBS"
-cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-
-/* Override any GCC internal prototype to avoid an error.
-   Use char because int might match the return type of a GCC
-   builtin and then its argument prototype would still apply.  */
-#ifdef __cplusplus
-extern "C"
-#endif
-char ssh_forward_accept ();
-int
-main ()
-{
-return ssh_forward_accept ();
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_link "$LINENO"; then :
-  ac_cv_lib_ssh_ssh_forward_accept=yes
-else
-  ac_cv_lib_ssh_ssh_forward_accept=no
-fi
-rm -f core conftest.err conftest.$ac_objext \
-    conftest$ac_exeext conftest.$ac_ext
-LIBS=$ac_check_lib_save_LIBS
-fi
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_ssh_ssh_forward_accept" >&5
-$as_echo "$ac_cv_lib_ssh_ssh_forward_accept" >&6; }
-if test "x$ac_cv_lib_ssh_ssh_forward_accept" = xyes; then :
-  HAVE_LIBSSH=1
-else
-  { $as_echo "$as_me:${as_lineno-$LINENO}: Your libssh is old or missing - cloud feature is disabled. apt-get install libssh-dev | yum install libssh-devel | or compile from source https://red.libssh.org/projects/libssh/files" >&5
-$as_echo "$as_me: Your libssh is old or missing - cloud feature is disabled. apt-get install libssh-dev | yum install libssh-devel | or compile from source https://red.libssh.org/projects/libssh/files" >&6;}
 fi
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for main in -ljson" >&5
@@ -4060,6 +4102,42 @@ else
 fi
 
 
+
+# Check whether --with-libc-dir was given.
+if test "${with_libc_dir+set}" = set; then :
+  withval=$with_libc_dir;
+	TMPLIBCDIRLIB=-L$withval/lib
+	TMPLIBCDIRINC=-I$withval/include
+	LIBCDIRLIB=$TMPLIBCDIRLIB
+
+	LIBCDIRINC=$TMPLIBCDIRINC
+
+
+fi
+
+
+
+
+
+# Check whether --with-dpdk-include was given.
+if test "${with_dpdk_include+set}" = set; then :
+  withval=$with_dpdk_include;
+	TMPDPDK=-I$withval
+	DPDKINCLUDE=$TMPDPDK
+
+
+fi
+
+
+# Check whether --with-dpdk-lib was given.
+if test "${with_dpdk_lib+set}" = set; then :
+  withval=$with_dpdk_lib;
+	TMPDPDKLIB=-L$withval
+	DPDKLIBRARY=$TMPDPDKLIB
+
+
+fi
+
 # Check for MySQL libraries (or MariaDB)
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for mysql_config executable" >&5
 $as_echo_n "checking for mysql_config executable... " >&6; }
@@ -4092,8 +4170,8 @@ fi
 
 if test "x$MYSQL_CONFIG" = "x"
 then
-    { $as_echo "$as_me:${as_lineno-$LINENO}: result: not found - apt-get install libmysqlclient-dev" >&5
-$as_echo "not found - apt-get install libmysqlclient-dev" >&6; }
+    { $as_echo "$as_me:${as_lineno-$LINENO}: result: not found - apt-get install libmysqlclient-dev | yum install mysql-devel or yum install mysql-community-devel" >&5
+$as_echo "not found - apt-get install libmysqlclient-dev | yum install mysql-devel or yum install mysql-community-devel" >&6; }
     exit 3
 else
     MYSQLCFLAGS=`$MYSQL_CONFIG --cflags`
@@ -4145,9 +4223,38 @@ _ACEOF
   LIBS="-lmysqlclient $LIBS"
 
 else
-  as_fn_error $? "Unable to find libmysqlclient. apt-get install libmysqlclient-dev | yum install mysql-devel | pkg install mysql56-client" "$LINENO" 5
+  as_fn_error $? "Unable to find libmysqlclient. apt-get install libmysqlclient-dev | yum install mysql-devel or yum install mysql-community-devel| pkg install mysql56-client" "$LINENO" 5
 fi
 
+
+# check if mysql knows the MYSQL_OPT_SSL_* options
+# mariadb 10.3 don't know --cxxflags option in mysql_config
+ORIGCFLAGS=$CFLAGS
+ORIGCXXFLAGS=$CXXFLAGS
+CFLAGS=`$MYSQL_CONFIG --cflags`
+CXXFLAGS=`$MYSQL_CONFIG --cflags`
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+#include <mysql.h>
+int
+main ()
+{
+ int i = MYSQL_OPT_SSL_ENFORCE;
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"; then :
+  { $as_echo "$as_me:${as_lineno-$LINENO}: Mysql SSL options found." >&5
+$as_echo "$as_me: Mysql SSL options found." >&6;}
+else
+  MYSQL_WITHOUT_SSL_SUPPORT="yes"
+{ $as_echo "$as_me:${as_lineno-$LINENO}: Mysql SSL options NOT found!" >&5
+$as_echo "$as_me: Mysql SSL options NOT found!" >&6;}
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+CFLAGS=$ORIGCFLAGS
+CXXFLAGS=$ORIGCXXFLAGS
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for main in -lz" >&5
 $as_echo_n "checking for main in -lz... " >&6; }
@@ -4349,7 +4456,66 @@ else
 $as_echo "$as_me: Unable to find libgcrypt - disabling SIP TLS decoder. apt-get install libgcrypt-dev | yum install libgcrypt-devel" >&6;}
 fi
 
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for tc_malloc in -ltcmalloc_minimal" >&5
+
+
+# Check whether --with-heap_profiler was given.
+if test "${with_heap_profiler+set}" = set; then :
+  withval=$with_heap_profiler;
+    HEAPPROF=1
+
+else
+
+    HEAPPROF=0
+
+fi
+
+if test "x$HEAPPROF" = "x1"
+then
+    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for tc_malloc in -ltcmalloc" >&5
+$as_echo_n "checking for tc_malloc in -ltcmalloc... " >&6; }
+if ${ac_cv_lib_tcmalloc_tc_malloc+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  ac_check_lib_save_LIBS=$LIBS
+LIBS="-ltcmalloc  $LIBS"
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+/* Override any GCC internal prototype to avoid an error.
+   Use char because int might match the return type of a GCC
+   builtin and then its argument prototype would still apply.  */
+#ifdef __cplusplus
+extern "C"
+#endif
+char tc_malloc ();
+int
+main ()
+{
+return tc_malloc ();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+  ac_cv_lib_tcmalloc_tc_malloc=yes
+else
+  ac_cv_lib_tcmalloc_tc_malloc=no
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+LIBS=$ac_check_lib_save_LIBS
+fi
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_lib_tcmalloc_tc_malloc" >&5
+$as_echo "$ac_cv_lib_tcmalloc_tc_malloc" >&6; }
+if test "x$ac_cv_lib_tcmalloc_tc_malloc" = xyes; then :
+  HAVE_LIBTCMALLOC_HEAPPROF=1
+else
+  { $as_echo "$as_me:${as_lineno-$LINENO}: Unable to find tcmalloc library which speeds up threads by 10%. The library is optional: apt-get install libgoogle-perftools-dev | yum install gperftools-devel.x86_64 | or compile from source https://code.google.com/p/gperftools/" >&5
+$as_echo "$as_me: Unable to find tcmalloc library which speeds up threads by 10%. The library is optional: apt-get install libgoogle-perftools-dev | yum install gperftools-devel.x86_64 | or compile from source https://code.google.com/p/gperftools/" >&6;}
+fi
+
+else
+    { $as_echo "$as_me:${as_lineno-$LINENO}: checking for tc_malloc in -ltcmalloc_minimal" >&5
 $as_echo_n "checking for tc_malloc in -ltcmalloc_minimal... " >&6; }
 if ${ac_cv_lib_tcmalloc_minimal_tc_malloc+:} false; then :
   $as_echo_n "(cached) " >&6
@@ -4392,12 +4558,6 @@ else
 $as_echo "$as_me: Unable to find tcmalloc_minimal library which speeds up threads by 10%. The library is optional: apt-get install libgoogle-perftools-dev | yum install gperftools-devel.x86_64 | or compile from source https://code.google.com/p/gperftools/" >&6;}
 fi
 
-#libssh 0.8.0, doesnot have libssh_theads.so library
-#dpkg check will work only with ubuntu/debian. Might need a change to support other OS  
-LIBSSH_8=1
-LIBSSH_VERSION=`dpkg -s libssh-dev | grep Version | cut -c 12`
-if  test $LIBSSH_VERSION -lt 8; then
-    LIBSSH_8=0
 fi
 
 HAVE_LIBPNG_T=no
@@ -4440,20 +4600,6 @@ $as_echo "#define HAVE_LIBLZO 1" >>confdefs.h
 	HAVE_LIBLZO_T=yes
 fi
 
-HAVE_LIBSSH_T=no
-if test "x$HAVE_LIBSSH" = "x1"; then
-
-$as_echo "#define HAVE_LIBSSH 1" >>confdefs.h
-
-	LIBSSH="-lssh -lssh_threads"
-
-  if test "x$LIBSSH_8" = "x1"; then
-          LIBSSH="-lssh"
-
-  fi
-	HAVE_LIBSSH_T=yes
-fi
-
 LIBGNUTLS_T=no
 if test "x$HAVE_LIBGNUTLS" = "x1" && test "x$HAVE_LIBGCRYPT" = "x1"; then
 
@@ -4474,12 +4620,41 @@ $as_echo "#define HAVE_LIBTCMALLOC 1" >>confdefs.h
 
 	TCMALLOC_T=yes
 fi
-OPENSSL_T=no
+if test "x$HAVE_LIBTCMALLOC_HEAPPROF" = "x1"; then
+
+$as_echo "#define HAVE_LIBTCMALLOC 1" >>confdefs.h
+
+
+$as_echo "#define HAVE_LIBTCMALLOC_HEAPPROF 1" >>confdefs.h
+
+	LIBTCMALLOC="-ltcmalloc"
+
+	HEAPPROF_CXXFLAG="-fno-omit-frame-pointer"
+
+	TCMALLOC_T="yes (with heap profiler)"
+fi
+
+HAVE_OPENSSL_T=no
+if test "x$HAVE_OPENSSL" = "x1"; then
+
+$as_echo "#define HAVE_OPENSSL 1" >>confdefs.h
+
+	HAVE_OPENSSL_T=yes
+fi
+
+OPENSSL101_T=no
 if test "x$HAVE_OPENSSL101" = "x1"; then
 
 $as_echo "#define HAVE_OPENSSL101 1" >>confdefs.h
 
-	OPENSSL_T=yes
+	OPENSSL101_T=yes
+fi
+OPENSSL111_T=no
+if pkg-config --atleast-version 1.1.1 openssl; then
+
+$as_echo "#define HAVE_DSSL_TLS13 1" >>confdefs.h
+
+	OPENSSL111_T=yes
 fi
 
 # Checks for header files.
@@ -5810,17 +5985,17 @@ fi
 
 
 lzma compression enabled               : $HAVE_LIBLZMA_T
-ssh library enabled (cloud)            : $HAVE_LIBSSH_T
 gnutls library enabled (SIP TLS)       : $LIBGNUTLS_T
 tcmalloc (faster *alloc) lib found     : $TCMALLOC_T
 libpng lib found     		       : $HAVE_LIBPNG_T
 fftw3 lib found     		       : $HAVE_LIBFFT_T
-openssl >= 101 found		       : $OPENSSL_T
+openssl >= 1.0.1 found		       : $OPENSSL101_T
+openssl >= 1.1.1 found tls 1.3 enabled : $OPENSSL111_T
 
 shared binary: run make
 static binary: run make static
 
-check README.*
+check README_*.md
 
 #############################################################
 
@@ -5839,17 +6014,17 @@ $as_echo "$as_me:
 
 
 lzma compression enabled               : $HAVE_LIBLZMA_T
-ssh library enabled (cloud)            : $HAVE_LIBSSH_T
 gnutls library enabled (SIP TLS)       : $LIBGNUTLS_T
 tcmalloc (faster *alloc) lib found     : $TCMALLOC_T
 libpng lib found     		       : $HAVE_LIBPNG_T
 fftw3 lib found     		       : $HAVE_LIBFFT_T
-openssl >= 101 found		       : $OPENSSL_T
+openssl >= 1.0.1 found		       : $OPENSSL101_T
+openssl >= 1.1.1 found tls 1.3 enabled : $OPENSSL111_T
 
 shared binary: run make
 static binary: run make static
 
-check README.*
+check README_*.md
 
 #############################################################
 

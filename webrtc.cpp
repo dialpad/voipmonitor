@@ -21,12 +21,12 @@ WebrtcData::~WebrtcData() {
 	this->cache.clear();
 }
 
-void WebrtcData::processData(u_int32_t ip_src, u_int32_t ip_dst,
-			     u_int16_t port_src, u_int16_t port_dst,
+void WebrtcData::processData(vmIP ip_src, vmIP ip_dst,
+			     vmPort port_src, vmPort port_dst,
 			     TcpReassemblyData *data,
 			     u_char */*ethHeader*/, u_int32_t /*ethHeaderLength*/,
-			     u_int16_t /*handle_index*/, int /*dlt*/, int /*sensor_id*/, u_int32_t /*sensor_ip*/,
-			     void */*uData*/, TcpReassemblyLink */*reassemblyLink*/,
+			     u_int16_t /*handle_index*/, int /*dlt*/, int /*sensor_id*/, vmIP /*sensor_ip*/, sPacketInfoData /*pid*/,
+			     void */*uData*/, void */*uData2*/, void */*uData2_last*/, TcpReassemblyLink */*reassemblyLink*/,
 			     std::ostream *debugStream) {
 	++this->counterProcessData;
 	if(debugStream) {
@@ -43,11 +43,11 @@ void WebrtcData::processData(u_int32_t ip_src, u_int32_t ip_dst,
 		if(debugStream) {
 			(*debugStream)
 				<< fixed
-				<< setw(15) << inet_ntostring(htonl(ip_src))
+				<< setw(15) << ip_src.getString()
 				<< " / "
 				<< setw(5) << port_src
 				<< (dataItem->getDirection() == TcpReassemblyDataItem::DIRECTION_TO_DEST ? " --> " : " <-- ")
-				<< setw(15) << inet_ntostring(htonl(ip_dst))
+				<< setw(15) << ip_dst.getString()
 				<< " / "
 				<< setw(5) << port_dst
 				<< "  len: " << setw(4) << dataItem->getDatalen();
@@ -129,13 +129,11 @@ void WebrtcData::processData(u_int32_t ip_src, u_int32_t ip_dst,
 		   (webrtcDD.type == "req" || webrtcDD.type == "rsp") &&
 		   ((webrtcDD.method == "login" && !webrtcDD.deviceId.empty()) || 
 		    (webrtcDD.method == "msg" && !webrtcDD.commCorrelationId.empty()))) {
-			uint32_t ip_ports[4] = { ip_src, ip_dst, port_src, port_dst };
-			string data_md5 = GetDataMD5(webrtcDD.data, webrtcDD.payload_length,
-						     (u_char*)ip_ports, sizeof(ip_ports));
-			u_int32_t _ip_src = dataItem->getDirection() == TcpReassemblyDataItem::DIRECTION_TO_DEST ? ip_src : ip_dst;
-			u_int32_t _ip_dst = dataItem->getDirection() == TcpReassemblyDataItem::DIRECTION_TO_DEST ? ip_dst : ip_src;
-			u_int16_t _port_src = dataItem->getDirection() == TcpReassemblyDataItem::DIRECTION_TO_DEST ? port_src : port_dst;
-			u_int16_t _port_dst = dataItem->getDirection() == TcpReassemblyDataItem::DIRECTION_TO_DEST ? port_dst : port_src;
+			string data_md5 = GetDataMD5(webrtcDD.data, webrtcDD.payload_length);
+			vmIP _ip_src = dataItem->getDirection() == TcpReassemblyDataItem::DIRECTION_TO_DEST ? ip_src : ip_dst;
+			vmIP _ip_dst = dataItem->getDirection() == TcpReassemblyDataItem::DIRECTION_TO_DEST ? ip_dst : ip_src;
+			vmPort _port_src = dataItem->getDirection() == TcpReassemblyDataItem::DIRECTION_TO_DEST ? port_src : port_dst;
+			vmPort _port_dst = dataItem->getDirection() == TcpReassemblyDataItem::DIRECTION_TO_DEST ? port_dst : port_src;
 			WebrtcDataCache requestDataFromCache = this->cache.get(_ip_src, _ip_dst, _port_src, _port_dst, data_md5);
 			if(requestDataFromCache.timestamp) {
 				if(debugStream) {
@@ -143,12 +141,13 @@ void WebrtcData::processData(u_int32_t ip_src, u_int32_t ip_dst,
 				}
 			} else {
 				SqlDb_row rowRequest;
+				string webrtc_table = "webrtc";
 				rowRequest.add(sqlDateTimeString(dataItem->getTime().tv_sec), "timestamp");
 				rowRequest.add(dataItem->getTime().tv_usec, "usec");
-				rowRequest.add(htonl(_ip_src), "srcip");
-				rowRequest.add(htonl(_ip_dst), "dstip");
-				rowRequest.add(_port_src, "srcport"); 
-				rowRequest.add(_port_dst, "dstport"); 
+				rowRequest.add(_ip_src, "srcip", false, sqlDbSaveWebrtc, webrtc_table.c_str());
+				rowRequest.add(_ip_dst, "dstip", false, sqlDbSaveWebrtc, webrtc_table.c_str());
+				rowRequest.add(_port_src.getPort(), "srcport"); 
+				rowRequest.add(_port_dst.getPort(), "dstport"); 
 				rowRequest.add(webrtcDD.type == "req" ? "websocket" : "websocket_resp", "type");
 				rowRequest.add(webrtcDD.method, "method"); 
 				rowRequest.add(sqlEscapeString((char*)webrtcDD.data).c_str(), "body");
@@ -157,13 +156,13 @@ void WebrtcData::processData(u_int32_t ip_src, u_int32_t ip_dst,
 								 webrtcDD.commCorrelationId).c_str(), 
 					       "external_transaction_id");
 				rowRequest.add(opt_id_sensor > 0 ? opt_id_sensor : 0, "id_sensor", opt_id_sensor <= 0);
-				string queryInsert = sqlDbSaveWebrtc->insertQuery("webrtc", rowRequest);
-				int storeId = STORE_PROC_ID_WEBRTC_1 + 
-					      (opt_mysqlstore_max_threads_webrtc > 1 &&
-					       sqlStore->getSize(STORE_PROC_ID_WEBRTC_1) > 1000 ? 
-						counterProcessData % opt_mysqlstore_max_threads_webrtc : 
-						0);
-				sqlStore->query_lock(queryInsert.c_str(), storeId);
+				string queryInsert = MYSQL_ADD_QUERY_END(sqlDbSaveWebrtc->insertQuery("webrtc", rowRequest));
+				sqlStore->query_lock(queryInsert.c_str(),
+						     STORE_PROC_ID_WEBRTC,
+						     opt_mysqlstore_max_threads_webrtc > 1 &&
+						     sqlStore->getSize(STORE_PROC_ID_WEBRTC, 0) > 1000 ? 
+						      counterProcessData % opt_mysqlstore_max_threads_webrtc : 
+						      0);
 				if(debugStream) {
 					(*debugStream) << "SAVE" << endl;
 				}
@@ -268,8 +267,8 @@ WebrtcCache::WebrtcCache() {
 	this->lastAddTimestamp = 0;	
 }
 
-WebrtcDataCache WebrtcCache::get(u_int32_t ip_src, u_int32_t ip_dst,
-				 u_int16_t port_src, u_int16_t port_dst,
+WebrtcDataCache WebrtcCache::get(vmIP ip_src, vmIP ip_dst,
+				 vmPort port_src, vmPort port_dst,
 				 string data_md5) {
 	WebrtcDataCache_id idc(ip_src, ip_dst, port_src, port_dst, data_md5);
 	map<WebrtcDataCache_id, WebrtcDataCache>::iterator iter = this->cache.find(idc);
@@ -280,8 +279,8 @@ WebrtcDataCache WebrtcCache::get(u_int32_t ip_src, u_int32_t ip_dst,
 	}
 }
 
-void WebrtcCache::add(u_int32_t ip_src, u_int32_t ip_dst,
-		      u_int16_t port_src, u_int16_t port_dst,
+void WebrtcCache::add(vmIP ip_src, vmIP ip_dst,
+		      vmPort port_src, vmPort port_dst,
 		      string data_md5,
 		      u_int64_t timestamp) {
 	WebrtcDataCache_id idc(ip_src, ip_dst, port_src, port_dst, data_md5);

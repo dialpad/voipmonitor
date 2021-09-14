@@ -25,6 +25,7 @@ public:
 	void setCodebook(const char *table, const char *column);
 	string getCodebookValue(u_int32_t id);
 	virtual int64_t getField_int(void *rec);
+	virtual vmIP getField_ip(void *rec);
 	virtual double getField_float(void *rec);
 	virtual const char *getField_string(void *rec);
 	virtual bool getField_bool(void *rec);
@@ -82,12 +83,12 @@ public:
 		ipData.addWhite(ip);
 	}
 	bool check(void *rec, bool *findInBlackList = NULL) {
-		if(!ipData.checkIP(getField_int(rec), findInBlackList)) {
+		if(!ipData.checkIP(getField_ip(rec), findInBlackList)) {
 			return(false);
 		}
 		return(true);
 	}
-	bool check_ip(u_int32_t ip, bool *findInBlackList = NULL) {
+	bool check_ip(vmIP ip, bool *findInBlackList = NULL) {
 		return(ipData.checkIP(ip, findInBlackList));
 	}
 private:
@@ -101,6 +102,9 @@ public:
 	}
 	void addWhite(const char *checkString) {
 		checkStringData.addWhite(checkString);
+	}
+	void addBlack(const char *checkString) {
+		checkStringData.addBlack(checkString);
 	}
 	void addWhite(const char *table, const char *column, const char * id) {
 		addWhite(table, column, atol(id));
@@ -116,7 +120,7 @@ public:
 		}
 		return(true);
 	}
-private:
+protected:
 	ListCheckString_wb checkStringData;
 };
 
@@ -179,10 +183,24 @@ public:
 	cRecordFilterItem_numList(cRecordFilter *parent, unsigned recordFieldIndex)
 	 : cRecordFilterItem_base(parent, recordFieldIndex) {
 	}
-	void addNum(int64_t num) {
-		nums.push_back(num);
+	void addNum(int64_t num, bool _not = false) {
+		if(_not) {
+			nums_not.push_back(num);
+		} else {
+			nums.push_back(num);
+		}
 	}
-	bool check(void *rec, bool */*findInBlackList*/ = NULL) {
+	bool check(void *rec, bool *findInBlackList = NULL) {
+		if(nums_not.size()) {
+			for(list<int64_t>::iterator iter = nums_not.begin(); iter != nums_not.end(); iter++) {
+				if(*iter == getField_int(rec)) {
+					if(findInBlackList) {
+						*findInBlackList = true;
+					}
+					return(false);
+				}
+			}
+		}
 		if(nums.size()) {
 			for(list<int64_t>::iterator iter = nums.begin(); iter != nums.end(); iter++) {
 				if(*iter == getField_int(rec)) {
@@ -195,6 +213,17 @@ public:
 	}
 private:
 	list<int64_t> nums;
+	list<int64_t> nums_not;
+};
+
+class cRecordFilterItem_rec : public cRecordFilterItem_base {
+public:
+	cRecordFilterItem_rec(cRecordFilter *parent)
+	 : cRecordFilterItem_base(parent, 0) {
+	}
+	bool check(void */*rec*/, bool */*findInBlackList*/ = NULL) {
+		return(true);
+	}
 };
 
 class cRecordFilterItems {
@@ -298,6 +327,11 @@ public:
 			((RecordArray*)rec)->fields[recordFieldIndex].get_int() :
 			0);
 	}
+	virtual vmIP getField_ip(void *rec, unsigned recordFieldIndex) {
+		return(useRecordArray ?
+			((RecordArray*)rec)->fields[recordFieldIndex].get_ip() :
+			0);
+	}
 	virtual int64_t getField_float(void *rec, unsigned recordFieldIndex) {
 		return(useRecordArray ?
 			((RecordArray*)rec)->fields[recordFieldIndex].get_float() :
@@ -321,6 +355,9 @@ public:
 
 int64_t cRecordFilterItem_base::getField_int(void *rec) {
 	return(parent->getField_int(rec, recordFieldIndex));
+}
+vmIP cRecordFilterItem_base::getField_ip(void *rec) {
+	return(parent->getField_ip(rec, recordFieldIndex));
 }
 double cRecordFilterItem_base::getField_float(void *rec) {
 	return(parent->getField_float(rec, recordFieldIndex));

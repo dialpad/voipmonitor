@@ -26,12 +26,12 @@ HttpData::~HttpData() {
 	cout << "save HttpData: " << this->counterSaveData << endl;
 }
 
-void HttpData::processData(u_int32_t ip_src, u_int32_t ip_dst,
-			   u_int16_t port_src, u_int16_t port_dst,
+void HttpData::processData(vmIP ip_src, vmIP ip_dst,
+			   vmPort port_src, vmPort port_dst,
 			   TcpReassemblyData *data,
 			   u_char */*ethHeader*/, u_int32_t /*ethHeaderLength*/,
-			   u_int16_t /*handle_index*/, int /*dlt*/, int /*sensor_id*/, u_int32_t /*sensor_ip*/,
-			   void */*uData*/, TcpReassemblyLink */*reassemblyLink*/,
+			   u_int16_t /*handle_index*/, int /*dlt*/, int /*sensor_id*/, vmIP /*sensor_ip*/, sPacketInfoData /*pid*/,
+			   void */*uData*/, void */*uData2*/, void */*uData2_last*/, TcpReassemblyLink */*reassemblyLink*/,
 			   std::ostream *debugStream) {
  
 	++this->counterProcessData;
@@ -183,8 +183,8 @@ void HttpData::processData(u_int32_t ip_src, u_int32_t ip_dst,
 				<< (response.length() ? " with response" : "")
 				<< endl;
 		}
-		this->cache.addRequest(request_data->getTime().tv_sec * 1000000ull + request_data->getTime().tv_usec,
-				       htonl(ip_src), htonl(ip_dst),
+		this->cache.addRequest(getTimeUS(request_data->getTime()),
+				       ip_src, ip_dst,
 				       port_src, port_dst,
 				       uri.c_str(), http.c_str(), body.c_str(),
 				       callid.c_str(), sessionid.c_str(), externalTransactionId.c_str());
@@ -207,8 +207,8 @@ void HttpData::processData(u_int32_t ip_src, u_int32_t ip_dst,
 			if(!responseHttp.length()) {
 				responseHttp = response;
 			}
-			this->cache.addResponse(response_data->getTime().tv_sec * 1000000ull + response_data->getTime().tv_usec,
-						htonl(ip_dst), htonl(ip_src),
+			this->cache.addResponse(getTimeUS(response_data->getTime()),
+						ip_dst, ip_src,
 						port_dst, port_src,
 						responseHttp.c_str(), responseBody.c_str(),
 						uri.c_str(), http.c_str(), body.c_str());
@@ -457,7 +457,7 @@ bool HttpDataCache_link::checkExistsRequest(const char *url_md5, const char *htt
 }
 
 void HttpDataCache_link::writeToDb(const HttpDataCache_id *id, bool all, u_int64_t time) {
-	u_long actTimeMS = getTimeMS_rdtsc();
+	u_int64_t actTimeMS = getTimeMS_rdtsc();
 	for(map<u_int64_t, HttpDataCache_relation*>::iterator iter_rel = relations.begin(); iter_rel != relations.end(); ) {
 		if(all || 
 		   iter_rel->first < time - 10000000ull ||
@@ -484,14 +484,15 @@ void HttpDataCache_link::writeToDb(const HttpDataCache_id *id, bool all, u_int64
 }
 
 void HttpDataCache_link::writeDataToDb(bool response, u_int64_t timestamp, const HttpDataCache_id *id, HttpDataCache_data *data) {
+	string http_jj_table = "http_jj";
 	if(!response) {
 		SqlDb_row rowRequest;
-		rowRequest.add(sqlDateTimeString(timestamp / 1000000ull), "timestamp");
-		rowRequest.add((u_int32_t)(timestamp % 1000000ull), "usec");
-		rowRequest.add(id->ip_src, "srcip");
-		rowRequest.add(id->ip_dst, "dstip");
-		rowRequest.add(id->port_src, "srcport"); 
-		rowRequest.add(id->port_dst, "dstport"); 
+		rowRequest.add(sqlDateTimeString(TIME_US_TO_S(timestamp)), "timestamp");
+		rowRequest.add(TIME_US_TO_DEC_US(timestamp), "usec");
+		rowRequest.add(id->ip_src, "srcip", false, sqlDbSaveHttp, http_jj_table.c_str());
+		rowRequest.add(id->ip_dst, "dstip", false, sqlDbSaveHttp, http_jj_table.c_str());
+		rowRequest.add(id->port_src.getPort(), "srcport"); 
+		rowRequest.add(id->port_dst.getPort(), "dstport"); 
 		rowRequest.add(sqlEscapeString(data->url), "url");
 		rowRequest.add((const char*)NULL, "type"); 
 		rowRequest.add(sqlEscapeString(data->http), "http");
@@ -500,19 +501,21 @@ void HttpDataCache_link::writeDataToDb(bool response, u_int64_t timestamp, const
 		rowRequest.add(sqlEscapeString(data->sessionid).c_str(), "sessid");
 		rowRequest.add(sqlEscapeString(data->external_transaction_id).c_str(), "external_transaction_id");
 		rowRequest.add(opt_id_sensor > 0 ? opt_id_sensor : 0, "id_sensor", opt_id_sensor <= 0);
-		queryInsert += sqlDbSaveHttp->insertQuery("http_jj", rowRequest) + ";\n";
-		queryInsert += "set @http_jj_request_id = last_insert_id();\n";
+		queryInsert += MYSQL_ADD_QUERY_END(
+			       sqlDbSaveHttp->insertQuery(http_jj_table, rowRequest));
+		queryInsert += MYSQL_ADD_QUERY_END(string(
+			       "set @http_jj_request_id = last_insert_id()"));
 		lastRequest_http_md5 = data->http_md5;
 		lastRequest_body_md5 = data->body_md5;
 	} else {
 		SqlDb_row rowResponse;
-		rowResponse.add("_\\_'SQL'_\\_:@http_jj_request_id", "master_id");
-		rowResponse.add(sqlDateTimeString(timestamp / 1000000ull), "timestamp");
-		rowResponse.add((u_int32_t)(timestamp % 1000000ull), "usec");
-		rowResponse.add(id->ip_dst, "srcip"); 
-		rowResponse.add(id->ip_src, "dstip"); 
-		rowResponse.add(id->port_dst, "srcport"); 
-		rowResponse.add(id->port_src, "dstport"); 
+		rowResponse.add(MYSQL_VAR_PREFIX + "@http_jj_request_id", "master_id");
+		rowResponse.add(sqlDateTimeString(TIME_US_TO_S(timestamp)), "timestamp");
+		rowResponse.add(TIME_US_TO_DEC_US(timestamp), "usec");
+		rowResponse.add(id->ip_dst, "srcip", false, sqlDbSaveHttp, http_jj_table.c_str()); 
+		rowResponse.add(id->ip_src, "dstip", false, sqlDbSaveHttp, http_jj_table.c_str()); 
+		rowResponse.add(id->port_dst.getPort(), "srcport"); 
+		rowResponse.add(id->port_src.getPort(), "dstport"); 
 		rowResponse.add("", "url");
 		rowResponse.add("http_ok", "type"); 
 		rowResponse.add(sqlEscapeString(data->http), "http");
@@ -521,7 +524,8 @@ void HttpDataCache_link::writeDataToDb(bool response, u_int64_t timestamp, const
 		rowResponse.add("", "sessid");
 		rowResponse.add("", "external_transaction_id");
 		rowResponse.add(opt_id_sensor > 0 ? opt_id_sensor : 0, "id_sensor", opt_id_sensor <= 0);
-		queryInsert += sqlDbSaveHttp->insertQuery("http_jj", rowResponse, true) + ";\n";
+		queryInsert += MYSQL_ADD_QUERY_END(
+			       sqlDbSaveHttp->insertQuery(http_jj_table, rowResponse, true));
 	}
 }
 
@@ -531,12 +535,12 @@ void HttpDataCache_link::writeQueryInsertToDb() {
 	}
 	extern bool opt_save_query_to_files;
 	MySqlStore *sqlStore_http = use_mysql_2_http() && !opt_save_query_to_files ? sqlStore_2 : sqlStore;
-	int storeId = STORE_PROC_ID_HTTP_1 + 
-		      (opt_mysqlstore_max_threads_http > 1 &&
-		       sqlStore_http->getSize(STORE_PROC_ID_HTTP_1) > 1000 ? 
-			writeToDb_counter % opt_mysqlstore_max_threads_http : 
-			0);
-	sqlStore_http->query_lock(queryInsert.c_str(), storeId);
+	sqlStore_http->query_lock(queryInsert.c_str(),
+				  STORE_PROC_ID_HTTP,
+				  opt_mysqlstore_max_threads_http > 1 &&
+				  sqlStore_http->getSize(STORE_PROC_ID_HTTP, 0) > 1000 ? 
+				   writeToDb_counter % opt_mysqlstore_max_threads_http : 
+				   0);
 	++writeToDb_counter;
 }
 
@@ -550,8 +554,8 @@ HttpDataCache::HttpDataCache() {
 }
 
 void HttpDataCache::addRequest(u_int64_t timestamp,
-			       u_int32_t ip_src, u_int32_t ip_dst,
-			       u_int16_t port_src, u_int16_t port_dst,
+			       vmIP ip_src, vmIP ip_dst,
+			       vmPort port_src, vmPort port_dst,
 			       const char *url, const char *http, const char *body,
 			       const char *callid, const char *sessionid, const char *external_transaction_id) {
 	lock();
@@ -564,8 +568,8 @@ void HttpDataCache::addRequest(u_int64_t timestamp,
 }
 
 void HttpDataCache::addResponse(u_int64_t timestamp,
-				u_int32_t ip_src, u_int32_t ip_dst,
-				u_int16_t port_src, u_int16_t port_dst,
+				vmIP ip_src, vmIP ip_dst,
+				vmPort port_src, vmPort port_dst,
 				const char *http, const char *body,
 				const char *url_master, const char *http_master, const char *body_master) {
 	lock();
@@ -585,7 +589,7 @@ void HttpDataCache::writeToDb(bool all, bool ifExpiration) {
 	if(!last_timestamp) {
 		return;
 	}
-	u_long actTimeMS = getTimeMS_rdtsc();
+	u_int64_t actTimeMS = getTimeMS_rdtsc();
 	if(!all && ifExpiration &&
 	   (last_write_at ? last_write_at : init_at) < actTimeMS - 10000) {
 		return;
@@ -626,9 +630,7 @@ void HttpPacketsDumper::setPcapName(const char *pcapName) {
 }
 
 void HttpPacketsDumper::setTemplatePcapName() {
-	char tempFileName[L_tmpnam+1];
-	tmpnam(tempFileName);
-	this->pcapName = tempFileName;
+	this->pcapName = tmpnam();
 }
 
 void HttpPacketsDumper::setPcapDumper(PcapDumper *pcapDumper) {
@@ -655,18 +657,18 @@ void HttpPacketsDumper::dumpData(const char *timestamp_from, const char *timesta
 			row["http"].c_str(),
 			row["body"].c_str(),
 			time,
-			atoll(row["srcip"].c_str()),
-			atoll(row["dstip"].c_str()),
-			atol(row["srcport"].c_str()),
-			atol(row["dstport"].c_str()));
+			mysql_ip_2_vmIP(&row, "srcip"),
+			mysql_ip_2_vmIP(&row, "dstip"),
+			atoi(row["srcport"].c_str()),
+			atoi(row["dstport"].c_str()));
 	}
 	delete sqlDb;
 }
 
 void HttpPacketsDumper::dumpDataItem(eReqResp /*reqResp*/, string header, string body,
 				     timeval time,
-				     u_int32_t ip_src, u_int32_t ip_dst,
-				     u_int16_t port_src, u_int16_t port_dst) {
+				     vmIP ip_src, vmIP ip_dst,
+				     vmPort port_src, vmPort port_dst) {
 	if(!this->pcapDumper) {
 		this->openPcapDumper();
 	}
@@ -700,15 +702,15 @@ void HttpPacketsDumper::dumpDataItem(eReqResp /*reqResp*/, string header, string
 		eth_header.ether_type = htons(ETHERTYPE_IP);
 		
 		ip_header.version = 4;
-		ip_header.ihl = 5;
-		ip_header.protocol = IPPROTO_TCP;
-		ip_header.saddr = htonl(ip_src);
-		ip_header.daddr = htonl(ip_dst);
-		ip_header.tot_len = htons(sizeof(ip_header) + sizeof(tcp_header) + dataLength);
-		ip_header.ttl = 50;
+		ip_header._ihl = 5;
+		ip_header._protocol = IPPROTO_TCP;
+		ip_header.set_saddr(ip_src);
+		ip_header.set_daddr(ip_dst);
+		ip_header.set_tot_len(sizeof(ip_header) + sizeof(tcp_header) + dataLength);
+		ip_header._ttl = 50;
 		
-		tcp_header.source = htons(port_src);
-		tcp_header.dest = htons(port_dst);
+		tcp_header.set_source(port_src);
+		tcp_header.set_dest(port_dst);
 		tcp_header.doff = 5;
 		tcp_header.window = 0xFFFF;
 		tcp_header.seq = htonl(links[link_id].seq[linkDirectionIndex]);

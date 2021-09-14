@@ -9,6 +9,7 @@
 #include <deque>
 #include <queue>
 #include <string>
+#include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <sys/syscall.h>
@@ -126,7 +127,7 @@ private:
 	size_t countPush;
 	size_t countPop;
 	bool full;
-	u_long timestampMS;
+	u_int64_t timestampMS;
 	volatile int _sync_flush_file;
 friend class pcap_store_queue;
 };
@@ -173,15 +174,16 @@ private:
 	volatile int _sync_queue;
 	volatile int _sync_fileStore;
 	int cleanupFileStoreCounter;
-	u_long lastTimeLogErrDiskIsFull;
-	u_long lastTimeLogErrMemoryIsFull;
+	u_int64_t lastTimeLogErrDiskIsFull;
+	u_int64_t lastTimeLogErrMemoryIsFull;
 friend class PcapQueue_readFromFifo;
 };
 
 enum eHeaderPacketPQoutState {
 	_hppq_out_state_NA = 0,
-	_hppq_out_state_defrag = 1,
-	_hppq_out_state_dedup = 2
+	_hppq_out_state_detach = 1,
+	_hppq_out_state_defrag = 2,
+	_hppq_out_state_dedup = 3
 };
 
 struct sHeaderPacketPQout {
@@ -191,7 +193,7 @@ struct sHeaderPacketPQout {
 	int block_store_index;
 	int dlt; 
 	int sensor_id; 
-	u_int32_t sensor_ip;
+	vmIP sensor_ip;
 	bool block_store_locked;
 	void destroy_or_unlock_blockstore() {
 		if(block_store) {
@@ -220,11 +222,17 @@ struct sHeaderPacketPQout {
 			block_store_index = 0;
 		}
 	}
+	#if DEBUG_SYNC_PCAP_BLOCK_STORE
+	inline void blockstore_addflag(int flag) {
+	#else
 	inline void blockstore_addflag(int /*flag*/) {
+	#endif
 		#if DEBUG_SYNC_PCAP_BLOCK_STORE
+		#if DEBUG_SYNC_PCAP_BLOCK_STORE_FLAGS_LENGTH
 		if(block_store) {
 			block_store->add_flag(block_store_index, flag);
 		}
+		#endif
 		#endif
 	}
 };
@@ -259,6 +267,7 @@ public:
 	inline u_int16_t getPcapHandleIndex(int dlt);
 	void pcapStat(int statPeriod = 1, bool statCalls = true);
 	string pcapDropCountStat();
+	string externalError;
 	void initStat();
 	void getThreadCpuUsage(bool writeThread = false);
 	bool threadInitIsOk() { return(threadInitOk); }
@@ -345,15 +354,18 @@ private:
 	PcapQueue *instancePcapHandle;
 	u_int64_t counter_calls_old;
 	u_int64_t counter_calls_clean_old;
+	u_int64_t counter_calls_save_1_old;
+	u_int64_t counter_calls_save_2_old;
 	u_int64_t counter_registers_old;
 	u_int64_t counter_registers_clean_old;
 	u_int64_t counter_sip_packets_old[2];
 	u_int64_t counter_sip_register_packets_old;
 	u_int64_t counter_sip_message_packets_old;
-	u_int64_t counter_rtp_packets_old;
+	u_int64_t counter_rtp_packets_old[2];
 	u_int64_t counter_all_packets_old;
-	u_long lastTimeLogErrPcapNextExNullPacket;
-	u_long lastTimeLogErrPcapNextExErrorReading;
+	u_int64_t counter_user_packets_old[5];
+	u_int64_t lastTimeLogErrPcapNextExNullPacket;
+	u_int64_t lastTimeLogErrPcapNextExErrorReading;
 	u_long pcapStatCounter;
 friend void *_PcapQueue_threadFunction(void *arg);
 friend void *_PcapQueue_writeThreadFunction(void *arg);
@@ -361,7 +373,14 @@ friend void *_PcapQueue_writeThreadFunction(void *arg);
 
 struct pcapProcessData {
 	pcapProcessData() {
+		#if __GNUC__ >= 8
+		#pragma GCC diagnostic push
+		#pragma GCC diagnostic ignored "-Wclass-memaccess"
+		#endif
 		memset(this, 0, sizeof(pcapProcessData) - sizeof(ipfrag_data_s));
+		#if __GNUC__ >= 8
+		#pragma GCC diagnostic pop
+		#endif
 		extern int opt_dup_check;
 		if(opt_dup_check) {
 			this->prevmd5s = new FILE_LINE(16003) unsigned char[65536 * MD5_DIGEST_LENGTH]; // 1M
@@ -380,27 +399,28 @@ struct pcapProcessData {
 	tcphdr2 *header_tcp;
 	udphdr2 *header_udp;
 	udphdr2 header_udp_tmp;
-	int protocol;
-	u_int header_ip_offset;
+	u_int16_t protocol;
+	u_int16_t header_ip_encaps_offset;
+	u_int16_t header_ip_offset;
 	char *data;
-	int datalen;
-	int traillen;
-	int istcp;
-	int isother;
+	int16_t datalen;
+	int16_t traillen;
+	packet_flags flags;
+	sPacketInfoData pid;
 	unsigned char *prevmd5s;
 	MD5_CTX ctx;
 	u_int ipfrag_lastprune;
 	ipfrag_data_s ipfrag_data;
 };
 
-
 class PcapQueue_readFromInterface_base {
 public:
 	struct sCheckProtocolData {
 		sll_header *header_sll;
 		ether_header *header_eth;
-		u_int header_ip_offset;
-		int protocol;
+		u_int16_t header_ip_offset;
+		u_int16_t protocol;
+		u_int16_t vlan;
 	};
 public:
 	PcapQueue_readFromInterface_base(const char *interfaceName = NULL);
@@ -414,7 +434,7 @@ protected:
 	inline int pcap_dispatch(pcap_t *pcapHandle);
 	inline int pcapProcess(sHeaderPacket **header_packet, int pushToStack_queue_index,
 			       pcap_block_store *block_store, int block_store_index,
-			       int ppf);
+			       int ppf, pcap_dumper_t *pcapDumpHandle = NULL);
 	virtual string pcapStatString_interface(int statPeriod);
 	virtual string pcapDropCountStat_interface();
 	virtual ulong getCountPacketDrop();
@@ -440,7 +460,6 @@ protected:
 	bpf_program filterData;
 	bool filterDataUse;
 	pcap_dumper_t *pcapDumpHandle;
-	u_int64_t pcapDumpLength;
 	int pcapLinklayerHeaderType;
 	size_t pcap_snaplen;
 	pcapProcessData ppd;
@@ -451,13 +470,14 @@ private:
 	pcap_stat last_ps;
 	u_long countPacketDrop;
 	u_int64_t lastPacketTimeUS;
-	u_long lastTimeLogErrPcapNextExNullPacket;
-	u_long lastTimeLogErrPcapNextExErrorReading;
+	u_int64_t lastTimeLogErrPcapNextExNullPacket;
+	u_int64_t lastTimeLogErrPcapNextExErrorReading;
 	int32_t libpcap_buffer_offset;
 	u_char **libpcap_buffer;
 	u_char *libpcap_buffer_old;
 	u_int64_t packets_counter;
 	ListIP *filter_ip;
+	unsigned read_from_file_index;
 };
 
 
@@ -621,8 +641,7 @@ protected:
 			}
 		}
 		if(readIndex && readIndexCount && readIndexPos < readIndexCount) {
-			return(HPH(this->qring[readIndex - 1]->hpis[readIndexPos].header_packet)->ts.tv_sec * 1000000ull + 
-			       HPH(this->qring[readIndex - 1]->hpis[readIndexPos].header_packet)->ts.tv_usec);
+			return(getTimeUS(HPH(this->qring[readIndex - 1]->hpis[readIndexPos].header_packet)));
 		}
 		return(0);
 	}
@@ -636,7 +655,9 @@ protected:
 		return(size > 0 ? size : 0);
 	}
 	unsigned getSIZE() {
-		return(this->dedupThread ? this->dedupThread->getSize() : this->getSize());
+		return(this->dedupThread ? this->dedupThread->getSize() : 
+		       this->pcapProcessThread ? this->pcapProcessThread->getSize() :
+		       this->getSize());
 	}
 	bool isTerminated() {
 		return(this->threadTerminated);
@@ -653,7 +674,7 @@ protected:
 	}
 	void cancelThread();
 	inline void lock_detach_buffer(int index) {
-		while(__sync_lock_test_and_set(&this->_sync_detachBuffer[index], 1)) usleep(10);
+		while(__sync_lock_test_and_set(&this->_sync_detachBuffer[index], 1)) USLEEP(10);
 	}
 	inline void unlock_detach_buffer(int index) {
 		__sync_lock_release(&this->_sync_detachBuffer[index]);
@@ -700,6 +721,8 @@ private:
 	volatile int _sync_detachBuffer[2];
 	unsigned int counter;
 	unsigned int counter_pop_usleep;
+	unsigned long pop_usleep_sum;
+	unsigned long pop_usleep_sum_last_push;
 	bool force_push;
 	volatile bool threadTerminated;
 	pstat_data threadPstatData[2];
@@ -732,7 +755,7 @@ public:
 	virtual ~PcapQueue_readFromInterface();
 	void setInterfaceName(const char *interfaceName);
 	void terminate();
-	bool openPcap(const char *filename);
+	bool openPcap(const char *filename, string *tempFileName = NULL);
 	bool isPcapEnd() {
 		return(this->pcapEnd);
 	}
@@ -768,7 +791,7 @@ protected:
 	PcapQueue_readFromInterfaceThread *readThreads[READ_THREADS_MAX];
 	int readThreadsCount;
 	int lastReadThreadsIndex_pcapStatString_interface;
-	u_long lastTimeLogErrThread0BufferIsFull;
+	u_int64_t lastTimeLogErrThread0BufferIsFull;
 private:
 	rqueue_quick<pcap_block_store*> *block_qring;
 };
@@ -781,9 +804,10 @@ public:
 		directionWrite
 	};
 	struct sPacketServerConnection {
-		sPacketServerConnection(int socketClient, sockaddr_in &socketClientInfo, PcapQueue_readFromFifo *parent, unsigned int id) {
+		sPacketServerConnection(int socketClient, vmIP socketClientIP, vmPort socketClientPort,  PcapQueue_readFromFifo *parent, unsigned int id) {
 			this->socketClient = socketClient;
-			this->socketClientInfo = socketClientInfo;
+			this->socketClientIP = socketClientIP;
+			this->socketClientPort = socketClientPort;
 			this->parent = parent;
 			this->id = id;
 			this->active = false;
@@ -798,9 +822,8 @@ public:
 			}
 		}
 		int socketClient;
-		sockaddr_in socketClientInfo;
-		string socketClientIP;
-		u_int32_t socketClientIPN;
+		vmIP socketClientIP;
+		vmPort socketClientPort;
 		PcapQueue_readFromFifo *parent;
 		unsigned int id;
 		bool active;
@@ -831,11 +854,13 @@ public:
 	size_t getQueueSize() {
 		return(this->pcapStoreQueue.getQueueSize());
 	}
-	bool addBlockStoreToPcapStoreQueue(u_char *buffer, size_t bufferLen, string *error, string *warning, u_int32_t *block_counter);
+	bool addBlockStoreToPcapStoreQueue(u_char *buffer, size_t bufferLen, string *error, string *warning, u_int32_t *block_counter, bool *require_confirmation);
 	inline void addBlockStoreToPcapStoreQueue(pcap_block_store *blockStore);
 	inline unsigned long long getLastUS() {
 		return(getTimeUS(_last_ts));
 	}
+	string debugBlockStoreTrash();
+	string saveBlockStoreTrash(const char *filter, const char *destFile);
 protected:
 	bool createThread();
 	bool createDestroyBlocksThread();
@@ -887,7 +912,6 @@ protected:
 		}
 		return(global_pcap_handle);
 	}
-	
 	string pcapStatString_memory_buffer(int statPeriod);
 	double pcapStat_get_memory_buffer_perc();
 	double pcapStat_get_memory_buffer_perc_trash();
@@ -901,7 +925,7 @@ protected:
 	bool socketReadyForConnect();
 	bool socketConnect();
 	bool socketListen();
-	bool socketAwaitConnection(int *socketClient, sockaddr_in *socketClientInfo);
+	bool socketAwaitConnection(int *socketClient, vmIP *socketClientIP, vmPort *socketClientPort);
 	bool socketClose();
 	bool socketWrite(u_char *data, size_t dataLen, bool disableAutoConnect = false);
 	bool _socketWrite(int socket, u_char *data, size_t *dataLen, int timeout = 1);
@@ -914,7 +938,7 @@ protected:
 		return(this->packetServerDirection == directionRead);
 	}
 private:
-	void createConnection(int socketClient, sockaddr_in *socketClientInfo);
+	void createConnection(int socketClient, vmIP socketClientIP, vmPort socketClientPort);
 	void cleanupConnections(bool all = false);
 	inline int processPacket(sHeaderPacketPQout *hp, eHeaderPacketPQoutState hp_state);
 	void pushBatchProcessPacket();
@@ -951,12 +975,12 @@ private:
 	deque<pcap_block_store*> blockStoreTrash;
 	u_int cleanupBlockStoreTrash_counter;
 	volatile int blockStoreTrash_sync;
-	u_int32_t socketHostIPl;
+	vmIP socketHostIP;
 	int socketHandle;
 	cSocketBlock *clientSocket;
 	map<unsigned int, sPacketServerConnection*> packetServerConnections;
 	volatile int _sync_packetServerConnections;
-	u_long lastCheckFreeSizeCachedir_timeMS;
+	u_int64_t lastCheckFreeSizeCachedir_timeMS;
 	volatile timeval _last_ts;
 	u_int32_t block_counter;
 friend void *_PcapQueue_readFromFifo_destroyBlocksThreadFunction(void *arg);
@@ -968,6 +992,7 @@ friend class PcapQueue_outputThread;
 class PcapQueue_outputThread {
 public:
 	enum eTypeOutputThread {
+		detach,
 		defrag,
 		dedup
 	};
@@ -996,10 +1021,13 @@ public:
 	inline void push(sHeaderPacketPQout *hp);
 	void push_batch();
 	void *outThreadFunction();
+	inline void processDetach(sHeaderPacketPQout *hp);
 	inline void processDefrag(sHeaderPacketPQout *hp);
 	inline void processDedup(sHeaderPacketPQout *hp);
 	string getNameOutputThread() {
 		switch(typeOutputThread) {
+		case detach:
+			return("detach");
 		case defrag:
 			return("defrag");
 		case dedup:

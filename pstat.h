@@ -3,6 +3,7 @@
 
 
 #include <string>
+#include <map>
 
 
 struct pstat_data {
@@ -24,9 +25,14 @@ void pstat_calc_cpu_usage(const pstat_data* cur_usage,
 			  const pstat_data* last_usage,
 			  long unsigned int* ucpu_usage,
 			  long unsigned int* scpu_usage);
+double get_cpu_usage_perc(const int pid, pstat_data *data);
 long unsigned int getRss();
 void getLoadAvg(double *la_1, double *la_5, double *la_15);
 std::string getLoadAvgStr();
+bool get_cpu_ht();
+int get_cpu_count();
+
+bool get_interrupts_counters(std::map<std::string, std::pair<std::string, u_int64_t> > *counters);
 
 
 #endif

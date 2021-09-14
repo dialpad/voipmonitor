@@ -21,7 +21,9 @@
 #include <cerrno>
 #include <json.h>
 #include <iomanip>
+#ifdef HAVE_OPENSSL
 #include <openssl/sha.h>
+#endif
 #include <fcntl.h>
 #include <pwd.h>
 #include <grp.h>
@@ -31,6 +33,7 @@
 #include <sys/uio.h>
 #include <sys/thr.h>
 #else
+#include <sys/sysmacros.h>
 #include <sys/sendfile.h>
 #endif
 
@@ -55,6 +58,7 @@ using namespace std;
 
 volatile unsigned int glob_tar_queued_files;
 
+extern bool opt_pcap_dump_tar_use_hash_instead_of_long_callid;
 extern int opt_pcap_dump_tar_compress_sip; //0 off, 1 gzip, 2 lzma
 extern int opt_pcap_dump_tar_sip_level;
 extern int opt_pcap_dump_tar_compress_rtp;
@@ -77,7 +81,7 @@ extern int terminated_tar[2];
 
 void data_tar::set(int typeSpoolFile, Call_abstract *call, const char *fileName) {
 	this->sensorName = call->get_sensordir();
-	struct tm t = time_r(&call->first_packet_time);
+	struct tm t = time_r(call->first_packet_time_us);
 	this->year = t.tm_year + 1900;
 	this->mon = t.tm_mon + 1;
 	this->day = t.tm_mday;
@@ -96,7 +100,14 @@ Tar::th_finish()
 	int i, sum = 0;
 
 	strncpy(tar.th_buf.magic, "ustar", 6);
+	#if __GNUC__ >= 8
+	#pragma GCC diagnostic push
+	#pragma GCC diagnostic ignored "-Wstringop-truncation"
+	#endif
 	strncpy(tar.th_buf.version, "  ", 2);
+	#if __GNUC__ >= 8
+	#pragma GCC diagnostic pop
+	#endif
 //	strncpy(tar.th_buf.magic, "ustar  ", 8);
 
 	for (i = 0; i < T_BLOCKSIZE; i++)
@@ -120,7 +131,11 @@ Tar::th_set_path(char *pathname, bool partSuffix)
 	
 	/* classic tar format */
 	
-	snprintf(tar.th_buf.name, 100, "%s", pathname);
+	if(opt_pcap_dump_tar_use_hash_instead_of_long_callid && strlen(pathname) > TAR_FILENAME_RESERVE_LIMIT) {
+		strcpy(tar.th_buf.name, get_hashcomb_long_filename(pathname).c_str());
+	} else {
+		snprintf(tar.th_buf.name, TAR_FILENAME_LENGTH, "%s", pathname);
+	}
 	
 	/*
 	map<string, u_int32_t>::iterator it = partCounter.find(pathname);
@@ -135,8 +150,8 @@ Tar::th_set_path(char *pathname, bool partSuffix)
 	if(partSuffix) {
 		char suffix[20];
 		snprintf(suffix, sizeof(suffix), "#%lu", partCounter);
-		if(strlen(tar.th_buf.name) + strlen(suffix) > 100 - 1) {
-			tar.th_buf.name[100 - 1 - strlen(suffix)] = 0;
+		if(strlen(tar.th_buf.name) + strlen(suffix) > TAR_FILENAME_LENGTH - 1) {
+			tar.th_buf.name[TAR_FILENAME_LENGTH - 1 - strlen(suffix)] = 0;
 		}
 		strcat(tar.th_buf.name, suffix);
 	}
@@ -349,7 +364,7 @@ Tar::chunkbuffer_iterate_ev(char *data, u_int32_t len, u_int32_t pos) {
 }
 
 void
-Tar::tar_read(const char *filename, const char *endFilename, u_int32_t recordId, const char *tableType, const char *tarPosString) {
+Tar::tar_read(const char *filename, u_int32_t recordId, const char *tableType, const char *tarPosString) {
 	bool enableDetectTarPos = true;
 	if(!reg_match(this->pathname.c_str(), "tar\\.gz", __FILE__, __LINE__) &&
 	   !reg_match(this->pathname.c_str(), "tar\\.xz", __FILE__, __LINE__)) {
@@ -362,7 +377,9 @@ Tar::tar_read(const char *filename, const char *endFilename, u_int32_t recordId,
 	}
 	this->readData.null();
 	this->readData.filename = filename;
-	this->readData.endFilename = endFilename;
+	this->readData.hash_filename = opt_pcap_dump_tar_use_hash_instead_of_long_callid && strlen(filename) > TAR_FILENAME_RESERVE_LIMIT ?
+					get_hashcomb_long_filename(filename) :
+					"";
 	this->readData.init(T_BLOCKSIZE * 64);
 	CompressStream *decompressStream = new FILE_LINE(34001) CompressStream(reg_match(this->pathname.c_str(), "tar\\.gz", __FILE__, __LINE__) ?
 									 CompressStream::gzip :
@@ -407,22 +424,8 @@ Tar::tar_read(const char *filename, const char *endFilename, u_int32_t recordId,
 	}
 	if(tarPos.size()) {
 		for(list<u_int64_t>::iterator it = tarPos.begin(); it != tarPos.end(); it++) {
-			if(sizeof(int) == 4) {
-				int counterSeek = 0;
-				u_int64_t seekPos = *it;
-				while(seekPos) {
-					u_int64_t _seek = min((unsigned long long)seekPos, 2000000000ull);
-					if(lseek(tar.fd, _seek, counterSeek ? SEEK_CUR : SEEK_SET) == -1) {
-						this->readData.error = true;
-						break;
-					}
-					seekPos -= _seek;
-					++counterSeek;
-				}
-			} else {
-				if(lseek(tar.fd, *it, SEEK_SET) == -1) {
-					this->readData.error = true;
-				}
+			if(!lseek(tar.fd, *it)) {
+				this->readData.error = true;
 			}
 			if(this->readData.error) {
 				break;
@@ -527,9 +530,8 @@ Tar::tar_read(const char *filename, const char *endFilename, u_int32_t recordId,
 }
 
 void 
-Tar::tar_read_send_parameters(int client, void *sshchannel, void *c_client, bool zip) {
+Tar::tar_read_send_parameters(int client, void *c_client, bool zip) {
 	this->readData.send_parameters_client = client;
-	this->readData.send_parameters_sshchannel = sshchannel;
 	this->readData.send_parameters_c_client = c_client;
 	this->readData.send_parameters_zip = zip;
 }
@@ -601,10 +603,10 @@ Tar::tar_read_block_ev(char *data) {
 	}
 }
 
-extern int _sendvm(int socket, void *channel, void *c_client, const char *buf, size_t len, int mode);
+extern int _sendvm(int socket, void *c_client, const char *buf, size_t len, int mode);
 void 
 Tar::tar_read_file_ev(tar_header fileHeader, char *data, u_int32_t /*pos*/, u_int32_t len) {
-	int cmpLengthNameInTar = strlen(fileHeader.name);
+	unsigned cmpLengthNameInTar = strlen(fileHeader.name);
 	if(reg_match(fileHeader.name, "#[0-9]+$", __FILE__, __LINE__) ||
 	   reg_match(fileHeader.name, "_[0-9]{1,6}$", __FILE__, __LINE__)) {
 		while(isdigit(fileHeader.name[cmpLengthNameInTar - 1])) {
@@ -612,38 +614,40 @@ Tar::tar_read_file_ev(tar_header fileHeader, char *data, u_int32_t /*pos*/, u_in
 		}
 		--cmpLengthNameInTar;
 	}
-	if(strncmp(fileHeader.name, this->readData.filename.c_str(), cmpLengthNameInTar)) {
-		return;
-	}
-	if(len) {
-		if(!this->readData.decompressStreamFromLzo) {
-			this->readData.decompressStreamFromLzo = new FILE_LINE(34004) CompressStream(CompressStream::compress_auto, 0, 0);
-			this->readData.decompressStreamFromLzo->enableAutoPrefixFile();
-			this->readData.decompressStreamFromLzo->enableForceStream();
-		}
-		if(!this->readData.compressStreamToGzip) {
-			this->readData.compressStreamToGzip = new FILE_LINE(34005) CompressStream(this->readData.send_parameters_zip ? CompressStream::gzip : CompressStream::compress_na, 0, 0);
-		}
-		if(this->readData.decompressStreamFromLzo->isError() ||
-		   this->readData.compressStreamToGzip->isError()) {
-			this->readData.error = true;
-		} else {
-			this->readData.decompressStreamFromLzo->decompress(data, len, 0, false, &this->readData);
-		}
-	} else if(fileHeader.name[0]) {
-		cout << "tar_read_block_ev - header - file "
-		     << fileHeader.name
-		     << " size "
-		     << fileHeader.get_size() << endl;
-	}
-	if(*fileHeader.name && !len) {
-		if(!this->readData.endFilename.empty()) {
-			if(fileHeader.name == this->readData.endFilename) {
-				this->readData.end = true;
+	if(((this->readData.filename.length() > TAR_FILENAME_RESERVE_LIMIT || 
+	     cmpLengthNameInTar == this->readData.filename.length()) &&
+	    !strncmp(fileHeader.name, this->readData.filename.c_str(), cmpLengthNameInTar)) ||
+	   (!this->readData.hash_filename.empty() && 
+	    cmpLengthNameInTar == this->readData.hash_filename.length() && 
+	    !strncmp(fileHeader.name, this->readData.hash_filename.c_str(), cmpLengthNameInTar))) {
+		if(len) {
+			if(!this->readData.decompressStreamFromLzo) {
+				this->readData.decompressStreamFromLzo = new FILE_LINE(34004) CompressStream(CompressStream::compress_auto, 0, 0);
+				this->readData.decompressStreamFromLzo->enableAutoPrefixFile();
+				this->readData.decompressStreamFromLzo->enableForceStream();
 			}
-		} else if(!this->readData.filename.empty()) {
-			if(fileHeader.name == this->readData.filename) {
+			if(!this->readData.compressStreamToGzip) {
+				this->readData.compressStreamToGzip = new FILE_LINE(34005) CompressStream(this->readData.send_parameters_zip ? CompressStream::gzip : CompressStream::compress_na, 0, 0);
+			}
+			if(this->readData.decompressStreamFromLzo->isError() ||
+			   this->readData.compressStreamToGzip->isError()) {
+				this->readData.error = true;
+			} else {
+				this->readData.decompressStreamFromLzo->decompress(data, len, 0, false, &this->readData);
+			}
+		} else if(fileHeader.name[0]) {
+			cout << "tar_read_block_ev - header - file "
+			     << fileHeader.name
+			     << " size "
+			     << fileHeader.get_size() << endl;
+		}
+		if(*fileHeader.name && !len) {
+			if((this->readData.filename.length() > TAR_FILENAME_LENGTH - 1 ?
+			     !strncmp(fileHeader.name, this->readData.filename.c_str(), TAR_FILENAME_LENGTH - 1) :
+			     fileHeader.name == this->readData.filename) ||
+			   (!this->readData.hash_filename.empty() && fileHeader.name == this->readData.hash_filename)) {
 				this->readData.end = true;
+				cout << "tar_read_block_ev - end" << endl;
 			}
 		}
 	}
@@ -916,6 +920,12 @@ void Tar::tar_close() {
 	close(tar.fd);
 }
 
+string Tar::get_hashcomb_long_filename(const char *filename) {
+	unsigned filename_orig_length = TAR_FILENAME_RESERVE_LIMIT - TAR_FILENAME_HASH_LENGTH;
+	string hash = TAR_FILENAME_HASH_PREFIX + GetStringMD5(filename + filename_orig_length);
+	return(string(filename, filename_orig_length) + hash);
+}
+
 void Tar::addtofilesqueue() {
 
 	if(!opt_filesclean or opt_nocdr or !isSqlDriver("mysql") or !CleanSpool::isSetCleanspoolParameters(spoolIndex)) return;
@@ -958,8 +968,8 @@ bool Tar::ReadData::decompress_ev(char *data, u_int32_t len) {
 bool Tar::ReadData::compress_ev(char *data, u_int32_t len, u_int32_t /*decompress_len*/, bool /*format_data*/) {
 	if(this->output_file_handle) {
 		fwrite(data, len, 1, this->output_file_handle);
-	} else if(this->send_parameters_client || this->send_parameters_sshchannel || this->send_parameters_c_client) {
-		if(_sendvm(this->send_parameters_client, this->send_parameters_sshchannel, this->send_parameters_c_client, data, len, 0) == -1) {
+	} else if(this->send_parameters_client || this->send_parameters_c_client) {
+		if(_sendvm(this->send_parameters_client, this->send_parameters_c_client, data, len, 0) == -1) {
 			this->compressStreamToGzip->setError("send error");
 			return(false);
 		}
@@ -1364,7 +1374,7 @@ void *TarQueue::tarthreadworker(void *arg) {
 			}
 		}
 		// quque is empty - sleep before next run
-		usleep(is_terminating() ? 100000 : 250000);
+		USLEEP(is_terminating() ? 100000 : 250000);
 		if(terminate_pass) {
 			break;
 		}
@@ -1790,13 +1800,15 @@ void *TarQueueThread(void *_tarQueue) {
 		} else {
 			int do_terminated_tar_flush_queue = terminated_async;
 			tarQueue->flushQueue();
-			if(do_terminated_tar_flush_queue) {
+			extern int opt_pcap_dump_asyncwrite;
+			if(do_terminated_tar_flush_queue || 
+			   (!opt_pcap_dump_asyncwrite && is_terminating())) {
 				 terminated_tar_flush_queue[tarQueue->getSpoolIndex()] = 1;
 				 syslog(LOG_NOTICE, "terminated - tar - flush queue");
 			}
 		}
 		if(is_terminating()) {
-			usleep(100000);
+			USLEEP(100000);
 		} else {
 			sleep(1);
 		}
@@ -1833,7 +1845,7 @@ int untar_gui(const char *args) {
 	tar.tar_read_save_parameters(outputFileHandle);
 	string destFile_conv = destFile;
 	prepare_string_to_filename((char*)destFile_conv.c_str());
-	tar.tar_read((destFile_conv + ".*").c_str(), destFile, 0, NULL, tarPos);
+	tar.tar_read(destFile_conv.c_str(), 0, NULL, tarPos);
 	fclose(outputFileHandle);
 	
 	return(0);

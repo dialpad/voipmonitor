@@ -103,6 +103,7 @@ struct ast_jb_impl
 
 extern void fifobuff_add(void *fifo_buff, const char *data, unsigned int datalen);
 //extern void test_raw(const char *descr, const char *data, unsigned int datalen);
+extern void save_rtp_energylevels(void *rtp_stream, void *data, int datalen, int codec);
 
 /* Implementation functions */
 /* fixed */
@@ -163,12 +164,13 @@ enum {
 	JB_IMPL_OK,
 	JB_IMPL_DROP,
 	JB_IMPL_INTERP,
-	JB_IMPL_NOFRAME
+	JB_IMPL_NOFRAME,
+	JB_IMPL_ERROR
 };
 
 /* Translations between impl and abstract return codes */
 static int fixed_to_abstract_code[] =
-	{JB_IMPL_OK, JB_IMPL_DROP, JB_IMPL_INTERP, JB_IMPL_NOFRAME};
+	{JB_IMPL_OK, JB_IMPL_DROP, JB_IMPL_INTERP, JB_IMPL_NOFRAME, JB_IMPL_ERROR};
 static int adaptive_to_abstract_code[] =
 	{JB_IMPL_OK, JB_IMPL_NOFRAME, JB_IMPL_NOFRAME, JB_IMPL_INTERP, JB_IMPL_DROP, JB_IMPL_OK};
 
@@ -276,6 +278,7 @@ int ast_jb_put(struct ast_channel *chan, struct ast_frame *f, struct timeval *my
 	void *jbobj = jb->jbobj;
 	struct ast_frame *frr;
 	long now = 0;
+	int rslt;
 	
 //	if (!ast_test_flag(jb, JB_USE))
 //		return -1;
@@ -289,8 +292,11 @@ int ast_jb_put(struct ast_channel *chan, struct ast_frame *f, struct timeval *my
 				jbimpl->force_resync(jbobj);
 			}
                         */
+			chan->prev_frame_is_dtmf = 1;
 		}
-		return -1;
+		if(ast_test_flag(jb, JB_CREATED)) {
+			return -1;
+		}
 	}
 
 	if (chan->resync && f->marker) {
@@ -328,7 +334,11 @@ int ast_jb_put(struct ast_channel *chan, struct ast_frame *f, struct timeval *my
 	} else {
 		//fprintf(stdout, "mynow [%u][%u], tb [%u][%u] tvdiff[%u] seq[%u]\n", mynow->tv_sec, mynow->tv_usec, jb->timebase.tv_sec, jb->timebase.tv_usec, ast_tvdiff_ms(*mynow, jb->timebase), frr->seqno);
 		now = get_now(jb, NULL, mynow);
-		if (jbimpl->put(jbobj, frr, now) != JB_IMPL_OK) {
+		rslt = jbimpl->put(jbobj, frr, now);
+		if(frr->frametype != AST_FRAME_DTMF) {
+			chan->prev_frame_is_dtmf = 0;
+		}
+		if (rslt != JB_IMPL_OK) {
 			if(sverb.jitter) fprintf(stdout, "JB_PUT[%p] {now=%ld}: Dropped frame with ts=%ld and len=%ld and seq=%d\n", jb, now, frr->ts, frr->len, frr->seqno);
 			ast_frfree(frr);
 			/*return -1;*/
@@ -380,7 +390,7 @@ void jb_fixed_flush_deliver(struct ast_channel *chan)
 		if(!f->ignore && (chan->rawstream || chan->audiobuf) && (chan->codec != 13 && chan->codec != 19)) { 
 			//write frame to file
 			stmp = (short int)f->datalen;
-			if(CODEC_LEN && (chan->codec == PAYLOAD_G72218 || chan->codec == PAYLOAD_G722112 || chan->codec == PAYLOAD_G722116 || chan->codec == PAYLOAD_G722124 || chan->codec == PAYLOAD_G722132 || chan->codec == PAYLOAD_G722148 || chan->codec == PAYLOAD_OPUS8 || chan->codec == PAYLOAD_OPUS12 || chan->codec == PAYLOAD_OPUS16 || chan->codec == PAYLOAD_OPUS24 || chan->codec == PAYLOAD_OPUS48 || chan->codec == PAYLOAD_ISAC16 || chan->codec == PAYLOAD_ISAC32 || chan->codec == PAYLOAD_SILK || chan->codec == PAYLOAD_SILK8 || chan->codec == PAYLOAD_SILK12 || chan->codec == PAYLOAD_SILK16 || chan->codec == PAYLOAD_SILK24 || chan->codec == PAYLOAD_SPEEX || chan->codec == PAYLOAD_G723 || chan->codec == PAYLOAD_G729 || chan->codec == PAYLOAD_GSM || chan->codec == PAYLOAD_AMR)) {
+			if(CODEC_LEN && (chan->codec == PAYLOAD_G72218 || chan->codec == PAYLOAD_G722112 || chan->codec == PAYLOAD_G722116 || chan->codec == PAYLOAD_G722124 || chan->codec == PAYLOAD_G722132 || chan->codec == PAYLOAD_G722148 || chan->codec == PAYLOAD_OPUS8 || chan->codec == PAYLOAD_OPUS12 || chan->codec == PAYLOAD_OPUS16 || chan->codec == PAYLOAD_OPUS24 || chan->codec == PAYLOAD_OPUS48 || chan->codec == PAYLOAD_ISAC16 || chan->codec == PAYLOAD_ISAC32 || chan->codec == PAYLOAD_SILK || chan->codec == PAYLOAD_SILK8 || chan->codec == PAYLOAD_SILK12 || chan->codec == PAYLOAD_SILK16 || chan->codec == PAYLOAD_SILK24 || chan->codec == PAYLOAD_SPEEX || chan->codec == PAYLOAD_G723 || chan->codec == PAYLOAD_G729 || chan->codec == PAYLOAD_GSM || chan->codec == PAYLOAD_AMR || chan->codec == PAYLOAD_AMRWB)) {
 				if(chan->rawstream) {
 					fwrite(&stmp, 1, sizeof(short int), chan->rawstream);   // write packet len
 				}
@@ -402,6 +412,10 @@ void jb_fixed_flush_deliver(struct ast_channel *chan)
 			memcpy(chan->lastbuf, f->data, f->datalen);
 			chan->lastbuflen = f->datalen; 
 		}       
+		if(!f->ignore && chan->enable_save_energylevels && chan->rtp_stream && (chan->codec == 0 || chan->codec == 8)) {
+			save_rtp_energylevels(chan->rtp_stream, f->data, f->datalen, chan->codec);
+			chan->last_datalen_energylevels = f->datalen;
+		}
 		ast_frfree(f);
 	}
 }       
@@ -409,12 +423,14 @@ void jb_fixed_flush_deliver(struct ast_channel *chan)
 void save_empty_frame(struct ast_channel *chan) {
 	if((chan->rawstream || chan->audiobuf) && (chan->codec != 13 && chan->codec != 19)) {
 		int i;
-		short int zero = 0;
-		int zero2 = 0;
-		short int zero3 = 32767;
 		//write frame to file
-		if(chan->codec == PAYLOAD_G72218 || chan->codec == PAYLOAD_G722112 || chan->codec == PAYLOAD_G722116 || chan->codec == PAYLOAD_G722124 || chan->codec == PAYLOAD_G722132 || chan->codec == PAYLOAD_G722148 || chan->codec == PAYLOAD_OPUS8 || chan->codec == PAYLOAD_OPUS12 || chan->codec == PAYLOAD_OPUS16 || chan->codec == PAYLOAD_OPUS24 || chan->codec == PAYLOAD_OPUS48 || chan->codec == PAYLOAD_ISAC16 || chan->codec == PAYLOAD_ISAC32 || chan->codec == PAYLOAD_SILK || chan->codec == PAYLOAD_SILK8 || chan->codec == PAYLOAD_SILK12 || chan->codec == PAYLOAD_SILK16 || chan->codec == PAYLOAD_SILK24 || chan->codec == PAYLOAD_SPEEX || chan->codec == PAYLOAD_G723 || chan->codec == PAYLOAD_G729 || chan->codec == PAYLOAD_GSM || chan->codec == PAYLOAD_AMR) {
+		if(chan->codec == PAYLOAD_G72218 || chan->codec == PAYLOAD_G722112 || chan->codec == PAYLOAD_G722116 || chan->codec == PAYLOAD_G722124 || chan->codec == PAYLOAD_G722132 || chan->codec == PAYLOAD_G722148 || 
+		   chan->codec == PAYLOAD_OPUS8 || chan->codec == PAYLOAD_OPUS12 || chan->codec == PAYLOAD_OPUS16 || chan->codec == PAYLOAD_OPUS24 || chan->codec == PAYLOAD_OPUS48 || 
+		   chan->codec == PAYLOAD_ISAC16 || chan->codec == PAYLOAD_ISAC32 || 
+		   chan->codec == PAYLOAD_SILK || chan->codec == PAYLOAD_SILK8 || chan->codec == PAYLOAD_SILK12 || chan->codec == PAYLOAD_SILK16 || chan->codec == PAYLOAD_SILK24 || 
+		   chan->codec == PAYLOAD_SPEEX || chan->codec == PAYLOAD_G723 || chan->codec == PAYLOAD_G729 || chan->codec == PAYLOAD_GSM || chan->codec == PAYLOAD_AMR || chan->codec == PAYLOAD_AMRWB) {
 			if(chan->codec == PAYLOAD_G723) {
+				short int zero = 0;
 				for(i = 1; (i * 30) <= chan->packetization; i++) {
 					if(chan->rawstream)
 						fwrite(&zero, 1, sizeof(short int), chan->rawstream);   // write zero packet
@@ -423,6 +439,7 @@ void save_empty_frame(struct ast_channel *chan) {
 					//test_raw("empty frame", (const char*)(&zero), sizeof(short int));
 				}
 			} else if(chan->codec == PAYLOAD_G729) {
+				short int zero = 0;
 				for(i = 1; (i * 10) <= chan->packetization; i++) {
 					if(chan->rawstream)
 						fwrite(&zero, 1, sizeof(short int), chan->rawstream);   // write zero packet
@@ -431,6 +448,7 @@ void save_empty_frame(struct ast_channel *chan) {
 					//test_raw("empty frame", (const char*)(&zero), sizeof(short int));
 				}
 			} else {
+				short int zero = 0;
 				for(i = 1; (i * 20) <= chan->packetization ; i++) {
 					if(chan->rawstream)
 						fwrite(&zero, 1, sizeof(short int), chan->rawstream);   // write zero packet
@@ -451,8 +469,7 @@ void save_empty_frame(struct ast_channel *chan) {
 			} else {
 				// write empty frame
 				if(chan->codec == PAYLOAD_PCMA || chan->codec == PAYLOAD_PCMU) {
-					char zero;
-					zero = chan->codec == PAYLOAD_PCMA ? 213 : 255;
+					unsigned char zero = chan->codec == PAYLOAD_PCMA ? 213 : 255;
 					for(i = 0; i < chan->last_datalen; i++) {
 						if(chan->rawstream)
 							fwrite(&zero, 1, 1, chan->rawstream);
@@ -461,16 +478,22 @@ void save_empty_frame(struct ast_channel *chan) {
 						//test_raw("empty frame", (const char*)(&zero), sizeof(char));
 					}
 				} else {
+					unsigned short int zero = chan->codec == PAYLOAD_G722 ? 65535 : 32767;
+					short int zero_audiobuff = 0;
 					for(i = 0; i < chan->last_datalen / 2; i++) {
 						if(chan->rawstream)
-							fwrite(&zero3, 2, 1, chan->rawstream);
+							fwrite(&zero, 2, 1, chan->rawstream);
 						if(chan->audiobuf)
-							fifobuff_add(chan->audiobuf,(const char*)(&zero2), sizeof(char));
-						//test_raw("empty frame", (const char*)(&zero2), sizeof(char));
+							fifobuff_add(chan->audiobuf,(const char*)(&zero_audiobuff), sizeof(char));
+						//test_raw("empty frame", (const char*)(&zero_audiobuff), sizeof(char));
 					}
 				}
 			}
 		}
+	}
+	if(chan->enable_save_energylevels && chan->rtp_stream && (chan->codec == 0 || chan->codec == 8) &&
+	   (chan->last_datalen_energylevels > 0 || chan->last_datalen > 0)) {
+		save_rtp_energylevels(chan->rtp_stream, NULL, 0, chan->codec);
 	}
 }
 
@@ -515,6 +538,7 @@ static void jb_get_and_deliver(struct ast_channel *chan, struct timeval *mynow)
 		case JB_IMPL_OK:
 			if(f->skip) {
 				save_empty_frame(chan);
+				if(sverb.jitter) fprintf(stdout, "\tJB_GET[%p] {now=%ld}: Skip frame\n", jb, now);
 				ast_frfree(f);
 				break;
 			}	
@@ -525,7 +549,7 @@ static void jb_get_and_deliver(struct ast_channel *chan, struct timeval *mynow)
 			if((chan->rawstream || chan->audiobuf) && f->data && f->datalen > 0 && (chan->codec != 13 && chan->codec != 19)) {
 				//write frame to file
 				stmp = (short int)f->datalen;
-				if(chan->codec == PAYLOAD_G72218 || chan->codec == PAYLOAD_G722112 || chan->codec == PAYLOAD_G722116 || chan->codec == PAYLOAD_G722124 || chan->codec == PAYLOAD_G722132 || chan->codec == PAYLOAD_G722148 || chan->codec == PAYLOAD_OPUS8 || chan->codec == PAYLOAD_OPUS12 || chan->codec == PAYLOAD_OPUS16 || chan->codec == PAYLOAD_OPUS24 || chan->codec == PAYLOAD_OPUS48 || chan->codec == PAYLOAD_ISAC16 || chan->codec == PAYLOAD_ISAC32 || chan->codec == PAYLOAD_SILK || chan->codec == PAYLOAD_SILK8 || chan->codec == PAYLOAD_SILK12 || chan->codec == PAYLOAD_SILK16 || chan->codec == PAYLOAD_SILK24 || chan->codec == PAYLOAD_SPEEX || chan->codec == PAYLOAD_G723 || chan->codec == PAYLOAD_G729 || chan->codec == PAYLOAD_GSM || chan->codec == PAYLOAD_AMR) {
+				if(chan->codec == PAYLOAD_G72218 || chan->codec == PAYLOAD_G722112 || chan->codec == PAYLOAD_G722116 || chan->codec == PAYLOAD_G722124 || chan->codec == PAYLOAD_G722132 || chan->codec == PAYLOAD_G722148 || chan->codec == PAYLOAD_OPUS8 || chan->codec == PAYLOAD_OPUS12 || chan->codec == PAYLOAD_OPUS16 || chan->codec == PAYLOAD_OPUS24 || chan->codec == PAYLOAD_OPUS48 || chan->codec == PAYLOAD_ISAC16 || chan->codec == PAYLOAD_ISAC32 || chan->codec == PAYLOAD_SILK || chan->codec == PAYLOAD_SILK8 || chan->codec == PAYLOAD_SILK12 || chan->codec == PAYLOAD_SILK16 || chan->codec == PAYLOAD_SILK24 || chan->codec == PAYLOAD_SPEEX || chan->codec == PAYLOAD_G723 || chan->codec == PAYLOAD_G729 || chan->codec == PAYLOAD_GSM || chan->codec == PAYLOAD_AMR || chan->codec == PAYLOAD_AMRWB) {
 					if(chan->rawstream) {
 						fwrite(&stmp, 1, sizeof(short int), chan->rawstream);   // write packet len
 					}
@@ -547,6 +571,10 @@ static void jb_get_and_deliver(struct ast_channel *chan, struct timeval *mynow)
 				}
 				memcpy(chan->lastbuf, f->data, f->datalen);
 				chan->lastbuflen = f->datalen;
+			}
+			if(chan->enable_save_energylevels && chan->rtp_stream && f->data && f->datalen > 0 && (chan->codec == 0 || chan->codec == 8)) {
+				save_rtp_energylevels(chan->rtp_stream, f->data, f->datalen, chan->codec);
+				chan->last_datalen_energylevels = f->datalen;
 			}
 			if(sverb.jitter) fprintf(stdout, "\tJB_GET[%p] {now=%ld}: %s frame with ts=%ld and len=%ld and seq=%d\n", jb, now, jb_get_actions[res], f->ts, f->len, f->seqno);
 			/* if frame is marked do not put previous interpolated frames to statistics 
@@ -590,6 +618,8 @@ static void jb_get_and_deliver(struct ast_channel *chan, struct timeval *mynow)
 			if(sverb.jitter) fprintf(stdout, "JB_IMPL_NOFRAME is retuned from the %s jb when now=%ld >= next=%ld, jbnext=%ld!\n", jbimpl->name, now, jb->next, jbimpl->next(jbobj));
 			if(sverb.jitter) fprintf(stdout, "\tJB_GET[%p] {now=%ld}: No frame for now!?\n", jb, now);
 			chan->last_loss_burst++;
+			return;
+		case JB_IMPL_ERROR:
 			return;
 		default:
 			if(sverb.jitter) fprintf(stdout, "This should never happen!\n");
@@ -664,6 +694,7 @@ void ast_jb_destroy(struct ast_channel *chan)
 		chan->lastbuf = NULL;
 		chan->lastbufsize = 0;
 		chan->lastbuflen = 0;
+		chan->last_datalen_energylevels = 0;
 	}
 	
 	struct ast_jb *jb = &chan->jb;
@@ -792,7 +823,7 @@ static int jb_put_first_fixed(void *jb, struct ast_frame *fin, long now)
 	struct fixed_jb *fixedjb = (struct fixed_jb *) jb;
 	int res;
 	
-	res = fixed_jb_put_first(fixedjb, fin, fin->len, fin->ts, now);
+	res = fixed_jb_put_first(fixedjb, fin, fin->len, fin->ts, now, fin->marker);
 	
 	return fixed_to_abstract_code[res];
 }
@@ -803,7 +834,7 @@ static int jb_put_fixed(void *jb, struct ast_frame *fin, long now)
 	struct fixed_jb *fixedjb = (struct fixed_jb *) jb;
 	int res;
 	
-	res = fixed_jb_put(fixedjb, fin, fin->len, fin->ts, now);
+	res = fixed_jb_put(fixedjb, fin, fin->len, fin->ts, now, fin->marker);
 	
 	return fixed_to_abstract_code[res];
 }

@@ -2,16 +2,7 @@
 #define COMMON_H
 
 
-#if ( defined( __FreeBSD__ ) || defined ( __NetBSD__ ) )
-# ifndef FREEBSD
-#  define FREEBSD
-# endif
-#else
-# ifndef NO_FREEBSD
-#  define NO_FREEBSD
-# endif
-#endif
-
+#include "tools_define.h"
 
 #include <sys/types.h>
 
@@ -32,6 +23,7 @@ struct sVerbose {
 	int http;
 	int webrtc;
 	int ssl;
+	int tls;
 	int ssl_sessionkey;
 	int sip;
 	char *tcpreassembly_debug_file;
@@ -41,13 +33,15 @@ struct sVerbose {
 	int set_ua;
 	int dscp;
 	int store_process_query;
+	int store_process_query_compl;
+	int store_process_query_compl_time;
 	int call_listening;
 	int skinny;
 	int fraud;
 	int fraud_file_log;
 	int enable_bt_sighandler;
 	int tcp_debug_port;
-	u_int32_t tcp_debug_ip;
+	u_char tcp_debug_ip[20];
 	int tar;
 	int chunk_buffer;
 	unsigned long int ssrc;
@@ -63,6 +57,8 @@ struct sVerbose {
 	int alloc_stat;
 	int qfiles;
 	int query_error;
+	char query_error_log[100];
+	char query_regex[100];
 	int new_invite;
 	int dump_sip;
 	int dump_sip_line;
@@ -86,6 +82,9 @@ struct sVerbose {
 	int disable_save_packet;
 	int disable_save_graph;
 	int disable_save_call;
+	int disable_save_message;
+	int disable_save_register;
+	int disable_save_sip_msg;
 	int disable_read_rtp;
 	int thread_create;
 	int timezones;
@@ -107,9 +106,38 @@ struct sVerbose {
 	int system_command;
 	int malloc_trim;
 	int socket_decode;
+	int disable_load_codebooks;
+	int multiple_store;
+	int disable_store_rtp_stat;
+	int disable_billing;
+	int disable_custom_headers;
+	int disable_cloudshare;
+	int screen_popup;
+	int screen_popup_syslog;
+	int cleanup_calls;
+	int usleep_stats;
+	int charts_cache_only;
+	int charts_cache_filters_eval;
+	int charts_cache_filters_eval_rslt;
+	int charts_cache_filters_eval_rslt_true;
+	char sipcallerip_filter[100];
+	char sipcalledip_filter[100];
+	int suppress_cdr_insert;
+	int suppress_server_store;
+	int suppress_fork;
+	char *trace_call;
+	int energylevels;
 	int _debug1;
 	int _debug2;
 	int _debug3;
 };
+
+
+#if defined __x86_64__ && !defined __ILP32__
+#define int_64_format_prefix ""
+#else
+#define int_64_format_prefix "l"
+#endif
+
 
 #endif

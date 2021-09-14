@@ -62,7 +62,7 @@ void TcpReassemblyStream_packet_var::push(TcpReassemblyStream_packet packet) {
 		this->queuePackets[packet.next_seq];
 		this->queuePackets[packet.next_seq] = packet;
 	}
-	this->last_packet_at_from_header = packet.time.tv_sec * 1000 + packet.time.tv_usec / 1000;
+	this->last_packet_at_from_header = getTimeMS(&packet.time);
 }
 
 void TcpReassemblyStream::push(TcpReassemblyStream_packet packet) {
@@ -77,11 +77,12 @@ void TcpReassemblyStream::push(TcpReassemblyStream_packet packet) {
 	if(PACKET_DATALEN(packet.datalen, packet.datacaplen)) {
 		exists_data = true;
 	}
-	this->last_packet_at_from_header = packet.time.tv_sec * 1000 + packet.time.tv_usec / 1000;
+	this->last_packet_at_from_header = getTimeMS(&packet.time);
 }
 
 int TcpReassemblyStream::ok(bool crazySequence, bool enableSimpleCmpMaxNextSeq, u_int32_t maxNextSeq,
-			    int enableValidateDataViaCheckData, int needValidateDataViaCheckData, TcpReassemblyStream *prevHttpStream, bool enableDebug,
+			    int enableValidateDataViaCheckData, int needValidateDataViaCheckData, int unlimitedReassemblyAttempts,
+			    TcpReassemblyStream *prevHttpStream, bool enableDebug,
 			    u_int32_t forceFirstSeq, int ignorePsh) {
 	if(enableValidateDataViaCheckData == -1) {
 		enableValidateDataViaCheckData = link->reassembly->enableValidateDataViaCheckData || link->reassembly->enableStrictValidateDataViaCheckData;
@@ -89,11 +90,14 @@ int TcpReassemblyStream::ok(bool crazySequence, bool enableSimpleCmpMaxNextSeq, 
 	if(needValidateDataViaCheckData == -1) {
 		needValidateDataViaCheckData = link->reassembly->needValidateDataViaCheckData;
 	}
+	if(unlimitedReassemblyAttempts == -1) {
+		unlimitedReassemblyAttempts = link->reassembly->unlimitedReassemblyAttempts;
+	}
 	if(ignorePsh == -1) {
 		ignorePsh = link->reassembly->ignorePshInCheckOkData;
 	}
 	if(this->is_ok || 
-	   (link->reassembly->getType() != TcpReassembly::http && counterTryOk > 10)) {
+	   (link->reassembly->getType() != TcpReassembly::http && !unlimitedReassemblyAttempts && counterTryOk > 10)) {
 		return(1);
 	}
 	++counterTryOk;
@@ -286,12 +290,14 @@ bool TcpReassemblyStream::ok2_ec(u_int32_t nextAck, bool enableDebug) {
  
 	nextStream->_only_check_psh = true;
 	if(!nextStream->ok(true, false, 0,
-			   0, 0, NULL, enableDebug)) {
+			   0, 0, 0,
+			   NULL, enableDebug)) {
 		return(false);
 	}
 	this->_force_wait_for_next_psh = true;
 	if(!this->ok(true, false, this->detect_ok_max_next_seq,
-		     0, 0, NULL, enableDebug)) {
+		     0, 0, 0,
+		     NULL, enableDebug)) {
 		nextStream->is_ok = false;
 		nextStream->clearCompleteData();
 		return(false);
@@ -672,8 +678,8 @@ void TcpReassemblyLink::streamIterator::print() {
 	std::ostream *__debug_stream = _debug_stream ? _debug_stream : &cout;
 	(*__debug_stream)
 		<< "iterator " 
-		<< inet_ntostring(htonl(this->link->ip_src)) << " / " << this->link->port_src << " -> "
-		<< inet_ntostring(htonl(this->link->ip_dst)) << " / " << this->link->port_dst << " ";
+		<< this->link->ip_src.getString() << " / " << this->link->port_src << " -> "
+		<< this->link->ip_dst.getString() << " / " << this->link->port_dst << " ";
 	if(this->stream) {
 		(*__debug_stream)
 			<< "  ack: " << this->stream->ack
@@ -769,18 +775,14 @@ TcpReassemblyLink::~TcpReassemblyLink() {
 	if(this->ethHeader) {
 		delete [] this->ethHeader;
 	}
-	for(int i = 0; i < 2; i++) {
-		if(this->remainData[i]) {
-			delete [] remainData[i];
-		}
-	}
+	clearRemainData(TcpReassemblyDataItem::DIRECTION_NA);
 	if(reassembly->getType() == TcpReassembly::ssl) {
 		if(opt_enable_ssl == 10) {
-			#ifdef HAVE_LIBGNUTLS
+			#if defined(HAVE_LIBGNUTLS) and defined(HAVE_SSL_WS)
 			end_decrypt_ssl(htonl(ip_src), htonl(ip_dst), port_src, port_dst);
 			#endif
 		} else {
-			end_decrypt_ssl_dssl(htonl(ip_src), htonl(ip_dst), port_src, port_dst);
+			end_decrypt_ssl_dssl(ip_src, ip_dst, port_src, port_dst);
 		}
 	}
 	if(this->check_duplicity_seq) {
@@ -830,11 +832,11 @@ bool TcpReassemblyLink::push_normal(
 				extern bool opt_ssl_destroy_ssl_session_on_rst;
 				if(opt_ssl_destroy_ssl_session_on_rst) {
 					if(opt_enable_ssl == 10) {
-						#ifdef HAVE_LIBGNUTLS
+						#if defined(HAVE_LIBGNUTLS) and defined(HAVE_SSL_WS)
 						end_decrypt_ssl(htonl(ip_src), htonl(ip_dst), port_src, port_dst);
 						#endif
 					} else {
-						end_decrypt_ssl_dssl(htonl(ip_src), htonl(ip_dst), port_src, port_dst);
+						end_decrypt_ssl_dssl(ip_src, ip_dst, port_src, port_dst);
 					}
 				}
 			}
@@ -918,11 +920,11 @@ bool TcpReassemblyLink::push_normal(
 					runCompleteAfterZerodataAck = true;
 				}
 			}
-			this->last_packet_at_from_header = time.tv_sec * 1000 + time.tv_usec / 1000;
+			this->last_packet_at_from_header = getTimeMS(&time);
 		}
 		rslt = true;
 	} else {
-		this->last_packet_at_from_header = time.tv_sec * 1000 + time.tv_usec / 1000;
+		this->last_packet_at_from_header = getTimeMS(&time);
 	}
 	if(!reassembly->enableCleanupThread) {
 		bool final = !reassembly->simpleByAck &&
@@ -982,9 +984,9 @@ bool TcpReassemblyLink::push_crazy(
 	     header_tcp.syn || header_tcp.fin || header_tcp.rst)) {
 		return(false);
 	}*/
-	direction = header_tcp.dest == this->port_dst ?
-			TcpReassemblyStream::DIRECTION_TO_DEST :
-			TcpReassemblyStream::DIRECTION_TO_SOURCE;
+	direction = header_tcp.get_dest() == this->port_dst ?
+		     TcpReassemblyStream::DIRECTION_TO_DEST :
+		     TcpReassemblyStream::DIRECTION_TO_SOURCE;
 	if(this->direction_confirm < 2) {
 		TcpReassemblyStream::eDirection checked_direction = direction;
 		if(this->direction_confirm < 2 && header_tcp.syn) {
@@ -1057,7 +1059,7 @@ bool TcpReassemblyLink::push_crazy(
 		}
 	}
 	//this->last_packet_at = getTimeMS();
-	this->last_packet_at_from_header = time.tv_sec * 1000 + time.tv_usec / 1000;
+	this->last_packet_at_from_header = getTimeMS(&time);
 	if(!this->created_at_from_header) {
 		this->created_at_from_header = this->last_packet_at_from_header;
 	}
@@ -1080,16 +1082,11 @@ bool TcpReassemblyLink::push_crazy(
 		}
 		if(_debug_output) {
 			if(ENABLE_DEBUG(reassembly->getType(), _debug_packet)) {
-				in_addr ip;
-				ip.s_addr = this->ip_src;
-				string ip_src = inet_ntoa(ip);
-				ip.s_addr = this->ip_dst;
-				string ip_dst = inet_ntoa(ip);
 				(*_debug_stream) 
 					<< " / "
-					<< ip_src << " / " << this->port_src
+					<< this->ip_src.getString() << " / " << this->port_src
 					<< " -> "
-					<< ip_dst << " / " << this->port_dst;
+					<< this->ip_dst.getString() << " / " << this->port_dst;
 			}
 			(*_debug_stream) << endl;
 		}
@@ -1146,7 +1143,7 @@ void TcpReassemblyLink::pushpacket(TcpReassemblyStream::eDirection direction,
 		stream->max_next_seq = packet.next_seq;
 	}
 	this->last_ack = stream->ack;
-	this->last_packet_at_from_header = packet.time.tv_sec * 1000 + packet.time.tv_usec / 1000;
+	this->last_packet_at_from_header = getTimeMS(&packet.time);
 }
 
 void TcpReassemblyLink::printContent(int level) {
@@ -1154,18 +1151,13 @@ void TcpReassemblyLink::printContent(int level) {
 	map<uint32_t, TcpReassemblyStream*>::iterator iter;
 	int counter = 0;
 	for(iter = this->queue_by_ack.begin(); iter != this->queue_by_ack.end(); iter++) {
-		in_addr ip;
-		ip.s_addr = this->ip_src;
-		string ip_src = inet_ntoa(ip);
-		ip.s_addr = this->ip_dst;
-		string ip_dst = inet_ntoa(ip);
 		(*__debug_stream)
 			<< fixed 
 			<< setw(level * 5) << ""
 			<< setw(3) << (++counter) << "   " 
-			<< setw(15) << ip_src << "/" << setw(6) << this->port_src
+			<< setw(15) << this->ip_src.getString() << "/" << setw(6) << this->port_src
 			<< " -> " 
-			<< setw(15) << ip_dst << "/" << setw(6) << this->port_dst
+			<< setw(15) << this->ip_dst.getString() << "/" << setw(6) << this->port_dst
 			<< endl;
 		iter->second->printContent(level + 1);
 	}
@@ -1175,16 +1167,11 @@ void TcpReassemblyLink::cleanup(u_int64_t act_time) {
 	map<uint32_t, TcpReassemblyStream*>::iterator iter;
 	
 	/*
-	in_addr ip;
-	ip.s_addr = this->ip_src;
-	string ip_src = inet_ntoa(ip);
-	ip.s_addr = this->ip_dst;
-	string ip_dst = inet_ntoa(ip);
 	cout << "*** call cleanup " 
 	     << fixed
-	     << setw(15) << ip_src << "/" << setw(6) << this->port_src
+	     << setw(15) << this->ip_src.getString() << "/" << setw(6) << this->port_src
 	     << " -> " 
-	     << setw(15) << ip_dst << "/" << setw(6) << this->port_dst
+	     << setw(15) << this->ip_dst.getString() << "/" << setw(6) << this->port_dst
 	     << endl;
 	*/
 	
@@ -1221,20 +1208,15 @@ void TcpReassemblyLink::cleanup(u_int64_t act_time) {
 			for(iter = this->queue_by_ack.begin(); iter != this->queue_by_ack.end(); ) {
 				if(iter->second->queuePacketVars.size() > 500) {
 					if(this->reassembly->isActiveLog() || ENABLE_DEBUG(reassembly->getType(), _debug_cleanup)) {
-						in_addr ip;
-						ip.s_addr = this->ip_src;
-						string ip_src = inet_ntoa(ip);
-						ip.s_addr = this->ip_dst;
-						string ip_dst = inet_ntoa(ip);
 						ostringstream outStr;
 						outStr << fixed 
 						       << "cleanup " 
 						       << reassembly->getTypeString()
 						       << " - remove ack " << iter->first 
 						       << " (too much seq - " << iter->second->queuePacketVars.size() << ") "
-						       << setw(15) << ip_src << "/" << setw(6) << this->port_src
+						       << setw(15) << this->ip_src.getString() << "/" << setw(6) << this->port_src
 						       << " -> " 
-						       << setw(15) << ip_dst << "/" << setw(6) << this->port_dst;
+						       << setw(15) << this->ip_dst.getString() << "/" << setw(6) << this->port_dst;
 						if(ENABLE_DEBUG(reassembly->getType(), _debug_cleanup)) {
 							(*_debug_stream) << outStr.str() << endl;
 						}
@@ -1256,9 +1238,9 @@ void TcpReassemblyLink::cleanup(u_int64_t act_time) {
 					<< "cleanup " 
 					<< reassembly->getTypeString()
 					<< " - remove ack " << this->queueStreams[0]->ack 
-					<< setw(15) << inet_ntostring(htonl(this->ip_src)) << "/" << setw(6) << this->port_src
+					<< setw(15) << this->ip_src.getString() << "/" << setw(6) << this->port_src
 					<< " -> " 
-					<< setw(15) << inet_ntostring(htonl(this->ip_dst)) << "/" << setw(6) << this->port_dst
+					<< setw(15) << this->ip_dst.getString() << "/" << setw(6) << this->port_dst
 					<< endl;
 			}
 			
@@ -1342,6 +1324,7 @@ int TcpReassemblyLink::okQueue_normal(int final, bool enableDebug) {
 						     i == size - 1 && (finOrRst || final == 2), 
 						     i == size - 1 ? 0 : this->queueStreams[i]->max_next_seq,
 						     reassembly->enableValidateLastQueueDataViaCheckData && i == size - 1 ? 1 : -1, 
+						     -1, 
 						     -1,
 						     NULL,
 						     enableDebug,
@@ -1373,8 +1356,9 @@ int TcpReassemblyLink::okQueue_simple_by_ack(u_int32_t ack, bool enableDebug) {
 				//  - 1 - check ack stream; if !checkOkData, then use prev streams
 				//  - 2 - suppress use prev streams and end loop
 				if(!stream->ok(false, true, stream->max_next_seq,
-					      0, 0, NULL, enableDebug,
-					      stream->min_seq)) {
+					       0, 0, 0,
+					       NULL, enableDebug,
+					       stream->min_seq)) {
 					break;
 				}
 				vector<TcpReassemblyStream*> streams;
@@ -1385,7 +1369,8 @@ int TcpReassemblyLink::okQueue_simple_by_ack(u_int32_t ack, bool enableDebug) {
 						if((reassembly->enableSmartCompleteData &&
 						    prevStream->isSetCompleteData() && prevStream->is_ok) ||
 						   prevStream->ok(false, true, prevStream->max_next_seq,
-								  0, 0, NULL, enableDebug,
+								  0, 0, 0,
+								  NULL, enableDebug,
 								  prevStream->min_seq)) {
 							streams.push_back(prevStream);
 						} else {
@@ -1424,7 +1409,8 @@ int TcpReassemblyLink::okQueue_simple_by_ack(u_int32_t ack, bool enableDebug) {
 							if((reassembly->enableSmartCompleteData &&
 							    prevStream->isSetCompleteData() && prevStream->is_ok) ||
 							   prevStream->ok(false, true, prevStream->max_next_seq,
-									  0, 0, NULL, enableDebug,
+									  0, 0, 0,
+									  NULL, enableDebug,
 									  prevStream->min_seq)) {
 								streams.push_back(prevStream);
 							} else {
@@ -1500,7 +1486,8 @@ int TcpReassemblyLink::okQueue_crazy(int final, bool enableDebug) {
 						(*_debug_stream) << "|";
 					}
 					if(iter.stream->ok(true, maxNextSeq == 0, maxNextSeq,
-							   -1, -1, lastHttpStream, enableDebug)) {
+							   -1, -1, -1,
+							   lastHttpStream, enableDebug)) {
 						bool existsAckInStream = false;
 						for(size_t i  = 0; i < this->ok_streams.size(); i++) {
 							if(this->ok_streams[i]->ack == iter.stream->ack) {
@@ -1548,7 +1535,8 @@ int TcpReassemblyLink::okQueue_crazy(int final, bool enableDebug) {
 					this->ok_streams[this->ok_streams.size() - 2]->is_ok = false;
 					this->ok_streams[this->ok_streams.size() - 2]->_ignore_expect_continue = true;
 					if(this->ok_streams[this->ok_streams.size() - 2]->ok(true, false, 0,
-											     -1, -1, NULL, false)) {
+											     -1, -1, -1,
+											     NULL, false)) {
 						completeExpectContinue = true;
 						iter.stream = this->ok_streams[this->ok_streams.size() - 2];
 						if(!iter.nextAckInDirection()) {
@@ -1578,7 +1566,8 @@ int TcpReassemblyLink::okQueue_crazy(int final, bool enableDebug) {
 					this->ok_streams[this->ok_streams.size() - 1]->is_ok = false;
 					this->ok_streams[this->ok_streams.size() - 1]->_ignore_expect_continue = true;
 					if(!this->ok_streams[this->ok_streams.size() - 1]->ok(true, false, 0,
-											      -1, -1, NULL, false)) {
+											      -1, -1, -1,
+											      NULL, false)) {
 						this->ok_streams[this->ok_streams.size() - 1]->is_ok = true;
 						this->ok_streams[this->ok_streams.size() - 1]->_ignore_expect_continue = false;
 						this->ok_streams[this->ok_streams.size() - 1]->complete_data = dataItem;
@@ -1601,7 +1590,8 @@ int TcpReassemblyLink::okQueue_crazy(int final, bool enableDebug) {
 								this->ok_streams[this->ok_streams.size() - 1]->complete_data.clearData();
 								this->ok_streams[this->ok_streams.size() - 1]->is_ok = false;
 								if(!iter.stream->ok(true, false, 0,
-										    -1, -1, NULL, false,
+										    -1, -1, -1,
+										    NULL, false,
 										    iter.stream->ok_packets[0][1]) ||
 								   (iter.stream->complete_data.getData() &&
 								    memcmp(iter.stream->complete_data.getData(), "HTTP/1.1 200 OK", 15))) {
@@ -1641,7 +1631,8 @@ int TcpReassemblyLink::okQueue_crazy(int final, bool enableDebug) {
 					this->ok_streams[this->ok_streams.size() - 1]->is_ok = false;
 					this->ok_streams[this->ok_streams.size() - 1]->_ignore_expect_continue = true;
 					if(!this->ok_streams[this->ok_streams.size() - 1]->ok(true, false, 0,
-											      -1, -1, NULL, false)) {
+											      -1, -1, -1, 
+											      NULL, false)) {
 						this->ok_streams[this->ok_streams.size() - 1]->is_ok = true;
 						this->ok_streams[this->ok_streams.size() - 1]->_ignore_expect_continue = false;
 						this->ok_streams[this->ok_streams.size() - 1]->complete_data = dataItem;
@@ -1736,8 +1727,8 @@ void TcpReassemblyLink::complete_normal(bool final) {
 					this->port_src, this->port_dst,
 					reassemblyData,
 					this->ethHeader, this->ethHeaderLength,
-					this->handle_index, this->dlt, this->sensor_id, this->sensor_ip,
-					this->uData, this,
+					this->handle_index, this->dlt, this->sensor_id, this->sensor_ip, this->pid,
+					this->uData, this->uData2, this->uData2_last, this,
 					ENABLE_DEBUG(reassembly->getType(), _debug_save) ? _debug_stream : NULL);
 				reassemblyData = NULL;
 			}
@@ -1795,8 +1786,8 @@ void TcpReassemblyLink::complete_simple_by_ack() {
 					this->port_src, this->port_dst,
 					reassemblyData,
 					this->ethHeader, this->ethHeaderLength,
-					this->handle_index, this->dlt, this->sensor_id, this->sensor_ip,
-					this->uData, this,
+					this->handle_index, this->dlt, this->sensor_id, this->sensor_ip, this->pid,
+					this->uData, this->uData2, this->uData2_last, this,
 					ENABLE_DEBUG(reassembly->getType(), _debug_save) ? _debug_stream : NULL);
 	while(this->ok_streams.size()) {
 		TcpReassemblyStream *stream = this->ok_streams[0];
@@ -1959,8 +1950,8 @@ void TcpReassemblyLink::complete_crazy(bool final, bool eraseCompletedStreams) {
 					}
 					(*_debug_stream)
 						<< "  ack: " << this->ok_streams[skip_offset + i]->ack << "  "
-						<< inet_ntostring(htonl(this->ip_src)) << " / " << this->port_src << " -> "
-						<< inet_ntostring(htonl(this->ip_dst)) << " / " << this->port_dst << " "
+						<< this->ip_src.getString() << " / " << this->port_src << " -> "
+						<< this->ip_dst.getString() << " / " << this->port_dst << " "
 						<< endl << endl;
 					(*_debug_stream) << data << endl << endl;
 				}
@@ -2028,8 +2019,8 @@ void TcpReassemblyLink::complete_crazy(bool final, bool eraseCompletedStreams) {
 					this->port_src, this->port_dst,
 					reassemblyData,
 					this->ethHeader, this->ethHeaderLength,
-					this->handle_index, this->dlt, this->sensor_id, this->sensor_ip,
-					this->uData, this,
+					this->handle_index, this->dlt, this->sensor_id, this->sensor_ip, this->pid,
+					this->uData, this->uData2, this->uData2_last, this,
 					ENABLE_DEBUG(reassembly->getType(), _debug_save) ? _debug_stream : NULL);
 				reassemblyData = NULL;
 			}
@@ -2054,15 +2045,15 @@ TcpReassemblyLink::streamIterator TcpReassemblyLink::createIterator() {
 }
 
 void TcpReassemblyLink::switchDirection() {
-	u_int32_t tmp = this->ip_src;
+	vmIP tmp_ip = this->ip_src;
 	this->ip_src = this->ip_dst;
-	this->ip_dst = tmp;
-	tmp = this->port_src;
+	this->ip_dst = tmp_ip;
+	vmPort tmp_port = this->port_src;
 	this->port_src = this->port_dst;
-	this->port_dst = tmp;
-	tmp = this->fin_to_source;
+	this->port_dst = tmp_port;
+	bool tmp_fin = this->fin_to_source;
 	this->fin_to_source = this->fin_to_dest;
-	this->fin_to_dest = tmp;
+	this->fin_to_dest = tmp_fin;
 	map<uint32_t, TcpReassemblyStream*>::iterator iter;
 	for(iter = this->queue_by_ack.begin(); iter != this->queue_by_ack.end(); iter++) {
 		iter->second->direction = iter->second->direction == TcpReassemblyStream::DIRECTION_TO_DEST ?
@@ -2084,11 +2075,12 @@ void TcpReassemblyLink::switchDirection() {
 void TcpReassemblyLink::createEthHeader(u_char *packet, int dlt) {
 	sll_header *header_sll;
 	ether_header *header_eth;
-	u_int header_ip_offset;
-	int protocol;
+	u_int16_t header_ip_offset;
+	u_int16_t protocol;
+	u_int16_t vlan;
 	if(parseEtherHeader(dlt, packet,
 			    header_sll, header_eth, NULL,
-			    header_ip_offset, protocol)) {
+			    header_ip_offset, protocol, vlan)) {
 		this->ethHeaderLength = header_ip_offset;
 		if(this->ethHeaderLength > 0 && this->ethHeaderLength < 50) {
 			this->ethHeader = new FILE_LINE(36009) u_char[this->ethHeaderLength];
@@ -2098,19 +2090,21 @@ void TcpReassemblyLink::createEthHeader(u_char *packet, int dlt) {
 }
 
 void TcpReassemblyLink::extCleanup(int id, bool all) {
-	syslog(LOG_INFO, "TCPREASSEMBLY EXT CLEANUP %i: link %s:%u -> %s:%u size: %lu",
+	/*
+	syslog(LOG_INFO, "TCPREASSEMBLY EXT CLEANUP %i: link %s:%u -> %s:%u size: %zd",
 	       id,
-	       inet_ntostring(htonl(this->ip_src)).c_str(), this->port_src,
-	       inet_ntostring(htonl(this->ip_dst)).c_str(), this->port_dst,
+	       this->ip_src.getString().c_str(), this->port_src.getPort(),
+	       this->ip_dst.getString().c_str(), this->port_dst.getPort(),
 	       this->queueStreams.size());
+	*/
 	if(reassembly->log) {
 		ostringstream outStr;
 		outStr << fixed 
 		       << "EXT CLEANUP " << id << ": " 
 		       << sqlDateTimeString(time(NULL)) << " "
-		       << inet_ntostring(htonl(this->ip_src)) << ":" << this->port_src
+		       << this->ip_src.getString() << ":" << this->port_src
 		       << " -> "
-		       << inet_ntostring(htonl(this->ip_dst)) << ":" << this->port_dst
+		       << this->ip_dst.getString() << ":" << this->port_dst
 		       << " size: "
 		       << this->queueStreams.size();
 		reassembly->addLog(outStr.str().c_str());
@@ -2146,16 +2140,17 @@ void TcpReassemblyLink::extCleanup(int id, bool all) {
 	}
 }
 
-void TcpReassemblyLink::setRemainData(u_char *data, u_int32_t datalen, TcpReassemblyDataItem::eDirection direction) {
+void TcpReassemblyLink::addRemainData(TcpReassemblyDataItem::eDirection direction, u_int32_t ack, u_int32_t seq, u_char *data, u_int32_t datalen) {
 	int index = direction == TcpReassemblyDataItem::DIRECTION_TO_DEST ? 0 :
 		    direction == TcpReassemblyDataItem::DIRECTION_TO_SOURCE ? 1 : -1;
-	if(index >= 0) {
-		this->clearRemainData(direction);
-		if(data && datalen) {
-			this->remainData[index] = new FILE_LINE(36010) u_char[datalen];
-			memcpy(this->remainData[index], data, datalen);
-			this->remainDataLength[index] = datalen;
-		}
+	if(index >= 0 && data && datalen) {
+		sRemainDataItem item;
+		item.ack = ack;
+		item.seq = seq;
+		item.data = new FILE_LINE(0) u_char[datalen];
+		item.datalen = datalen;
+		memcpy(item.data, data, datalen);
+		this->remainData[index].push_back(item);
 	}
 }
 
@@ -2164,25 +2159,94 @@ void TcpReassemblyLink::clearRemainData(TcpReassemblyDataItem::eDirection direct
 		    direction == TcpReassemblyDataItem::DIRECTION_TO_SOURCE ? 1 : -1;
 	for(int i = 0; i < 2; i++) {
 		if(index < 0 || index == i) {
-			if(remainData[i]) {
-				delete [] remainData[i];
-				remainData[i] = NULL;
-				remainDataLength[i] = 0;
+			for(unsigned j = 0; j < remainData[i].size(); j++) {
+				delete [] remainData[i][j].data;
 			}
+			remainData[i].clear();
 		}
 	}
 }
 
-u_char *TcpReassemblyLink::getRemainData(TcpReassemblyDataItem::eDirection direction) {
+u_char *TcpReassemblyLink::completeRemainData(TcpReassemblyDataItem::eDirection direction, u_int32_t *rslt_datalen, u_int32_t ack, u_int32_t seq, u_char *data, u_int32_t datalen) {
 	int index = direction == TcpReassemblyDataItem::DIRECTION_TO_DEST ? 0 :
 		    direction == TcpReassemblyDataItem::DIRECTION_TO_SOURCE ? 1 : -1;
-	return(index >= 0 ? remainData[index] : NULL);
+	if(index >= 0) {
+		*rslt_datalen = getRemainDataLength(direction) + datalen;
+		u_char *rslt_data = new FILE_LINE(0) u_char[*rslt_datalen];
+		if(ack && seq && existsAllAckSeq(direction)) {
+			map<u_int64_t, list<int> > sort_by_ack_seq;
+			for(unsigned i = 0; i < remainData[index].size(); i++) {
+				sort_by_ack_seq[(u_int64_t)remainData[index][i].ack << 32 | remainData[index][i].seq].push_back(i);
+			}
+			if(data && datalen) {
+				sort_by_ack_seq[(u_int64_t)ack << 32 | seq].push_back(-1);
+			}
+			u_int32_t offset = 0;
+			for(map<u_int64_t, list<int> >::iterator iter = sort_by_ack_seq.begin(); iter != sort_by_ack_seq.end(); iter++) {
+				if(iter->second.size()) {
+					for(list<int>::iterator iter_i = iter->second.begin(); iter_i != iter->second.end(); iter_i++) {
+						int i = *iter_i;
+						if(i >= 0) {
+							memcpy(rslt_data + offset, remainData[index][i].data, remainData[index][i].datalen);
+							offset += remainData[index][i].datalen;
+						} else {
+							memcpy(rslt_data + offset, data, datalen);
+							offset += datalen;
+						}
+					}
+				}
+			}
+		} else {
+			u_int32_t offset = 0;
+			for(unsigned i = 0; i < remainData[index].size(); i++) {
+				memcpy(rslt_data + offset, remainData[index][i].data, remainData[index][i].datalen);
+				offset += remainData[index][i].datalen;
+			}
+			if(data && datalen) {
+				memcpy(rslt_data + offset, data, datalen);
+				offset += datalen;
+			}
+		}
+		return(rslt_data);
+	}
+	*rslt_datalen = 0;
+	return(NULL);
 }
 
 u_int32_t TcpReassemblyLink::getRemainDataLength(TcpReassemblyDataItem::eDirection direction) {
 	int index = direction == TcpReassemblyDataItem::DIRECTION_TO_DEST ? 0 :
 		    direction == TcpReassemblyDataItem::DIRECTION_TO_SOURCE ? 1 : -1;
-	return(index >= 0 && remainData[index] ? remainDataLength[index] : 0);
+	if(index >= 0) {
+		u_int32_t length = 0;
+		for(unsigned i = 0; i < remainData[index].size(); i++) {
+			length += remainData[index][i].datalen;
+		}
+		return(length);
+	}
+	return(0);
+}
+
+bool TcpReassemblyLink::existsRemainData(TcpReassemblyDataItem::eDirection direction) {
+	int index = direction == TcpReassemblyDataItem::DIRECTION_TO_DEST ? 0 :
+		    direction == TcpReassemblyDataItem::DIRECTION_TO_SOURCE ? 1 : -1;
+	if(index >= 0) {
+		return(remainData[index].size() > 0);
+	}
+	return(false);
+}
+
+bool TcpReassemblyLink::existsAllAckSeq(TcpReassemblyDataItem::eDirection direction) {
+	int index = direction == TcpReassemblyDataItem::DIRECTION_TO_DEST ? 0 :
+		    direction == TcpReassemblyDataItem::DIRECTION_TO_SOURCE ? 1 : -1;
+	if(index >= 0) {
+		for(unsigned i = 0; i < remainData[index].size(); i++) {
+			if(!remainData[index][i].ack || !remainData[index][i].seq) {
+				return(false);
+			}
+		}
+		return(true);
+	}
+	return(false);
 }
 
 list<d_u_int32_t> *TcpReassemblyLink::getSipOffsets() {
@@ -2229,6 +2293,7 @@ TcpReassembly::TcpReassembly(eType type) {
 	this->enableDestroyStreamsInComplete = false;
 	this->enableAllCompleteAfterZerodataAck = false;
 	this->enableValidateDataViaCheckData = false;
+	this->unlimitedReassemblyAttempts = false;
 	this->enableValidateLastQueueDataViaCheckData = false;
 	this->enableStrictValidateDataViaCheckData = false;
 	this->needValidateDataViaCheckData = false;
@@ -2256,7 +2321,6 @@ TcpReassembly::TcpReassembly(eType type) {
 	this->ignoreTerminating = false;
 	memset(this->cleanupThreadPstatData, 0, sizeof(this->cleanupThreadPstatData));
 	memset(this->packetThreadPstatData, 0, sizeof(this->packetThreadPstatData));
-	this->lastTimeLogErrExceededMaximumAttempts = 0;
 	this->_cleanupCounter = 0;
 	this->linkTimeout = 2 * 60;
 	this->initCleanupThreadOk = false;
@@ -2469,7 +2533,7 @@ void* TcpReassembly::cleanupThreadFunction(void*) {
 			this->cleanup();
 			this->dataCallback->writeToDb();
 		}
-		usleep(100000);
+		USLEEP(100000);
 	}
 	return(NULL);
 }
@@ -2489,8 +2553,8 @@ void* TcpReassembly::packetThreadFunction(void*) {
 		if(packetQueue.pop(&packet)) {
 			this->_push(packet.header, packet.header_ip, packet.packet,
 				    packet.block_store, packet.block_store_index,
-				    packet.handle_index, packet.dlt, packet.sensor_id, packet.sensor_ip,
-				    packet.uData, packet.isSip);
+				    packet.handle_index, packet.dlt, packet.sensor_id, packet.sensor_ip, packet.pid,
+				    packet.uData, packet.uData2, packet.isSip);
 			if(packet.alloc_packet) {
 				delete packet.header;
 				delete [] packet.packet;
@@ -2499,7 +2563,7 @@ void* TcpReassembly::packetThreadFunction(void*) {
 				packet.block_store->unlock_packet(packet.block_store_index);
 			}
 		} else {
-			usleep(1000);
+			USLEEP(1000);
 		}
 	}
 	return(NULL);
@@ -2520,8 +2584,8 @@ void TcpReassembly::addLog(const char *logString) {
 
 void TcpReassembly::push_tcp(pcap_pkthdr *header, iphdr2 *header_ip, u_char *packet, bool alloc_packet,
 			     pcap_block_store *block_store, int block_store_index, bool block_store_locked,
-			     u_int16_t handle_index, int dlt, int sensor_id, u_int32_t sensor_ip,
-			     void *uData, bool isSip) {
+			     u_int16_t handle_index, int dlt, int sensor_id, vmIP sensor_ip, sPacketInfoData pid,
+			     void *uData, void *uData2, bool isSip) {
  
 	if(_ENABLE_DEBUG(type, true) && !_debug_stream) {
 		if(sverb.tcpreassembly_debug_file) {
@@ -2535,7 +2599,7 @@ void TcpReassembly::push_tcp(pcap_pkthdr *header, iphdr2 *header_ip, u_char *pac
 	if((debug_limit_counter && debug_counter > debug_limit_counter) ||
 	   !(type == ssl || 
 	     type == sip ||
-	     this->check_ip(htonl(header_ip->saddr)) || this->check_ip(htonl(header_ip->daddr)))) {
+	     this->check_ip(header_ip->get_saddr()) || this->check_ip(header_ip->get_daddr()))) {
 		if(block_store && block_store_locked) {
 			block_store->unlock_packet(block_store_index);
 		}
@@ -2559,7 +2623,9 @@ void TcpReassembly::push_tcp(pcap_pkthdr *header, iphdr2 *header_ip, u_char *pac
 		_packet.dlt = dlt;
 		_packet.sensor_id = sensor_id;
 		_packet.sensor_ip = sensor_ip;
+		_packet.pid = pid;
 		_packet.uData = uData;
+		_packet.uData2 = uData2;
 		_packet.isSip = isSip;
 		this->packetQueue.push(_packet);
 	} else {
@@ -2568,8 +2634,8 @@ void TcpReassembly::push_tcp(pcap_pkthdr *header, iphdr2 *header_ip, u_char *pac
 		}
 		this->_push(header, header_ip, packet,
 			    block_store, block_store_index,
-			    handle_index, dlt, sensor_id, sensor_ip,
-			    uData, isSip);
+			    handle_index, dlt, sensor_id, sensor_ip, pid,
+			    uData, uData2, isSip);
 		if(this->enablePushLock) {
 			this->unlock_push();
 		}
@@ -2613,8 +2679,8 @@ bool TcpReassembly::checkOkData(u_char * data, unsigned datalen, bool strict) {
  
 void TcpReassembly::_push(pcap_pkthdr *header, iphdr2 *header_ip, u_char *packet,
 			  pcap_block_store *block_store, int block_store_index,
-			  u_int16_t handle_index, int dlt, int sensor_id, u_int32_t sensor_ip,
-			  void *uData, bool isSip) {
+			  u_int16_t handle_index, int dlt, int sensor_id, vmIP sensor_ip, sPacketInfoData pid,
+			  void *uData, void *uData2, bool isSip) {
 
 	tcphdr2 *header_tcp_pointer;
 	tcphdr2 header_tcp;
@@ -2622,7 +2688,7 @@ void TcpReassembly::_push(pcap_pkthdr *header, iphdr2 *header_ip, u_char *packet
 	u_int32_t datalen;
 	u_int32_t datacaplen;
 	
-	header_tcp_pointer = (tcphdr2*)((u_char*)header_ip + sizeof(*header_ip));
+	header_tcp_pointer = (tcphdr2*)((u_char*)header_ip + header_ip->get_hdr_size());
 	data = (u_char*)header_tcp_pointer + (header_tcp_pointer->doff << 2);
 	
 	if((data - packet) > header->caplen) {
@@ -2634,7 +2700,10 @@ void TcpReassembly::_push(pcap_pkthdr *header, iphdr2 *header_ip, u_char *packet
 	if(header->len > header->caplen) {
 		datalen += (header->len - header->caplen);
 	}
-	u_int32_t tcp_data_length = ntohs(header_ip->tot_len) - sizeof(iphdr2) - header_tcp_pointer->doff * 4;
+	u_int8_t proto;
+	u_int32_t tcp_data_length = header_ip->get_tot_len() - 
+				    header_ip->get_hdr_size(&proto) - header_ip->get_footer_size(proto) - 
+				    header_tcp_pointer->doff * 4;
 	if(datalen > tcp_data_length) {
 		datalen = tcp_data_length;
 	}
@@ -2643,19 +2712,18 @@ void TcpReassembly::_push(pcap_pkthdr *header, iphdr2 *header_ip, u_char *packet
 	}
 	
 	header_tcp = *header_tcp_pointer;
-	header_tcp.source = htons(header_tcp.source);
-	header_tcp.dest = htons(header_tcp.dest);
 	header_tcp.seq = htonl(header_tcp.seq);
 	header_tcp.ack_seq = htonl(header_tcp.ack_seq);
 	u_int32_t next_seq = header_tcp.seq + datalen;
 	
 	if(sverb.tcp_debug_port) {
-		if(header_tcp.source != sverb.tcp_debug_port && header_tcp.dest != sverb.tcp_debug_port) {
+		if((int)header_tcp.get_source() != sverb.tcp_debug_port && (int)header_tcp.get_dest() != sverb.tcp_debug_port) {
 			return;
 		}
 	}
-	if(sverb.tcp_debug_ip) {
-		if(header_ip->saddr != sverb.tcp_debug_ip && header_ip->daddr != sverb.tcp_debug_ip) {
+	vmIP *tcp_debug_ip = (vmIP*)sverb.tcp_debug_ip;
+	if(tcp_debug_ip->isSet()) {
+		if(header_ip->get_saddr() != *tcp_debug_ip && header_ip->get_daddr() != *tcp_debug_ip) {
 			return;
 		}
 	}
@@ -2689,9 +2757,9 @@ void TcpReassembly::_push(pcap_pkthdr *header, iphdr2 *header_ip, u_char *packet
 			<< fixed
 			<< sqlDateTimeString(header->ts.tv_sec) << "." << setw(6) << header->ts.tv_usec
 			<< " : "
-			<< setw(15) << inet_ntostring(htonl(header_ip->saddr)) << "/" << setw(6) << header_tcp.source
+			<< setw(15) << header_ip->get_saddr().getString() << "/" << setw(6) << header_tcp.get_source()
 			<< " -> " 
-			<< setw(15) << inet_ntostring(htonl(header_ip->daddr)) << "/" << setw(6) << header_tcp.dest
+			<< setw(15) << header_ip->get_daddr().getString() << "/" << setw(6) << header_tcp.get_dest()
 			<< "   "
 			<< (header_tcp.fin ? 'F' : '-')
 			<< (header_tcp.syn ? 'S' : '-') 
@@ -2717,13 +2785,13 @@ void TcpReassembly::_push(pcap_pkthdr *header, iphdr2 *header_ip, u_char *packet
 	}
 	
 	this->last_time = getTimeMS();
-	this->act_time_from_header = header->ts.tv_sec * 1000 + header->ts.tv_usec / 1000;
+	this->act_time_from_header = getTimeMS(header);
 	
 	TcpReassemblyLink *link = NULL;
 	map<TcpReassemblyLink_id, TcpReassemblyLink*>::iterator iter;
 	TcpReassemblyStream::eDirection direction = TcpReassemblyStream::DIRECTION_TO_DEST;
-	TcpReassemblyLink_id id(header_ip->saddr, header_ip->daddr, header_tcp.source, header_tcp.dest);
-	TcpReassemblyLink_id idr(header_ip->daddr, header_ip->saddr, header_tcp.dest, header_tcp.source);
+	TcpReassemblyLink_id id(header_ip->get_saddr(), header_ip->get_daddr(), header_tcp.get_source(), header_tcp.get_dest());
+	TcpReassemblyLink_id idr(header_ip->get_daddr(), header_ip->get_saddr(), header_tcp.get_dest(), header_tcp.get_source());
 	if(this->enableCleanupThread) {
 		this->lock_links();
 	}
@@ -2770,46 +2838,47 @@ void TcpReassembly::_push(pcap_pkthdr *header, iphdr2 *header_ip, u_char *packet
 		    (datalen > 4 && !memcmp(data, "GET ", 4)))) {
 			link->state = TcpReassemblyLink::STATE_SYN_FORCE_OK;
 		}
+		link->uData2_last = uData2;
 	} else {
 		if(!this->enableCrazySequence &&
 		   header_tcp.syn && !header_tcp.ack) {
-			if(this->check_port(header_tcp.dest, htonl(header_ip->daddr))) {
+			if(this->check_port(header_tcp.get_dest(), header_ip->get_daddr())) {
 				if(ENABLE_DEBUG(type, _debug_packet)) {
 					(*_debug_stream) <<
 						fixed
 						<< " ** NEW LINK " 
 						<< getTypeString(true)
 						<< " NORMAL: " 
-						<< setw(15) << inet_ntostring(htonl(header_ip->saddr)) << "/" << setw(6) << header_tcp.source
+						<< setw(15) << header_ip->get_saddr().getString() << "/" << setw(6) << header_tcp.get_source()
 						<< " -> " 
-						<< setw(15) << inet_ntostring(htonl(header_ip->daddr)) << "/" << setw(6) << header_tcp.dest
+						<< setw(15) << header_ip->get_daddr().getString() << "/" << setw(6) << header_tcp.get_dest()
 						<< endl;
 				}
-				link = new FILE_LINE(36011) TcpReassemblyLink(this, header_ip->saddr, header_ip->daddr, header_tcp.source, header_tcp.dest,
-								       packet, header_ip,
-								       handle_index, dlt, sensor_id, sensor_ip,
-								       uData);
+				link = new FILE_LINE(36011) TcpReassemblyLink(this, header_ip->get_saddr(), header_ip->get_daddr(), header_tcp.get_source(), header_tcp.get_dest(),
+									      packet, header_ip,
+									      handle_index, dlt, sensor_id, sensor_ip, pid,
+									      uData, uData2);
 				this->links[id] = link;
 				create_new_link = true;
 			}
 		} else if(!this->enableCrazySequence && this->enableWildLink) {
 			if(!(type == sip && !isSip) &&
-			   !(type == ssl && !this->check_port(header_tcp.dest, htonl(header_ip->daddr)))) {
+			   !(type == ssl && !this->check_port(header_tcp.get_dest(), header_ip->get_daddr()))) {
 				if(ENABLE_DEBUG(type, _debug_packet)) {
 					(*_debug_stream)
 						<< fixed
 						<< " ** NEW LINK "
 						<< getTypeString(true)
 						<< " FORCE: " 
-						<< setw(15) << inet_ntostring(htonl(header_ip->saddr)) << "/" << setw(6) << header_tcp.source
+						<< setw(15) << header_ip->get_saddr().getString() << "/" << setw(6) << header_tcp.get_source()
 						<< " -> " 
-						<< setw(15) << inet_ntostring(htonl(header_ip->daddr)) << "/" << setw(6) << header_tcp.dest
+						<< setw(15) << header_ip->get_daddr().getString() << "/" << setw(6) << header_tcp.get_dest()
 						<< endl;
 				}
-				link = new FILE_LINE(36012) TcpReassemblyLink(this, header_ip->saddr, header_ip->daddr, header_tcp.source, header_tcp.dest,
-								       packet, header_ip,
-								       handle_index, dlt, sensor_id, sensor_ip,
-								       uData);
+				link = new FILE_LINE(36012) TcpReassemblyLink(this, header_ip->get_saddr(), header_ip->get_daddr(), header_tcp.get_source(), header_tcp.get_dest(),
+									      packet, header_ip,
+									      handle_index, dlt, sensor_id, sensor_ip, pid,
+									      uData, uData2);
 				this->links[id] = link;
 				create_new_link = true;
 				link->state = TcpReassemblyLink::STATE_SYN_FORCE_OK;
@@ -2825,15 +2894,15 @@ void TcpReassembly::_push(pcap_pkthdr *header, iphdr2 *header_ip, u_char *packet
 					<< " ** NEW LINK "
 					<< getTypeString(true)
 					<< " CRAZY: " 
-					<< setw(15) << inet_ntostring(htonl(header_ip->saddr)) << "/" << setw(6) << header_tcp.source
+					<< setw(15) << header_ip->get_saddr().getString() << "/" << setw(6) << header_tcp.get_source()
 					<< " -> " 
-					<< setw(15) << inet_ntostring(htonl(header_ip->daddr)) << "/" << setw(6) << header_tcp.dest
+					<< setw(15) << header_ip->get_daddr().getString() << "/" << setw(6) << header_tcp.get_dest()
 					<< endl;
 			}
-			link = new FILE_LINE(36013) TcpReassemblyLink(this, header_ip->saddr, header_ip->daddr, header_tcp.source, header_tcp.dest,
-							       packet, header_ip,
-							       handle_index, dlt, sensor_id, sensor_ip,
-							       uData);
+			link = new FILE_LINE(36013) TcpReassemblyLink(this, header_ip->get_saddr(), header_ip->get_daddr(), header_tcp.get_source(), header_tcp.get_dest(),
+								      packet, header_ip,
+								      handle_index, dlt, sensor_id, sensor_ip, pid,
+								      uData, uData2);
 			this->links[id] = link;
 			create_new_link = true;
 			if(this->enableCrazySequence) {
@@ -2915,20 +2984,15 @@ void TcpReassembly::cleanup(bool all) {
 		   !enableHttpCleanupExt &&
 		   link && link->queue_by_ack.size() > 500) {
 			if(this->isActiveLog() || ENABLE_DEBUG(type, _debug_cleanup)) {
-				in_addr ip;
-				ip.s_addr = link->ip_src;
-				string ip_src = inet_ntoa(ip);
-				ip.s_addr = link->ip_dst;
-				string ip_dst = inet_ntoa(ip);
 				ostringstream outStr;
 				outStr << fixed 
 				       << "cleanup " 
 				       << getTypeString()
 				       << " - remove link "
 				       << "(too much ack - " << link->queue_by_ack.size() << ") "
-				       << setw(15) << ip_src << "/" << setw(6) << link->port_src
+				       << setw(15) << link->ip_src.getString() << "/" << setw(6) << link->port_src
 				       << " -> "
-				       << setw(15) << ip_dst << "/" << setw(6) << link->port_dst;
+				       << setw(15) << link->ip_dst.getString() << "/" << setw(6) << link->port_dst;
 				if(ENABLE_DEBUG(type, _debug_cleanup)) {
 					(*_debug_stream) << outStr.str() << endl;
 				}
@@ -2995,16 +3059,11 @@ void TcpReassembly::cleanup(bool all) {
 			}
 			if(_debug_output) {
 				if(ENABLE_DEBUG(type, _debug_packet)) {
-					in_addr ip;
-					ip.s_addr = link->ip_src;
-					string ip_src = inet_ntoa(ip);
-					ip.s_addr = link->ip_dst;
-					string ip_dst = inet_ntoa(ip);
 					(*_debug_stream)
 						<< " clean "
-						<< ip_src << " / " << link->port_src
+						<< link->ip_src.getString() << " / " << link->port_src
 						<< " -> "
-						<< ip_dst << " / " << link->port_dst;
+						<< link->ip_dst.getString() << " / " << link->port_dst;
 				}
 				(*_debug_stream) << endl;
 			}

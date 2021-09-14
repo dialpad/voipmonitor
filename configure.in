@@ -6,14 +6,28 @@ AC_INIT([voipmonitor], [VERSION], [support@voipmonitor.org])
 AC_CONFIG_SRCDIR([voipmonitor.cpp])
 AC_CONFIG_HEADERS([config.h])
 
+# test platform
+PLATFORM=`uname`
+
 # Checks for programs.
 AC_PROG_CXX
 AC_PROG_CC
 AC_PROG_INSTALL
 AC_PROG_MAKE_SET
 
+
 LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/lib"
 LDFLAGS="$LDFLAGS -L/usr/local/lib"
+
+AC_ARG_WITH(openssl-dir, [  --with-openssl-dir=PATH path to openssl lib directory ], [
+	TMPOPENSSLDIRLIB=-L$withval/lib
+	TMPOPENSSLDIRINC=-I$withval/include
+	AC_SUBST([OPENSSLDIRLIB], [$TMPOPENSSLDIRLIB])
+	AC_SUBST([OPENSSLDIRINC], [$TMPOPENSSLDIRINC])
+	LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$TMPOPENSSLDIRLIB"
+	LDFLAGS="$LDFLAGS $TMPOPENSSLDIRLIB"
+])
+
 
 # Checks for libraries.
 # FIXME: Replace `main' with a function in `-lc':
@@ -37,7 +51,7 @@ AC_CHECK_LIB([pthread], [main])
 # FIXME: Replace `main' with a function in `-lrt':
 AC_CHECK_LIB([rt], [main])
 # FIXME: Replace `main' with a function in `-lssl':
-#AC_CHECK_LIB([ssl], [main])
+AC_CHECK_LIB([ssl], [main], HAVE_OPENSSL=1 , AC_MSG_ERROR([Unable to find ssl library. apt-get install libssl-dev | yum install openssl-devel]))
 # FIXME: Replace `main' with a function in `-lvorbis':
 AC_CHECK_LIB([vorbis], [main], ,AC_MSG_ERROR([Unable to find VORBIS library. Debian: apt-get install libvorbis-dev. Centos/Redhat: yum install libogg-devel libvorbis-devel]))
 # FIXME: Replace `main' with a function in `-lvorbisenc':
@@ -59,7 +73,6 @@ else
 	AC_MSG_ERROR([Bad curl version ($CURL_VER_MAJOR.$CURL_VER_MINOR). Version 7.34 or higher is required.])
 fi
 
-AC_CHECK_LIB([ssh], [ssh_forward_accept], HAVE_LIBSSH=1, AC_MSG_NOTICE([Your libssh is old or missing - cloud feature is disabled. apt-get install libssh-dev | yum install libssh-devel | or compile from source https://red.libssh.org/projects/libssh/files]))
 AC_CHECK_LIB([json], [main], LIBJSON_NAME='json')
 AC_CHECK_LIB([json-c], [main], LIBJSON_NAME='json-c')
 AC_CHECK_LIB([png], [main], HAVE_LIBPNG=1, AC_MSG_WARN([Unable to find libpng library. apt-get install libpng12-dev | yum install libpng-devel]))
@@ -74,6 +87,25 @@ AC_CHECK_LIB([rrd], [main], , AC_MSG_ERROR([Unable to find librrd library. apt-g
 AC_CHECK_LIB([glib-2.0], [main], , AC_MSG_ERROR([Unable to find libglib library. apt-get install  libglib2.0-dev | yum install glib2-devel]))
 AC_CHECK_LIB([xml2], [main], , AC_MSG_ERROR([Unable to find xml2 library. apt-get install libxml2-dev | yum install libxml2-devel]))
 
+AC_ARG_WITH(libc-dir, [  --with-libc-dir=PATH path to explicit libc directory (for static building)], [
+	TMPLIBCDIRLIB=-L$withval/lib
+	TMPLIBCDIRINC=-I$withval/include
+	AC_SUBST([LIBCDIRLIB], [$TMPLIBCDIRLIB])
+	AC_SUBST([LIBCDIRINC], [$TMPLIBCDIRINC])
+])
+
+
+
+AC_ARG_WITH(dpdk-include, [  --with-dpdk-include=PATH path to explicit include files], [
+	TMPDPDK=-I$withval
+	AC_SUBST([DPDKINCLUDE], [$TMPDPDK])
+], [
+])
+AC_ARG_WITH(dpdk-lib, [  --with-dpdk-lib=PATH path to explicit lib files], [
+	TMPDPDKLIB=-L$withval
+	AC_SUBST([DPDKLIBRARY], [$TMPDPDKLIB])
+], [
+])
 # Check for MySQL libraries (or MariaDB)
 AC_MSG_CHECKING(for mysql_config executable)
 AC_ARG_WITH(mysql, [  --with-mysql=PATH path to mysql_config binary or mysql prefix dir], [
@@ -98,7 +130,7 @@ AC_ARG_WITH(mysql, [  --with-mysql=PATH path to mysql_config binary or mysql pre
 ])
 if test "x$MYSQL_CONFIG" = "x"
 then
-    AC_MSG_RESULT(not found - apt-get install libmysqlclient-dev)
+    AC_MSG_RESULT(not found - apt-get install libmysqlclient-dev | yum install mysql-devel or yum install mysql-community-devel)
     exit 3
 else
     AC_SUBST([MYSQLCFLAGS],[`$MYSQL_CONFIG --cflags`])
@@ -108,14 +140,44 @@ else
     AC_SUBST([MYSQLINCLUDE],[`$MYSQL_CONFIG --include`])
     AC_MSG_RESULT($MYSQL_CONFIG)
 fi
-AC_CHECK_LIB([mysqlclient], [main], , AC_MSG_ERROR([Unable to find libmysqlclient. apt-get install libmysqlclient-dev | yum install mysql-devel | pkg install mysql56-client]))
+AC_CHECK_LIB([mysqlclient], [main], , AC_MSG_ERROR([Unable to find libmysqlclient. apt-get install libmysqlclient-dev | yum install mysql-devel or yum install mysql-community-devel| pkg install mysql56-client]))
+
+# check if mysql knows the MYSQL_OPT_SSL_* options
+# mariadb 10.3 don't know --cxxflags option in mysql_config
+ORIGCFLAGS=$CFLAGS
+ORIGCXXFLAGS=$CXXFLAGS
+CFLAGS=`$MYSQL_CONFIG --cflags`
+CXXFLAGS=`$MYSQL_CONFIG --cflags`
+AC_COMPILE_IFELSE(
+	[AC_LANG_PROGRAM([[#include <mysql.h>]],
+		[[ int i = MYSQL_OPT_SSL_ENFORCE;]])],
+	[AC_MSG_NOTICE([Mysql SSL options found.])], [AC_SUBST([MYSQL_WITHOUT_SSL_SUPPORT],["yes"])AC_MSG_NOTICE([Mysql SSL options NOT found!])])
+CFLAGS=$ORIGCFLAGS
+CXXFLAGS=$ORIGCXXFLAGS
 
 AC_CHECK_LIB([z], [main], , AC_MSG_ERROR([Unable to find libz. apt-get install zlib1g-dev | yum install zlib-devel]))
 AC_CHECK_LIB([lzma], [main], HAVE_LIBLZMA=1, AC_MSG_NOTICE([Unable to find lzma. apt-get install liblzma-dev | yum install xz-devel]))
 AC_CHECK_LIB([lzo2], [main], HAVE_LIBLZO=1, AC_MSG_ERROR([Unable to find lzo. apt-get install liblzo2-dev | yum install lzo-devel]))
 AC_CHECK_LIB([gnutls], [gnutls_init], HAVE_LIBGNUTLS=1, AC_MSG_NOTICE([Unable to find gnutls - disabling SIP TLS decoder. apt-get install gnutls-dev | yum install gnutls-devel]))
 AC_CHECK_LIB([gcrypt], [gcry_check_version], HAVE_LIBGCRYPT=1, AC_MSG_NOTICE([Unable to find libgcrypt - disabling SIP TLS decoder. apt-get install libgcrypt-dev | yum install libgcrypt-devel]))
-AC_CHECK_LIB([tcmalloc_minimal], [tc_malloc], HAVE_LIBTCMALLOC=1, AC_MSG_NOTICE([Unable to find tcmalloc_minimal library which speeds up threads by 10%. The library is optional: apt-get install libgoogle-perftools-dev | yum install gperftools-devel.x86_64 | or compile from source https://code.google.com/p/gperftools/]))
+
+AC_ARG_WITH(heap_profiler, [  --with-heap_profiler    use tcmalloc library with heap profiler], [
+    HEAPPROF=1
+], [
+    HEAPPROF=0
+])
+if test "x$HEAPPROF" = "x1"
+then
+    AC_CHECK_LIB([tcmalloc], [tc_malloc], HAVE_LIBTCMALLOC_HEAPPROF=1, AC_MSG_NOTICE([Unable to find tcmalloc library which speeds up threads by 10%. The library is optional: apt-get install libgoogle-perftools-dev | yum install gperftools-devel.x86_64 | or compile from source https://code.google.com/p/gperftools/]))
+else
+    AC_CHECK_LIB([tcmalloc_minimal], [tc_malloc], HAVE_LIBTCMALLOC=1, AC_MSG_NOTICE([Unable to find tcmalloc_minimal library which speeds up threads by 10%. The library is optional: apt-get install libgoogle-perftools-dev | yum install gperftools-devel.x86_64 | or compile from source https://code.google.com/p/gperftools/]))
+fi
+
+LIBSSH_8=1
+LIBSSH_VERSION=`dpkg -s libssh-dev | grep Version | cut -d ' ' -f 2 | cut -d '.' -f 2`
+if  test $LIBSSH_VERSION -lt 8; then
+    LIBSSH_8=0
+fi
 
 LIBSSH_8=1
 LIBSSH_VERSION=`dpkg -s libssh-dev | grep Version | cut -d ' ' -f 2 | cut -d '.' -f 2`
@@ -151,16 +213,6 @@ if test "x$HAVE_LIBLZO" = "x1"; then
 	HAVE_LIBLZO_T=yes
 fi
 
-HAVE_LIBSSH_T=no
-if test "x$HAVE_LIBSSH" = "x1"; then 
-	AC_DEFINE([HAVE_LIBSSH], [1], [Define if using libss])
-	AC_SUBST([LIBSSH],["-lssh -lssh_threads"])
-	if test "x$LIBSSH_8" = "x1"; then
-		AC_SUBST([LIBSSH],["-lssh"])
-	fi
-	HAVE_LIBSSH_T=yes
-fi
-
 LIBGNUTLS_T=no
 if test "x$HAVE_LIBGNUTLS" = "x1" && test "x$HAVE_LIBGCRYPT" = "x1"; then
 	AC_DEFINE([HAVE_LIBGNUTLS], [1], [Define if using gnutls])
@@ -170,14 +222,33 @@ if test "x$HAVE_LIBGNUTLS" = "x1" && test "x$HAVE_LIBGCRYPT" = "x1"; then
 fi
 TCMALLOC_T=no
 if test "x$HAVE_LIBTCMALLOC" = "x1"; then 
-	AC_DEFINE([HAVE_LIBTCMALLOC], [1], [Define if using libtcmalloc])
+	AC_DEFINE([HAVE_LIBTCMALLOC], [1], [Define if using libtcmalloc_minimal])
 	AC_SUBST([LIBTCMALLOC],["-ltcmalloc_minimal"])
 	TCMALLOC_T=yes
 fi
-OPENSSL_T=no
+if test "x$HAVE_LIBTCMALLOC_HEAPPROF" = "x1"; then 
+	AC_DEFINE([HAVE_LIBTCMALLOC], [1], [Define if using libtcmalloc_minimal])
+	AC_DEFINE([HAVE_LIBTCMALLOC_HEAPPROF], [1], [Define if using libtcmalloc (with heap profiler)])
+	AC_SUBST([LIBTCMALLOC],["-ltcmalloc"])
+	AC_SUBST([HEAPPROF_CXXFLAG],["-fno-omit-frame-pointer"])
+	TCMALLOC_T="yes (with heap profiler)"
+fi
+
+HAVE_OPENSSL_T=no
+if test "x$HAVE_OPENSSL" = "x1"; then 
+	AC_DEFINE([HAVE_OPENSSL], [1], [Define if using openssl])
+	HAVE_OPENSSL_T=yes
+fi
+
+OPENSSL101_T=no
 if test "x$HAVE_OPENSSL101" = "x1"; then 
-	AC_DEFINE([HAVE_OPENSSL101], [1], [Define if using libtcmalloc])
-	OPENSSL_T=yes
+	AC_DEFINE([HAVE_OPENSSL101], [1], [Define if using openssl >= 1.0.1])
+	OPENSSL101_T=yes
+fi
+OPENSSL111_T=no
+if pkg-config --atleast-version 1.1.1 openssl; then
+	AC_DEFINE([HAVE_DSSL_TLS13], [1], [Define if we have openssl >= 1.1.1])
+	OPENSSL111_T=yes
 fi
 
 # Checks for header files.
@@ -230,17 +301,17 @@ AC_MSG_NOTICE([
                                                              
 
 lzma compression enabled               : $HAVE_LIBLZMA_T
-ssh library enabled (cloud)            : $HAVE_LIBSSH_T
 gnutls library enabled (SIP TLS)       : $LIBGNUTLS_T
 tcmalloc (faster *alloc) lib found     : $TCMALLOC_T
 libpng lib found     		       : $HAVE_LIBPNG_T
 fftw3 lib found     		       : $HAVE_LIBFFT_T
-openssl >= 101 found		       : $OPENSSL_T
+openssl >= 1.0.1 found		       : $OPENSSL101_T
+openssl >= 1.1.1 found tls 1.3 enabled : $OPENSSL111_T
 
 shared binary: run make 
 static binary: run make static
 
-check README.*
+check README_*.md
 
 #############################################################
 

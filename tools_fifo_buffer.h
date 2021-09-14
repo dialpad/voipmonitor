@@ -104,7 +104,7 @@ public:
 		}
 		if(this->max_size &&
 		   this->size_all(false) + size > this->max_size) {
-			u_long actTime = getTimeMS();
+			u_int64_t actTime = getTimeMS();
 			if(actTime - 1000 > this->lastTimeErrMaxSize) {
 				syslog(LOG_ERR, "buffer '%s' is full", description.size() ? description.c_str() : "noname");
 				this->lastTimeErrMaxSize = actTime;
@@ -284,13 +284,13 @@ public:
 		this->debug_out_file = fopen(debug_out_filename, "w");
 	}
 	void lock() {
-		while(__sync_lock_test_and_set(&this->_sync, 1)) usleep(20);
+		while(__sync_lock_test_and_set(&this->_sync, 1)) USLEEP(20);
 	}
 	void unlock() {
 		__sync_lock_release(&this->_sync);
 	}
 	void lock_master() {
-		while(__sync_lock_test_and_set(&this->_sync_master, 1)) usleep(20);
+		while(__sync_lock_test_and_set(&this->_sync_master, 1)) USLEEP(20);
 	}
 	void unlock_master() {
 		__sync_lock_release(&this->_sync_master);
@@ -306,7 +306,7 @@ private:
 	volatile bool disable;
 	volatile int _sync;
 	volatile int _sync_master;
-	u_long lastTimeErrMaxSize;
+	u_int64_t lastTimeErrMaxSize;
 	std::string debug_out_filename;
 	FILE *debug_out_file;
 friend class FifoBufferItem;

@@ -3,6 +3,8 @@
 
 
 #include <string.h>
+#include <queue>
+#include <list>
 
 #include "cloud_router/cloud_router_base.h"
 
@@ -27,15 +29,29 @@ struct sSnifferServerVerbose {
 };
 
 
+enum eServerClientTypeCompress {
+	_cs_compress_na,
+	_cs_compress_gzip,
+	_cs_compress_lzo
+};
+
 struct sSnifferServerOptions {
 	sSnifferServerOptions() {
 		port = 60024;
+		mysql_queue_limit = 0;
+		mysql_redirect_queue_limit = 0;
+		mysql_concat_limit = 1000;
+		type_compress = _cs_compress_gzip;
 	}
 	bool isEnable() {
 		return(!host.empty() && port);
 	}
 	string host;
 	unsigned port;
+	unsigned mysql_queue_limit;
+	unsigned mysql_redirect_queue_limit;
+	unsigned mysql_concat_limit;
+	eServerClientTypeCompress type_compress;
 };
 
 
@@ -45,6 +61,13 @@ struct sSnifferClientOptions {
 		remote_query = true;
 		remote_store = true;
 		packetbuffer_sender = false;
+		mysql_new_store = 0;
+		mysql_set_id = false;
+		mysql_concat_limit = 0; // set only from server due compatibility client/server with different versions
+		csv_store_format = false;
+		charts_cache_store = false;
+		type_compress = _cs_compress_gzip;
+		remote_chart_server = false;
 	}
 	bool isEnable() {
 		return(!host.empty() && port);
@@ -58,11 +81,24 @@ struct sSnifferClientOptions {
 	bool isEnablePacketBufferSender() {
 		return(isEnable() && packetbuffer_sender);
 	}
+	bool isRemoteChartServer() {
+		return(isEnable() && remote_chart_server);
+	}
+	bool isSetHostPort() {
+		return(!host.empty() && port);
+	}
 	string host;
 	unsigned port;
 	bool remote_query;
 	bool remote_store;
 	bool packetbuffer_sender;
+	int mysql_new_store;
+	bool mysql_set_id;
+	unsigned mysql_concat_limit;
+	bool csv_store_format;
+	bool charts_cache_store;
+	bool remote_chart_server;
+	eServerClientTypeCompress type_compress;
 };
 
 
@@ -118,7 +154,7 @@ private:
 	void lock() {
 		while(__sync_lock_test_and_set(&_sync_lock, 1)) {
 			if(SYNC_LOCK_USLEEP) {
-				usleep(SYNC_LOCK_USLEEP);
+				USLEEP(SYNC_LOCK_USLEEP);
 			}
 		}
 	}
@@ -133,17 +169,20 @@ public:
 
 struct sSnifferServerService {
 	sSnifferServerService() {
-		connect_ipl = 0;
+		connect_ip.clear();
 		connect_port = 0;
 		sensor_id = 0;
 		service_connection = NULL;
+		remote_chart_server = false;
 	}
-	u_int32_t connect_ipl;
+	vmIP connect_ip;
 	u_int16_t connect_port;
 	int32_t sensor_id;
+	string sensor_string;
 	class cSnifferServerConnection *service_connection;
 	string aes_ckey;
 	string aes_ivec;
+	bool remote_chart_server;
 };
 
 
@@ -152,25 +191,43 @@ public:
 	sSnifferServerServices();
 	void add(sSnifferServerService *service);
 	void remove(sSnifferServerService *service);
-	bool existsService(int32_t sensor_id);
-	sSnifferServerService getService(int32_t sensor_id);
-	class cSnifferServerConnection *getServiceConnection(int32_t sensor_id);
-	bool getAesKeys(int32_t sensor_id, string *ckey, string *ivec);
+	string getIdService(int32_t sensor_id, const char *sensor_string);
+	bool existsService(int32_t sensor_id, const char *sensor_string);
+	sSnifferServerService getService(int32_t sensor_id, const char *sensor_string);
+	class cSnifferServerConnection *getServiceConnection(int32_t sensor_id, const char *sensor_string);
+	bool getAesKeys(int32_t sensor_id, const char *sensor_string, string *ckey, string *ivec);
 	string listJsonServices();
+	bool add_rchs_query(const char *query, bool checkMaxSize);
+	bool add_rchs_query(string *query, bool checkMaxSize);
+	string *get_rchs_query();
 private:
 	void lock() {
 		while(__sync_lock_test_and_set(&_sync_lock, 1)) {
 			if(SYNC_LOCK_USLEEP) {
-				usleep(SYNC_LOCK_USLEEP);
+				USLEEP(SYNC_LOCK_USLEEP);
 			}
 		}
 	}
 	void unlock() {
 		__sync_lock_release(&_sync_lock);
 	}
+	void lock_rchs() {
+		while(__sync_lock_test_and_set(&_sync_rchs, 1)) {
+			if(SYNC_LOCK_USLEEP) {
+				USLEEP(SYNC_LOCK_USLEEP);
+			}
+		}
+	}
+	void unlock_rchs() {
+		__sync_lock_release(&_sync_rchs);
+	}
 public:
-	map<int32_t, sSnifferServerService> services;
+	map<string, sSnifferServerService> services;
 	volatile int _sync_lock;
+	volatile int remote_chart_server;
+	queue<string*> rchs_query_queue;
+	unsigned rchs_query_queue_max_size; 
+	volatile int _sync_rchs;
 };
 
 
@@ -179,7 +236,10 @@ public:
 	cSnifferServer();
 	~cSnifferServer();
 	void setSqlStore(class MySqlStore *sqlStore);
-	void sql_query_lock(const char *query_str, int id);
+	void sql_query_lock(const char *query_str, int id_main, int id_2);
+	void sql_query_lock(list<string> *query_str, int id_main, int id_2);
+	int findMinStoreId2(int id_main);
+	unsigned int sql_queue_size(bool redirect);
 	bool isSetSqlStore() {
 		return(sqlStore != NULL);
 	}
@@ -203,6 +263,8 @@ private:
 	volatile bool terminate;
 	map<class cSnifferServerConnection*, bool> connection_threads;
 	volatile int connection_threads_sync;
+	volatile size_t sql_queue_size_size[2];
+	volatile u_int64_t sql_queue_size_time_ms[2];
 };
 
 
@@ -213,6 +275,7 @@ public:
 		_tc_gui_command,
 		_tc_service,
 		_tc_response,
+		_tc_responses,
 		_tc_query,
 		_tc_store,
 		_tc_packetbuffer_block,
@@ -236,18 +299,20 @@ protected:
 	void cp_gui_command(int32_t sensor_id, string command);
 	void cp_service();
 	void cp_respone(string gui_task_id, u_char *remainder, size_t remainder_length);
+	void cp_responses();
 	void cp_query();
 	void cp_store();
+	bool cp_store_check();
 	void cp_packetbuffer_block();
 	void cp_manager_command(string command);
 private:
-	bool rsaAesInit();
+	bool rsaAesInit(bool writeRsltOK = true);
 	eTypeConnection convTypeConnection(string typeConnection);
 	void updateSensorState(int32_t sensor_id);
 	void lock_tasks() {
 		while(__sync_lock_test_and_set(&_sync_tasks, 1)) {
 			if(SYNC_LOCK_USLEEP) {
-				usleep(SYNC_LOCK_USLEEP);
+				USLEEP(SYNC_LOCK_USLEEP);
 			}
 		}
 	}
@@ -268,35 +333,84 @@ private:
 
 class cSnifferClientService : public cReceiver {
 public:
-	cSnifferClientService(int32_t sensor_id);
+	cSnifferClientService(int32_t sensor_id, const char *sensor_string, unsigned sensor_version);
+	~cSnifferClientService();
+	void setClientOptions(sSnifferClientOptions *client_options);
+	void createResponseSender();
+	void stopResponseSender();
 	bool start(string host, u_int16_t port);
 	virtual bool receive_process_loop_begin();
 	virtual void evData(u_char *data, size_t dataLen);
 protected:
 	int32_t sensor_id;
+	string sensor_string;
+	unsigned sensor_version;
 	string host;
 	u_int16_t port;
 	bool connection_ok;
 	string connect_from;
+	sSnifferClientOptions *client_options;
+	class cSnifferClientResponseSender *response_sender;
 };
 
 
 class cSnifferClientResponse : public cClient {
 public:
-	cSnifferClientResponse(string gui_task_id, string command);
+	cSnifferClientResponse(string gui_task_id, string command, cSnifferClientResponseSender *response_sender = NULL);
 	bool start(string host, u_int16_t port);
 	virtual void client_process();
 protected:
 	string gui_task_id;
 	string command;
+	cSnifferClientResponseSender *response_sender;
+};
+
+
+class cSnifferClientResponseSender {
+private:
+	struct sDataForSend {
+		string task_id;
+		SimpleBuffer *buffer;
+	};
+public:
+	cSnifferClientResponseSender();
+	~cSnifferClientResponseSender();
+	void add(string task_id, SimpleBuffer *buffer);
+	void start(string host, u_int16_t port);
+	void stop();
+	static void *sendProcess(void*);
+	void sendProcess();
+private:
+	void lock_data() {
+		while(__sync_lock_test_and_set(&_sync_data, 1)) {
+			USLEEP(10);
+		}
+	}
+	void unlock_data() {
+		__sync_lock_release(&_sync_data);
+	}
+private:
+	string host;
+	u_int16_t port;
+	volatile bool terminate;
+	cSocketBlock *socket;
+	pthread_t send_process_thread;
+	queue<sDataForSend> data_for_send;
+	volatile int _sync_data;
 };
 
 
 void snifferServerStart();
 void snifferServerStop();
 void snifferServerSetSqlStore(MySqlStore *sqlStore);
-void snifferClientStart();
-void snifferClientStop();
+cSnifferClientService *snifferClientStart(sSnifferClientOptions *clientOptions, 
+					  const char *sensorString = NULL,
+					  cSnifferClientService *snifferClientServiceOld = NULL);
+void snifferClientStop(cSnifferClientService *snifferClientService);
+bool existsRemoteChartServer();
+size_t getRemoteChartServerQueueSize();
+bool add_rchs_query(const char *query, bool checkMaxSize);
+bool add_rchs_query(string *query, bool checkMaxSize);
 
 
 #endif //SERVER_H

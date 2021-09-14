@@ -2,24 +2,33 @@
 #define CLOUD_ROUTER_BASE_H
 
 
+#include <netinet/in.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <map>
 #include <string>
 #include <arpa/inet.h>
+
+#include "cloud_router.h"
+
+#ifdef CLOUD_ROUTER_CLIENT
+#include "../tools_global.h"
+#include "../config.h"
+#else
+#include "tools_global.h"
+#define HAVE_OPENSSL
+#endif
+
+#ifdef HAVE_OPENSSL
 #include <openssl/rsa.h>
 #include <openssl/pem.h>
 #include <openssl/aes.h>
 #include <openssl/evp.h>
 #include <openssl/err.h>
-
-#include "cloud_router.h"
-
-#ifdef CLOUD_ROUTER_CLIENT
-#include "../tools.h"
 #else
-#include "tools.h"
+typedef u_char RSA;
+typedef u_char EVP_CIPHER_CTX;
 #endif
 
 
@@ -27,6 +36,7 @@ using namespace std;
 
 
 #define SYNC_LOCK_USLEEP 100
+#define MAX_LISTEN_SOCKETS 2
 
 
 struct sCloudRouterVerbose {
@@ -37,6 +47,8 @@ struct sCloudRouterVerbose {
 		connect_command = true;
 		connect_info = true;
 		socket_decode = false;
+		sql_query = false;
+		sql_error = true;
 	}
 	bool start_server;
 	bool start_client;
@@ -45,6 +57,8 @@ struct sCloudRouterVerbose {
 	bool connect_info;
 	bool create_thread;
 	bool socket_decode;
+	bool sql_query;
+	bool sql_error;
 };
 
 
@@ -57,7 +71,7 @@ public:
 public:
 	cRsa();
 	~cRsa();
-	void generate_keys();
+	void generate_keys(unsigned keylen = 2048);
 	RSA *create_rsa(const char *key, eTypeKey typeKey);
 	RSA *create_rsa(eTypeKey typeKey);
 	bool public_encrypt(u_char **data, size_t *datalen, bool destroyOldData);
@@ -125,6 +139,80 @@ private:
 	EVP_CIPHER_CTX *ctx_dec;
 	string ckey;
 	string ivec;
+};
+
+
+class cBlockIP {
+public:
+	void setBlock(vmIP ip, unsigned expirationS) {
+		block_ip_time[ip] = getTimeMS_rdtsc() + expirationS * 1000;
+	}
+	bool isBlocked(vmIP ip) {
+		map<vmIP, u_int64_t>::iterator iter = block_ip_time.find(ip);
+		return(iter != block_ip_time.end() &&
+		       block_ip_time[ip] > getTimeMS_rdtsc());
+	}
+private:
+	map<vmIP, u_int64_t> block_ip_time;
+};
+
+
+class cCounterIP {
+public:
+        cCounterIP() {
+                _sync_lock = 0;
+        }
+        u_int32_t inc(vmIP ip, int inc = 1) {
+                u_int32_t rslt = 0;
+                lock();
+                map<vmIP, u_int32_t>::iterator iter = ip_counter.find(ip);
+                if(iter != ip_counter.end()) {
+                        if(inc >= 0) {
+                                iter->second += inc;
+                        } else {
+                                if(iter->second <= (unsigned)-inc) {
+                                        iter->second = 0;
+                                } else {
+                                        iter->second += inc;
+                                }
+                        }
+                        rslt = iter->second;
+                } else {
+                        if(inc > 0) {
+                                ip_counter[ip] = inc;
+                                rslt = inc;
+                        }
+                }
+                unlock();
+                return(rslt);
+        }
+        u_int32_t dec(vmIP ip) {
+                return(inc(ip, -1));
+        }
+        u_int32_t get(vmIP ip) {
+                u_int32_t rslt = 0;
+                lock();
+                map<vmIP, u_int32_t>::iterator iter = ip_counter.find(ip);
+                if(iter != ip_counter.end()) {
+                        rslt = iter->second;
+                }
+                unlock();
+                return(rslt);
+        }
+private:
+        void lock() {
+                while(__sync_lock_test_and_set(&_sync_lock, 1)) {
+                        if(SYNC_LOCK_USLEEP) {
+                                usleep(SYNC_LOCK_USLEEP);
+                        }
+                }
+        }
+        void unlock() {
+                __sync_lock_release(&_sync_lock);
+        }
+private:
+        map<vmIP, u_int32_t> ip_counter;
+        volatile int _sync_lock;
 };
 
 
@@ -198,10 +286,10 @@ public:
 		return(host.empty() ? getIP() : host);
 	}
 	string getIP() {
-		return(inet_ntostring(htonl(ipl)));
+		return(ip.getString());
 	}
-	u_int32_t getIPL() {
-		return(ipl);
+	vmIP getIPL() {
+		return(ip);
 	}
 	u_int16_t getPort() {
 		return(port);
@@ -247,11 +335,11 @@ protected:
 	bool autoClose;
 	string host;
 	u_int16_t port;
-	u_int32_t ipl;
+	vmIP ip;
 	sTimeouts timeouts;
 	int handle;
 	bool enableWriteReconnect;
-	bool terminate;
+	volatile bool terminate;
 	eSocketError error;
 	string error_str;
 	string error_descr;
@@ -268,15 +356,19 @@ protected:
 class cSocketBlock : public cSocket {
 public:
 	struct sBlockHeader {
-		sBlockHeader() {
-			init();
+		sBlockHeader(const char *header_string) {
+			init(header_string);
 		}
-		void init() {
+		void init(const char *header_string) {
 			memset(this, 0, sizeof(sBlockHeader));
-			strcpy(header, "vm_cloud_router_block_header");
+			strncpy(header, get_header_string(header_string), sizeof(header));
 		}
-		bool okHeader() {
-			return(!strncmp(header, "vm_cloud_router_block_header", 28));
+		bool okHeader(const char *header_string) {
+			const char *_header_string = get_header_string(header_string);
+			return(!strncmp(header, _header_string, min(sizeof(header), strlen(_header_string))));
+		}
+		const char *get_header_string(const char *header_string) {
+			return(header_string ? header_string : "vm_cloud_router_block_header");
 		}
 		char header[30];
 		u_int32_t length;
@@ -289,17 +381,17 @@ public:
 		~sReadBuffer() {
 			clear();
 		}
-		void add(u_char *data, size_t dataLen) {
+		void add(u_char *data, size_t dataLen, size_t inc = 0) {
 			if(!data || !dataLen) {
 				return;
 			}
 			if(!buffer || capacity < length + dataLen) {
 				if(!buffer) {
-					capacity = dataLen * 2;
-					buffer = new u_char[capacity];
+					capacity = max(dataLen * 2, inc);
+					buffer = new FILE_LINE(0) u_char[capacity];
 				} else {
-					capacity = length + dataLen * 2;
-					u_char *buffer_new = new u_char[capacity];
+					capacity = length + max(dataLen * 2, inc);
+					u_char *buffer_new = new FILE_LINE(0) u_char[capacity];
 					memcpy(buffer_new, buffer, length);
 					delete [] buffer;
 					buffer = buffer_new;
@@ -307,6 +399,23 @@ public:
 			}
 			memcpy(buffer + length, data, dataLen);
 			length += dataLen;
+		}
+		void needFreeSize(size_t size, size_t inc = 0) {
+			if(!buffer || capacity - length < size) {
+				if(!buffer) {
+					capacity = max(size * 2, inc);
+					buffer = new FILE_LINE(0) u_char[capacity];
+				} else {
+					capacity = length + max(size * 2, inc);
+					u_char *buffer_new = new FILE_LINE(0) u_char[capacity];
+					memcpy(buffer_new, buffer, length);
+					delete [] buffer;
+					buffer = buffer_new;
+				}
+			}
+		}
+		void incLength(size_t size) {
+			length += size;
 		}
 		void set(u_char *buffer, size_t length) {
 			if(this->buffer) {
@@ -327,9 +436,9 @@ public:
 			length = 0;
 			capacity = 0;
 		}
-		bool okBlockHeader() {
+		bool okBlockHeader(const char *header_string) {
 			return(length >= sizeof(sBlockHeader) &&
-			       ((sBlockHeader*)buffer)->okHeader());
+			       ((sBlockHeader*)buffer)->okHeader(header_string));
 		}
 		u_int32_t lengthBlockHeader(bool addHeaderSize = false) {
 			return(length >= sizeof(sBlockHeader) ?
@@ -347,20 +456,22 @@ public:
 	};
 public:
 	cSocketBlock(const char *name, bool autoClose = false);
+	~cSocketBlock();
+	void setBlockHeaderString(const char *block_header_string);
 	bool writeBlock(u_char *data, size_t dataLen, eTypeEncode typeEncode = _te_na, string xor_key = "");
 	bool writeBlock(string str, eTypeEncode typeCode = _te_na, string xor_key = "");
-	u_char *readBlock(size_t *dataLen, eTypeEncode typeCode = _te_na, string xor_key = "", bool quietEwouldblock = false, u_int16_t timeout = 0);
+	u_char *readBlock(size_t *dataLen, eTypeEncode typeCode = _te_na, string xor_key = "", bool quietEwouldblock = false, u_int16_t timeout = 0, size_t bufferIncLength = 0);
 	bool readBlock(string *str, eTypeEncode typeCode = _te_na, string xor_key = "", bool quietEwouldblock = false, u_int16_t timeout = 0);
-	u_char *readBlockTimeout(size_t *dataLen, u_int16_t timeout, eTypeEncode typeCode = _te_na, string xor_key = "", bool quietEwouldblock = false) {
-		return(readBlock(dataLen, typeCode, xor_key, quietEwouldblock, timeout));
+	u_char *readBlockTimeout(size_t *dataLen, u_int16_t timeout, eTypeEncode typeCode = _te_na, string xor_key = "", bool quietEwouldblock = false, size_t bufferIncLength = 0) {
+		return(readBlock(dataLen, typeCode, xor_key, quietEwouldblock, timeout, bufferIncLength));
 	}
 	bool readBlockTimeout(string *str, u_int16_t timeout, eTypeEncode typeCode = _te_na, string xor_key = "", bool quietEwouldblock = false) {
 		return(readBlock(str, typeCode, xor_key, quietEwouldblock, timeout));
 	}
 	string readLine(u_char **remainder = NULL, size_t *remainder_length = NULL);
 	void readDecodeAesAndResendTo(cSocketBlock *dest, u_char *remainder = NULL, size_t remainder_length = 0, u_int16_t timeout = 0);
-	void generate_rsa_keys() {
-		rsa.generate_keys();
+	void generate_rsa_keys(unsigned keylen = 2048) {
+		rsa.generate_keys(keylen);
 	}
 	string get_rsa_pub_key() {
 		return(rsa.getPubKey());
@@ -374,21 +485,30 @@ protected:
 protected:
 	sReadBuffer readBuffer;
 	cRsa rsa;
+private:
+	char *block_header_string;
 };
 
 
 class cServer {
+private:
+	struct sListenParams {
+		cServer *server;
+		unsigned index;
+	};
 public:
 	 cServer();
 	 virtual ~cServer();
-	 bool listen_start(const char *name, string host, u_int16_t port);
-	 void listen_stop();
+	 bool listen_start(const char *name, string host, u_int16_t port, unsigned index = 0);
+	 void listen_stop(unsigned index = 0);
 	 static void *listen_process(void *arg);
-	 void listen_process();
+	 void listen_process(int index);
 	 virtual void createConnection(cSocket *socket);
+	 void setStartVerbString(const char *startVerbString);
 protected:
-	 cSocketBlock *listen_socket;
-	 pthread_t listen_thread;
+	 cSocketBlock *listen_socket[MAX_LISTEN_SOCKETS];
+	 pthread_t listen_thread[MAX_LISTEN_SOCKETS];
+	 string startVerbString;
 };
 
 
@@ -407,6 +527,7 @@ public:
 protected:
 	cSocketBlock *socket;
 	pthread_t thread;
+	u_int64_t begin_time_ms;
 };
 
 
@@ -436,6 +557,7 @@ protected:
 	cSocketBlock *receive_socket;
 	pthread_t receive_thread;
 	bool start_ok;
+	bool use_encode_data;
 	map<cSocket::eSocketError, string> errorTypeStrings;
 };
 
@@ -453,9 +575,11 @@ public:
 	bool writeXorKeyEnc(u_char *data, size_t dataLen, const char *key);
 	bool writeAesEnc(u_char *data, size_t dataLen, const char *ckey, const char *ivec);
 	bool writeFinal();
+	void writeToBuffer();
 protected:
 	cSocketBlock *client_socket;
 	pthread_t client_thread;
+	SimpleBuffer *buffer;
 };
 
 

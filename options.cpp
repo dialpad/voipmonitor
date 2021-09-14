@@ -8,6 +8,8 @@
 #include "tools.h"
 #include "sql_db.h"
 #include "pcap_queue.h"
+#include "sniff.h"
+#include "filter_mysql.h"
 
 
 extern char * gettag_sip_ext(packet_s_process *packetS,
@@ -20,14 +22,20 @@ extern Calltable *calltable;
 extern int opt_mysqlstore_max_threads_message;
 extern int opt_nocdr;
 extern CustomHeaders *custom_headers_sip_msg;
+extern int opt_sip_options;
+extern int opt_sip_subscribe;
+extern int opt_sip_notify;
 extern int opt_save_sip_options;
 extern int opt_save_sip_subscribe;
 extern int opt_save_sip_notify;
+extern cSqlDbData *dbData;
+extern bool opt_time_precision_in_ms;
 
 cSipMsgRelations *sipMsgRelations;
 
 SqlDb *sqlDbSaveSipMsg = NULL;
 
+extern sExistsColumns existsColumns;
 
 struct SipMsgFields {
 	eSipMsgField filedType;
@@ -59,23 +67,25 @@ struct SipMsgFields {
 	{ smf_response_number, "response_number" },
 	{ smf_response_string, "response_string" },
 	{ smf_qualify_ok, "qualify_ok" },
-	{ smf_exists_pcap, "exists_pcap" }
+	{ smf_exists_pcap, "exists_pcap" },
+	{ smf_vlan, "vlan" }
 };
 
 
-bool opt_sip_msg_compare_ip_src = true;
-bool opt_sip_msg_compare_ip_dst = true;
-bool opt_sip_msg_compare_port_src = true;
-bool opt_sip_msg_compare_port_dst = false;
-bool opt_sip_msg_compare_number_src = true;
-bool opt_sip_msg_compare_number_dst = true;
-bool opt_sip_msg_compare_domain_src = true;
-bool opt_sip_msg_compare_domain_dst = true;
+extern bool opt_sip_msg_compare_ip_src;
+extern bool opt_sip_msg_compare_ip_dst;
+extern bool opt_sip_msg_compare_port_src;
+extern bool opt_sip_msg_compare_port_dst;
+extern bool opt_sip_msg_compare_number_src;
+extern bool opt_sip_msg_compare_number_dst;
+extern bool opt_sip_msg_compare_domain_src;
+extern bool opt_sip_msg_compare_domain_dst;
+extern bool opt_sip_msg_compare_vlan;
 
 unsigned opt_default_qualify_limit = 2000;
 unsigned opt_cleanup_item_response_by_max_items = 5;
-unsigned opt_cleanup_history_by_max_items = 500;
-unsigned opt_cleanup_relations_limit_time = 3600;
+unsigned opt_cleanup_history_by_max_items = 50;
+unsigned opt_cleanup_relations_limit_time = 300;
 unsigned opt_cleanup_relations_period = 60;
 unsigned opt_close_pcap_limit_time = 5;
 unsigned opt_close_pcaps_period = 10;
@@ -91,11 +101,12 @@ bool cSipMsgItem_base:: operator == (const cSipMsgItem_base& other) const {
 	       this->number_src == other.number_src &&
 	       this->number_dst == other.number_dst &&
 	       this->domain_src == other.domain_src &&
-	       this->domain_dst == other.domain_dst);
+	       this->domain_dst == other.domain_dst &&
+	       this->vlan == other.vlan);
 }
 
 void cSipMsgItem_base::debug_out() {
-	cout << inet_ntostring(ip_src) << ':' << port_src << " -> " << inet_ntostring(ip_dst) << ':' << port_dst <<  endl
+	cout << ip_src.getString() << ':' << port_src << " -> " << ip_dst.getString() << ':' << port_dst <<  endl
 	     << number_src << '@' << domain_src << " -> " << number_dst << '@' << domain_dst << endl;
 }
 
@@ -122,7 +133,7 @@ void cSipMsgItem::parseContent(packet_s_process *packetS) {
 		content_length = atoi(string(s, l).c_str());
 	}
 	if(content_length > 0 && content_length < packetS->sipDataLen) {
-		char *data = packetS->data + packetS->sipDataOffset;
+		char *data = packetS->data_() + packetS->sipDataOffset;
 		unsigned int datalen = packetS->sipDataLen;
 		char endCharData = data[datalen - 1];
 		data[datalen - 1] = 0;
@@ -131,9 +142,9 @@ void cSipMsgItem::parseContent(packet_s_process *packetS) {
 		if(endHeader) {
 			int tryDecContentLength = 0;
 			char *contentBegin = endHeader + 4;
-			char *contentEnd = strcasestr(contentBegin, "\n\nContent-Length:");
+			char *contentEnd = strncasestr(contentBegin, "\n\nContent-Length:", datalen - (contentBegin - data));
 			if(!contentEnd) {
-				contentEnd = strstr(contentBegin, "\r\n");
+				contentEnd = strnstr(contentBegin, "\r\n", datalen - (contentBegin - data));
 				if(contentEnd) {
 					tryDecContentLength = data + datalen - contentEnd;
 				}
@@ -172,7 +183,8 @@ bool cSipMsgRelationId:: operator == (const cSipMsgRelationId& other) const {
 	       (!opt_sip_msg_compare_number_src || this->sipMsg->number_src == other.sipMsg->number_src) &&
 	       (!opt_sip_msg_compare_number_dst || this->sipMsg->number_dst == other.sipMsg->number_dst) &&
 	       (!opt_sip_msg_compare_domain_src || this->sipMsg->domain_src == other.sipMsg->domain_src) &&
-	       (!opt_sip_msg_compare_domain_dst || this->sipMsg->domain_dst == other.sipMsg->domain_dst));
+	       (!opt_sip_msg_compare_domain_dst || this->sipMsg->domain_dst == other.sipMsg->domain_dst) &&
+	       (!opt_sip_msg_compare_vlan || this->sipMsg->vlan == other.sipMsg->vlan));
 }
 
 bool cSipMsgRelationId:: operator < (const cSipMsgRelationId& other) const { 
@@ -182,8 +194,9 @@ bool cSipMsgRelationId:: operator < (const cSipMsgRelationId& other) const {
 	       (opt_sip_msg_compare_port_dst && this->sipMsg->port_dst < other.sipMsg->port_dst) ? 1 : (opt_sip_msg_compare_port_dst && this->sipMsg->port_dst > other.sipMsg->port_dst) ? 0 :
 	       (opt_sip_msg_compare_number_src && this->sipMsg->number_src < other.sipMsg->number_src) ? 1 : (opt_sip_msg_compare_number_src && this->sipMsg->number_src > other.sipMsg->number_src) ? 0 :
 	       (opt_sip_msg_compare_number_dst && this->sipMsg->number_dst < other.sipMsg->number_dst) ? 1 : (opt_sip_msg_compare_number_dst && this->sipMsg->number_dst > other.sipMsg->number_dst) ? 0 :
-	       (opt_sip_msg_compare_domain_src && this->sipMsg->domain_src < other.sipMsg->domain_src) ? 1 : (opt_sip_msg_compare_domain_src && this->sipMsg->domain_src < other.sipMsg->domain_src) ? 0 :
-	       (opt_sip_msg_compare_domain_dst && this->sipMsg->domain_dst < other.sipMsg->domain_dst) ? 1 : (opt_sip_msg_compare_domain_dst && this->sipMsg->domain_dst < other.sipMsg->domain_dst) ? 0 : 0);
+	       (opt_sip_msg_compare_domain_src && this->sipMsg->domain_src < other.sipMsg->domain_src) ? 1 : (opt_sip_msg_compare_domain_src && this->sipMsg->domain_src > other.sipMsg->domain_src) ? 0 :
+	       (opt_sip_msg_compare_domain_dst && this->sipMsg->domain_dst < other.sipMsg->domain_dst) ? 1 : (opt_sip_msg_compare_domain_dst && this->sipMsg->domain_dst > other.sipMsg->domain_dst) ? 0 :
+	       (opt_sip_msg_compare_vlan && this->sipMsg->vlan < other.sipMsg->vlan) ? 1 : (opt_sip_msg_compare_vlan && this->sipMsg->vlan > other.sipMsg->vlan) ? 0 : 0);
 }
 
 
@@ -204,7 +217,10 @@ cSipMsgRequestResponse::~cSipMsgRequestResponse() {
 }
 
 void cSipMsgRequestResponse::openPcap(packet_s_process *packetS, int type) {
-	cdp.call_data = new FILE_LINE(0) Call_abstract(type, time_us / 1000000);
+	if(sverb.disable_save_packet) {
+		return;
+	}
+	cdp.call_data = new FILE_LINE(0) Call_abstract(type, time_us);
 	cdp.call_data->useHandle = get_pcap_handle(packetS->handle_index);
 	cdp.call_data->useDlt = packetS->dlt;
 	cdp.call_data->useSensorId = packetS->sensor_id_();
@@ -229,8 +245,8 @@ void cSipMsgRequestResponse::savePacket(packet_s_process *packetS) {
 		pcap_pkthdr *header = packetS->header_pt;
 		u_char *packet = (u_char*)packetS->packet;
 		cdp.pcap->dump(header, packet, packetS->dlt, false, 
-			       (u_char*)packetS->data + packetS->sipDataOffset, packetS->sipDataLen,
-			       packetS->saddr, packetS->daddr, packetS->source, packetS->dest, packetS->istcp);
+			       (u_char*)packetS->data_() + packetS->sipDataOffset, packetS->sipDataLen,
+			       packetS->saddr_(), packetS->daddr_(), packetS->source_(), packetS->dest_(), packetS->pflags.tcp);
 	}
 }
 
@@ -238,12 +254,12 @@ void cSipMsgRequestResponse::saveToDb(cSipMsgRelations *relations) {
 	relations->saveToDb(this);
 }
 
-bool cSipMsgRequestResponse::needSavePcap(cSipMsgRelations *relations) {
-	return(relations->needSavePcap(this));
+bool cSipMsgRequestResponse::needSavePcap(cSipMsgRelations *relations, cSipMsgRelation *relation) {
+	return(relations->needSavePcap(this, relation));
 }
 
-bool cSipMsgRequestResponse::needSaveToDb(cSipMsgRelations *relations) {
-	return(relations->needSaveToDb(this));
+bool cSipMsgRequestResponse::needSaveToDb(cSipMsgRelations *relations, cSipMsgRelation *relation) {
+	return(relations->needSaveToDb(this, relation));
 }
 
 u_int64_t cSipMsgRequestResponse::getFirstRequestTime() {
@@ -273,8 +289,8 @@ string cSipMsgRequestResponse::getPcapFileName() {
 	return(filename);
 }
 
-void cSipMsgRequestResponse::destroy(cSipMsgRelations *relations) {
-	if(needSaveToDb(relations)) {
+void cSipMsgRequestResponse::destroy(cSipMsgRelations *relations, cSipMsgRelation *relation) {
+	if(needSaveToDb(relations, relation)) {
 		saveToDb(relations);
 	}
 	if(isSetCdp()) {
@@ -311,7 +327,10 @@ u_int64_t cSipMsgRelation::sHistoryData::getLastTime() {
 string cSipMsgRelation::sHistoryData::getJson(cStringCache *responseStringCache, int qualifyOk) {
 	JsonExport json;
 	json.setTypeItem(JsonExport::_array);
-	json.add(NULL, sqlDateTimeString(request_time_us / 1000000));
+	json.add(NULL, 
+		 opt_time_precision_in_ms ?
+		  sqlDateTimeString_us2ms(request_time_us) :
+		  sqlDateTimeString(TIME_US_TO_S(request_time_us)));
 	json.add(NULL, request_time_us);
 	if(response_time_us) {
 		json.add(NULL, (long long)round((response_time_us - request_time_us) / 1000.));
@@ -335,6 +354,7 @@ cSipMsgRelation::cSipMsgRelation(cSipMsgItem *item) {
 	id = ++_id;
 	unlock_id();
 	id_sensor = 0;
+	flags = 0;
 	*(cSipMsgItem_base*)this = *item;
 }
 
@@ -383,7 +403,7 @@ void cSipMsgRelation::addSipMsg(cSipMsgItem *item, packet_s_process *packetS, cS
 			requestResponse->request = item;
 			requestResponse->request->parseContent(packetS);
 			requestResponse->parseCustomHeaders(packetS, CustomHeaders::dir_request);
-			if(requestResponse->needSavePcap(relations)) {
+			if(requestResponse->needSavePcap(relations, this)) {
 				requestResponse->openPcap(packetS, item->type);
 			}
 			queue_req_resp.push_back(requestResponse);
@@ -434,14 +454,17 @@ bool cSipMsgRelation::getDataRow(RecordArray *rec, u_int64_t limit_time_us, cSip
 	rec->fields[smf_id].set(id);
 	rec->fields[smf_id_sensor].set(id_sensor);
 	rec->fields[smf_type].set(type);
-	rec->fields[smf_ip_src].set(htonl(ip_src));
-	rec->fields[smf_ip_dst].set(htonl(ip_dst));
-	rec->fields[smf_port_src].set(port_src);
-	rec->fields[smf_port_dst].set(port_dst);
+	rec->fields[smf_ip_src].set(ip_src, RecordArrayField::tf_ip_n4);
+	rec->fields[smf_ip_dst].set(ip_dst, RecordArrayField::tf_ip_n4);
+	rec->fields[smf_port_src].set(port_src.getPort());
+	rec->fields[smf_port_dst].set(port_dst.getPort());
 	rec->fields[smf_number_src].set(number_src.c_str());
 	rec->fields[smf_number_dst].set(number_dst.c_str());
 	rec->fields[smf_domain_src].set(domain_src.c_str());
 	rec->fields[smf_domain_dst].set(domain_dst.c_str());
+	if(VLAN_IS_SET(vlan)) {
+		rec->fields[smf_vlan].set(vlan);
+	}
 	if(reqResp) {
 		if(reqResp->request) {
 			rec->fields[smf_callername].set(reqResp->request->callername.c_str());
@@ -463,13 +486,25 @@ bool cSipMsgRelation::getDataRow(RecordArray *rec, u_int64_t limit_time_us, cSip
 			rec->fields[smf_ua_dst].set(relations->uaStringCache.getString(historyData->ua_dst_id).c_str());
 		}
 	}
-	rec->fields[smf_request_time].set(request_time_us / 1000000, RecordArrayField::tf_time);
-	rec->fields[smf_request_time_us].set(request_time_us % 1000000);
-	rec->fields[smf_request_first_time].set(request_first_time_us / 1000000, RecordArrayField::tf_time);
+	if(opt_time_precision_in_ms) {
+		rec->fields[smf_request_time].set(request_time_us, RecordArrayField::tf_time_ms);
+	} else {
+		rec->fields[smf_request_time].set(TIME_US_TO_S(request_time_us), RecordArrayField::tf_time);
+	}
+	rec->fields[smf_request_time_us].set(TIME_US_TO_DEC_US(request_time_us));
+	if(opt_time_precision_in_ms) {
+		rec->fields[smf_request_first_time].set(request_first_time_us, RecordArrayField::tf_time_ms);
+	} else {
+		rec->fields[smf_request_first_time].set(TIME_US_TO_S(request_first_time_us), RecordArrayField::tf_time);
+	}
 	rec->fields[smf_request_first_time_us_compl].set(request_first_time_us);
 	if(response_time_us) {
-		rec->fields[smf_response_time].set(response_time_us / 1000000, RecordArrayField::tf_time);
-		rec->fields[smf_response_time_us].set(response_time_us % 1000000);
+		if(opt_time_precision_in_ms) {
+			rec->fields[smf_response_time].set(response_time_us, RecordArrayField::tf_time_ms);
+		} else {
+			rec->fields[smf_response_time].set(TIME_US_TO_S(response_time_us), RecordArrayField::tf_time);
+		}
+		rec->fields[smf_response_time_us].set(TIME_US_TO_DEC_US(response_time_us));
 	}
 	rec->fields[smf_response_duration_ms].set(response_duration < 0 ? response_duration : round(response_duration / 1000.));
 	rec->fields[smf_response_number].set(response_number);
@@ -687,7 +722,7 @@ void cSipMsgRelation::cleanup_item_response_by_limit_time(u_int64_t limit_time_u
 		convRequestResponseToHistoryData(requestResponse, &historyItem, true, relations, false);
 		history.push_back(historyItem);
 		queue_req_resp.pop_front();
-		requestResponse->destroy(relations);
+		requestResponse->destroy(relations, this);
 	}
 	unlock();
 }
@@ -700,7 +735,7 @@ void cSipMsgRelation::cleanup_item_response_by_max_items(unsigned max_items, cSi
 		convRequestResponseToHistoryData(requestResponse, &historyItem, true, relations, false);
 		history.push_back(historyItem);
 		queue_req_resp.pop_front();
-		requestResponse->destroy(relations);
+		requestResponse->destroy(relations, this);
 	}
 	unlock();
 }
@@ -728,7 +763,7 @@ void cSipMsgRelation::close_pcaps_by_limit_time(u_int64_t limit_time_us, cSipMsg
 	for(iter = queue_req_resp.begin(); iter != queue_req_resp.end(); iter++) {
 		if((*iter)->getLastTime() < limit_time_us && 
 		   (!is_read_from_file_by_pb_acttime() || (*iter)->response)) {
-			if((*iter)->needSaveToDb(relations)) {
+			if((*iter)->needSaveToDb(relations, this)) {
 				(*iter)->saveToDb(relations);
 			}
 			if((*iter)->isOpenPcap()) {
@@ -782,18 +817,33 @@ void cSipMsgRelations::addSipMsg(cSipMsgItem *item, packet_s_process *packetS) {
 	if(iter != relations.end()) {
 		relation = iter->second;
 	}
-	unlock_relations();
 	if(!relation) {
 		if(item->response) {
 			delete item;
+			unlock_relations();
 			return;
 		}
 		relation = new FILE_LINE(0) cSipMsgRelation(item);
-		lock_relations();
 		relations[relation] = relation;
-		unlock_relations();
+
+		unsigned long int flags = 0;
+		set_global_flags(flags);
+		if(sverb.dump_call_flags) {
+			cout << "flags init cSipMsgRelation " 
+			     << (item->type == smt_options ? "options" :
+				 item->type == smt_subscribe ? "subscribe" :
+				 item->type == smt_notify ? "notify" : "unknown type") 
+			     << " : " << printCallFlags(flags) << endl;
+		}
+		relation->flags = setCallFlags(flags,
+				item->ip_src, item->ip_dst,
+				const_cast<char*>(item->number_src.c_str()), const_cast<char*>(item->number_dst.c_str()),
+				const_cast<char*>(item->domain_src.c_str()), const_cast<char*>(item->domain_dst.c_str()),
+				&packetS->parseContents);
+
 	}
 	relation->addSipMsg(item, packetS, this);
+	unlock_relations();
 	do_cleanup_relations(getTimeMS(&packetS->header_pt->ts));
 	do_close_pcaps_by_limit_time(getTimeMS(&packetS->header_pt->ts));
 }
@@ -852,13 +902,15 @@ void cSipMsgRelations::_saveToDb(cSipMsgRequestResponse *requestResponse, bool e
  
 	/*
 	cout << "save to db " 
+	     << requestResponse->request->flags << ' '
+	     << requestResponse->response->flags << ' '
 	     << requestResponse->request->type << ' '
 	     << requestResponse->request->callid << ' '
 	     << requestResponse->time_us 
 	     << endl;
 	*/
 	     
-	if(opt_nocdr) {
+	if(opt_nocdr || sverb.disable_save_sip_msg) {
 		return;
 	}
 	if(!sqlDbSaveSipMsg) {
@@ -885,12 +937,16 @@ void cSipMsgRelations::_saveToDb(cSipMsgRequestResponse *requestResponse, bool e
 		_next_ch_name[i][0] = 0;
 		next_ch_name[i] = _next_ch_name[i];
 	}
-	rec.add(sqlEscapeString(sqlDateTimeString(requestResponse->time_us / 1000000).c_str()), "time");
+	string table = "sip_msg";
+	rec.add_calldate(requestResponse->time_us, "time", existsColumns.sip_msg_time_ms);
 	rec.add(requestResponse->request->type, "type");
-	rec.add(htonl(requestResponse->request->ip_src), "ip_src");
-	rec.add(htonl(requestResponse->request->ip_dst), "ip_dst");
-	rec.add(requestResponse->request->port_src, "port_src");
-	rec.add(requestResponse->request->port_dst, "port_dst");
+	rec.add(requestResponse->request->ip_src, "ip_src", false, sqlDbSaveSipMsg, table.c_str());
+	rec.add(requestResponse->request->ip_dst, "ip_dst", false, sqlDbSaveSipMsg, table.c_str());
+	rec.add(requestResponse->request->port_src.getPort(), "port_src");
+	rec.add(requestResponse->request->port_dst.getPort(), "port_dst");
+	if(existsColumns.sip_msg_vlan && VLAN_IS_SET(requestResponse->request->vlan)) {
+		rec.add(requestResponse->request->vlan, "vlan");
+	}
 	rec.add(sqlEscapeString(requestResponse->request->number_src), "number_src");
 	rec.add(sqlEscapeString(requestResponse->request->number_dst), "number_dst");
 	rec.add(sqlEscapeString(requestResponse->request->domain_src), "domain_src");
@@ -907,7 +963,7 @@ void cSipMsgRelations::_saveToDb(cSipMsgRequestResponse *requestResponse, bool e
 			}
 			if(!item->content.empty()) {
 				string field_content = i == 0 ? "request_content" : "response_content";
-				rec.add(item->content, field_content);
+				rec.add(sqlEscapeString(item->content), field_content);
 			}
 		}
 	}
@@ -916,11 +972,11 @@ void cSipMsgRelations::_saveToDb(cSipMsgRequestResponse *requestResponse, bool e
 	}
 	rec.add(requestResponse->time_us, "time_us");
 	rec.add(requestResponse->next_requests_time_us.size(), "request_repetition");
-	rec.add(sqlEscapeString(sqlDateTimeString(requestResponse->request->time_us / 1000000).c_str()), "request_time");
-	rec.add(requestResponse->request->time_us % 1000000, "request_time_us");
+	rec.add_calldate(requestResponse->request->time_us, "request_time", existsColumns.sip_msg_request_time_ms);
+	rec.add(TIME_US_TO_DEC_US(requestResponse->request->time_us), "request_time_us");
 	if(requestResponse->response) {
-		rec.add(sqlEscapeString(sqlDateTimeString(requestResponse->response->time_us / 1000000).c_str()), "response_time");
-		rec.add(requestResponse->response->time_us % 1000000, "response_time_us");
+		rec.add_calldate(requestResponse->response->time_us, "response_time", existsColumns.sip_msg_response_time_ms);
+		rec.add(TIME_US_TO_DEC_US(requestResponse->response->time_us), "response_time_us");
 		int64_t response_duration = requestResponse->response->time_us - requestResponse->request->time_us;
 		if(response_duration >= 0) {
 			rec.add(round(response_duration / 1000.), "response_duration_ms");
@@ -936,87 +992,128 @@ void cSipMsgRelations::_saveToDb(cSipMsgRequestResponse *requestResponse, bool e
 	if(flags) {
 		rec.add(flags, "flags");
 	}
-	string table = "sip_msg";
 	if(enableBatchIfPossible && isSqlDriver("mysql")) {
 		string query_str;
 		for(int i = 0; i < 2; i++) {
 			string &adj_ua = i == 0 ? adj_ua_src : adj_ua_dst;
 			if(!adj_ua.empty()) {
 				string field = i == 0 ? "ua_src_id" : "ua_dst_id";
-				unsigned _cb_id = calltable->cb_ua_getId(adj_ua.c_str(), false, true);
-				if(_cb_id) {
-					rec.add(_cb_id, field);
+				if(useSetId()) {
+					rec.add(MYSQL_CODEBOOK_ID(cSqlDbCodebook::_cb_ua, adj_ua), field);
 				} else {
-					query_str += string("set @" + field + " = ") +  "getIdOrInsertUA(" + sqlEscapeStringBorder(adj_ua) + ");\n";
-					rec.add("_\\_'SQL'_\\_:@" + field, field);
+					unsigned _cb_id = dbData->getCbId(cSqlDbCodebook::_cb_ua, adj_ua.c_str(), false, true);
+					if(_cb_id) {
+						rec.add(_cb_id, field);
+					} else {
+						query_str += MYSQL_ADD_QUERY_END(string("set @" + field + " = ") +  
+							     "getIdOrInsertUA(" + sqlEscapeStringBorder(adj_ua) + ")");
+						rec.add(MYSQL_VAR_PREFIX + "@" + field, field);
+					}
 				}
 			}
 		}
 		if(requestResponse->response && !requestResponse->response->response_string.empty()) {
-			unsigned _cb_id = calltable->cb_sip_response_getId(requestResponse->response->response_string.c_str(), false, true);
-			if(_cb_id) {
-				rec.add(_cb_id, "response_id");
+			if(useSetId()) {
+				rec.add(MYSQL_CODEBOOK_ID(cSqlDbCodebook::_cb_sip_response, requestResponse->response->response_string), "response_id");
 			} else {
-				query_str += string("set @response_id = ") + "getIdOrInsertSIPRES(" + sqlEscapeStringBorder(requestResponse->response->response_string) + ");\n";
-				rec.add("_\\_'SQL'_\\_:@response_id", "response_id");
+				unsigned _cb_id = dbData->getCbId(cSqlDbCodebook::_cb_sip_response, requestResponse->response->response_string.c_str(), false, true);
+				if(_cb_id) {
+					rec.add(_cb_id, "response_id");
+				} else {
+					query_str += MYSQL_ADD_QUERY_END(string("set @response_id = ") + 
+						     "getIdOrInsertSIPRES(" + sqlEscapeStringBorder(requestResponse->response->response_string) + ")");
+					rec.add(MYSQL_VAR_PREFIX + "@response_id", "response_id");
+				}
 			}
 		}
 		for(int i = 0; i < 2; i++) {
 			cSipMsgItem *item = i == 0 ? requestResponse->request : requestResponse->response;
 			if(item && !item->content_type.empty()) {
 				string field_content_type = i == 0 ? "request_id_content_type" : "response_id_content_type";
-				unsigned _cb_id = calltable->cb_contenttype_getId(item->content_type.c_str(), false, true);
-				if(_cb_id) {
-					rec.add(_cb_id, field_content_type);
+				if(useSetId()) {
+					rec.add(MYSQL_CODEBOOK_ID(cSqlDbCodebook::_cb_contenttype, item->content_type), field_content_type);
 				} else {
-					query_str += string("set @" + field_content_type + " = ") +  "getIdOrInsertCONTENTTYPE(" + sqlEscapeStringBorder(item->content_type) + ");\n";
-					rec.add("_\\_'SQL'_\\_:@" + field_content_type, field_content_type);
+					unsigned _cb_id = dbData->getCbId(cSqlDbCodebook::_cb_contenttype, item->content_type.c_str(), false, true);
+					if(_cb_id) {
+						rec.add(_cb_id, field_content_type);
+					} else {
+						query_str += MYSQL_ADD_QUERY_END(string("set @" + field_content_type + " = ") + 
+							     "getIdOrInsertCONTENTTYPE(" + sqlEscapeStringBorder(item->content_type) + ")");
+						rec.add(MYSQL_VAR_PREFIX + "@" + field_content_type, field_content_type);
+					}
 				}
 			}
 		}
-		query_str += sqlDbSaveSipMsg->insertQuery(table.c_str(), rec, false, false) + ";\n";
-		query_str += "set @sip_msg_id = last_insert_id();\n";
+		if(useNewStore()) {
+			if(useSetId()) {
+				rec.add(MYSQL_VAR_PREFIX + MYSQL_MAIN_INSERT_ID, "ID");
+			} else {
+				query_str += MYSQL_GET_MAIN_INSERT_ID_OLD;
+			}
+		}
+		query_str += MYSQL_ADD_QUERY_END(MYSQL_MAIN_INSERT + 
+			     sqlDbSaveSipMsg->insertQuery(table.c_str(), rec, false, false));
+		if(useNewStore()) {
+			if(!useSetId()) {
+				query_str += MYSQL_GET_MAIN_INSERT_ID + 
+					     MYSQL_IF_MAIN_INSERT_ID;
+			}
+		} else {
+			query_str += "if row_count() > 0 then\n" +
+				     MYSQL_GET_MAIN_INSERT_ID;
+		}
 		if(custom_headers_sip_msg) {
-			custom_headers_sip_msg->prepareSaveRows(NULL, 0, &requestResponse->custom_headers_content, requestResponse->time_us / 1000000, NULL, next_ch, next_ch_name);
+			custom_headers_sip_msg->prepareSaveRows(NULL, 0, &requestResponse->custom_headers_content, requestResponse->time_us, NULL, next_ch, next_ch_name);
 			bool existsNextCh = false;
 			for(unsigned i = 0; i < CDR_NEXT_MAX; i++) {
 				if(next_ch_name[i][0]) {
-					next_ch[i].add("_\\_'SQL'_\\_:@sip_msg_id", "sip_msg_ID");
-					query_str += sqlDbSaveSipMsg->insertQuery(next_ch_name[i], next_ch[i]) + ";\n";
+					next_ch[i].add(MYSQL_VAR_PREFIX + MYSQL_MAIN_INSERT_ID, "sip_msg_ID");
+					query_str += MYSQL_ADD_QUERY_END(MYSQL_NEXT_INSERT_GROUP + 
+						     sqlDbSaveSipMsg->insertQuery(next_ch_name[i], next_ch[i]));
 					existsNextCh = true;
 				}
 			}
 			if(existsNextCh) {
-				string queryForSaveUseInfo = custom_headers_sip_msg->getQueryForSaveUseInfo(requestResponse->time_us / 1000000, &requestResponse->custom_headers_content);
+				string queryForSaveUseInfo = custom_headers_sip_msg->getQueryForSaveUseInfo(requestResponse->time_us, &requestResponse->custom_headers_content);
 				if(!queryForSaveUseInfo.empty()) {
-					query_str += queryForSaveUseInfo + ";\n";
+					vector<string> queryForSaveUseInfo_vect = split(queryForSaveUseInfo.c_str(), ";");
+					for(unsigned i = 0; i < queryForSaveUseInfo_vect.size(); i++) {
+						query_str += MYSQL_ADD_QUERY_END(queryForSaveUseInfo_vect[i]);
+					}
 				}
 			}
 		}
+		if(useNewStore()) {
+			if(!useSetId()) {
+				query_str += MYSQL_ENDIF_QE;
+			}
+		} else {
+			query_str += "end if";
+		}
 		static unsigned int counterSqlStore = 0;
-		int storeId = STORE_PROC_ID_MESSAGE_1 + 
-			      (opt_mysqlstore_max_threads_message > 1 &&
-			       sqlStore->getSize(STORE_PROC_ID_MESSAGE_1) > 1000 ? 
-				counterSqlStore % opt_mysqlstore_max_threads_message : 
-				0);
+		sqlStore->query_lock(query_str.c_str(),
+				     STORE_PROC_ID_MESSAGE, 
+				     opt_mysqlstore_max_threads_message > 1 &&
+				     sqlStore->getSize(STORE_PROC_ID_MESSAGE, 0) > 1000 ? 
+				      counterSqlStore % opt_mysqlstore_max_threads_message : 
+				      0);
 		++counterSqlStore;
-		sqlStore->query_lock(query_str.c_str(), storeId);
 	} else {
 		for(int i = 0; i < 2; i++) {
 			string &adj_ua = i == 0 ? adj_ua_src : adj_ua_dst;
 			if(!adj_ua.empty()) {
 				string field = i == 0 ? "ua_src_id" : "ua_dst_id";
-				rec.add(calltable->cb_ua_getId(adj_ua.c_str(), true), field);
+				rec.add(dbData->getCbId(cSqlDbCodebook::_cb_ua, adj_ua.c_str(), true), field);
 			}
 		}
 		if(requestResponse->response && !requestResponse->response->response_string.empty()) {
-			rec.add(calltable->cb_sip_response_getId(requestResponse->response->response_string.c_str(), true), "response_id");
+			rec.add(dbData->getCbId(cSqlDbCodebook::_cb_sip_response, requestResponse->response->response_string.c_str(), true), "response_id");
 		}
 		for(int i = 0; i < 2; i++) {
 			cSipMsgItem *item = i == 0 ? requestResponse->request : requestResponse->response;
 			if(item && !item->content_type.empty()) {
 				string field_content_type = i == 0 ? "request_id_content_type" : "response_id_content_type";
-				rec.add(calltable->cb_contenttype_getId(item->content_type.c_str(), true), field_content_type);
+				rec.add(dbData->getCbId(cSqlDbCodebook::_cb_contenttype, item->content_type.c_str(), true), field_content_type);
 			}
 		}
 		int64_t sipMsgID = sqlDbSaveSipMsg->insert(table, rec);
@@ -1030,20 +1127,20 @@ void cSipMsgRelations::_saveToDb(cSipMsgRequestResponse *requestResponse, bool e
 	}
 }
 
-bool cSipMsgRelations::needSavePcap(cSipMsgRequestResponse *requestResponse) {
+bool cSipMsgRelations::needSavePcap(cSipMsgRequestResponse *requestResponse, cSipMsgRelation *relation) {
 	if(requestResponse->request) {
-		return((requestResponse->request->type == smt_options && opt_save_sip_options) ||
-		       (requestResponse->request->type == smt_subscribe && opt_save_sip_subscribe) ||
-		       (requestResponse->request->type == smt_notify && opt_save_sip_notify));
+		return((requestResponse->request->type == smt_options && (relation->flags & FLAG_SAVEOPTIONSPCAP)) ||
+		       (requestResponse->request->type == smt_subscribe && (relation->flags & FLAG_SAVESUBSCRIBEPCAP)) ||
+		       (requestResponse->request->type == smt_notify && (relation->flags & FLAG_SAVENOTIFYPCAP)));
 	}
 	return(false);
 }
 
-bool cSipMsgRelations::needSaveToDb(cSipMsgRequestResponse *requestResponse) {
+bool cSipMsgRelations::needSaveToDb(cSipMsgRequestResponse *requestResponse, cSipMsgRelation *relation) {
 	if(!requestResponse->saved_to_db && requestResponse->request) {
-		return((requestResponse->request->type == smt_options && opt_save_sip_options) ||
-		       (requestResponse->request->type == smt_subscribe && opt_save_sip_subscribe) ||
-		       (requestResponse->request->type == smt_notify && opt_save_sip_notify));
+		return((requestResponse->request->type == smt_options && (relation->flags & FLAG_SAVEOPTIONSDB)) ||
+		       (requestResponse->request->type == smt_subscribe && (relation->flags & FLAG_SAVESUBSCRIBEDB)) ||
+		       (requestResponse->request->type == smt_notify && (relation->flags & FLAG_SAVENOTIFYDB)));
 	}
 	return(false);
 }
@@ -1082,10 +1179,8 @@ void cSipMsgRelations::cleanup_relations(u_int64_t limit_time_us) {
 	map<cSipMsgRelationId, cSipMsgRelation*>::iterator iter;
 	for(iter = relations.begin(); iter != relations.end(); ) {
 		if(iter->second->getLastTime() < limit_time_us) {
-			lock_delete_relation();
 			delete iter->second;
 			relations.erase(iter++);
-			unlock_delete_relation();
 		} else {
 			iter++;
 		}
@@ -1252,7 +1347,7 @@ void cSipMsgRelations::internalThread() {
 		}
 		do_cleanup_cdq();
 		for(int i = 0; i < 5 * 100 && !terminate; i++) {
-			usleep(10000);
+			USLEEP(10000);
 		}
 	}
 }
@@ -1281,7 +1376,6 @@ string cSipMsgRelations::getDataTableJson(char *params, bool *zip) {
 		*zip = zipParam == "yes";
 	}
 	
-	lock_delete_relation();
 	lock_relations();
 	
 	u_int32_t list_sip_msg_size = relations.size();
@@ -1291,8 +1385,6 @@ string cSipMsgRelations::getDataTableJson(char *params, bool *zip) {
 	for(map<cSipMsgRelationId, cSipMsgRelation*>::iterator iter_opt = relations.begin(); iter_opt != relations.end(); iter_opt++) {
 		list_sip_msg[list_sip_msg_count++] = iter_opt->second;
 	}
-	
-	unlock_relations();
 	
 	list<RecordArray> records;
 	for(unsigned i = 0; i < list_sip_msg_count; i++) {
@@ -1307,7 +1399,7 @@ string cSipMsgRelations::getDataTableJson(char *params, bool *zip) {
 	}
 	delete [] list_sip_msg;
 	
-	unlock_delete_relation();
+	unlock_relations();
 
 	string table;
 	string header = "[";
@@ -1323,7 +1415,7 @@ string cSipMsgRelations::getDataTableJson(char *params, bool *zip) {
 		string filter = jsonParams.getValue("filter");
 		if(!filter.empty()) {
 			//cout << "FILTER: " << filter << endl;
-			cSipMsgFilter *optFilter = new cSipMsgFilter(filter.c_str());
+			cSipMsgFilter *optFilter = new FILE_LINE(0) cSipMsgFilter(filter.c_str());
 			for(list<RecordArray>::iterator iter_rec = records.begin(); iter_rec != records.end(); ) {
 				if(!optFilter->check(&(*iter_rec))) {
 					iter_rec->free();
@@ -1383,7 +1475,6 @@ string cSipMsgRelations::getHistoryDataJson(char *params, bool *zip) {
 
 string cSipMsgRelations::getHistoryDataJson(u_int64_t id) {
 	cSipMsgRelation *relation = NULL;
-	lock_delete_relation();
 	lock_relations();
 	for(map<cSipMsgRelationId, cSipMsgRelation*>::iterator iter = relations.begin(); iter != relations.end(); iter++) {
 		if(iter->second->id == id) {
@@ -1391,13 +1482,13 @@ string cSipMsgRelations::getHistoryDataJson(u_int64_t id) {
 			break;
 		}
 	}
-	unlock_relations();
 	if(!relation) {
+		unlock_relations();
 		return("");
 	}
 	list<cSipMsgRelation::sHistoryData> historyData;
 	relation->getHistoryData(&historyData, ((u_int64_t)getTimeMS_rdtsc() - opt_datarow_limit_time * 1000) * 1000, 0, this);
-	unlock_delete_relation();
+	unlock_relations();
 	string historyDataJson;
 	if(historyData.size()) {
 		historyDataJson += '[';

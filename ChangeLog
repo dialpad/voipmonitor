@@ -1,3 +1,788 @@
+28.7 26.07.2021
+===============
+- support for ipfix tunneling (ACME / ORACLE SBC mirroring) [VS-133]
+- support for '487 session canceled' in 'fraud sequential' alert
+- fix SSL keylogger which was not working if the program (kamailio / etc.) was forking 
+- fix SSL keylogger compilation on Ubuntu 
+
+
+28.6 15.07.2021
+===============
+- fix crashes when handling 3XX SIP responses for calls which includes RTP streams (all verions) [VS-1214]
+- add digestrealm column to the register_state/_failed tables [VG-1875]
+- fix content line separator: LF (\n) - fixes parsing l: tag [VS-1207]
+- ssl keylogger - fix Makefile for 'make with_tcp' (debian 10 issue) [VS-1212]
+- fix rtcp_mux for rtps 
+
+
+28.5 29.06.2021
+===============
+- add support for ESP transport encapsulation
+- send call - implement authentification [VG-2309]
+- dtls 1.3 fix problem with the webrtc fragment length, fix fingerprint problem in sdp [
+
+
+28.4.1 24.06.2021
+=================
+- fix crash when incorrect content is in dtls packet [VS-1202]
+
+
+28.4 22.06.2021
+===============
+- DTLS RTP decryption support (needs keylogger) [VS-1202]
+- allow to run autocleanmingb / autocleanspoolminpercent outside cleanspool_enable_fromto option [VS-1183]
+- implement mrcp saving to pcap [VS-1167]
+
+
+28.3 09.06.2021
+===============
+- fix race condition leading to crash (when SIP compression was changed to LZO the race occured more often silently corrupting heap) 
+- ss7: use isup.subsequent_number for extend called number (if new configuration value "ss7_use_sam_subsequent_number" set to "yes") [VS-1188]
+- fix crash for some callerid when t2_boost_enable_call_find_threads is enabled 
+- adding support for custom headers without automatically added trailing colon [VS-1204]
+
+
+28.2 26.05.2021
+===============
+- fix rare random crashes in TCP reassembler introduced in 28.0
+- fix crash if sdp_multiplication=0
+- fix issue with caplen and snaplen when loading pcap with -r [VS-1199]
+- increase SIP processing threads to 4 and optimise first thread 
+
+
+28.1 06.05.2021
+===============
+- First line in SIP message (INVITE etc.) can be used in custom headers [VS-550] [VS-615] - use header field invite
+- fix race condition leading to crash for 3XX SIP calls
+
+
+28.0 04.05.2021
+===============
+- automatically split "d" thread in t2cpu threads which is responsible for packet classifications - now it is possible to process >5Gbit traffic on slower GHZ CPUs. 
+- automatically split "s" thread in t2cpu threads which parses SIP packets - now extreme SIP packet rate is possible on slower GHZ CPUs
+- speed optimisations in t2cpu threads (less memory copying) 
+- add support for anonymization ip in pcap [VG-2281]
+- fix crash in jitterbuffer if packetization == 1 [VS-1186]
+- ignore process error for attempt to decrypt data without data-remaing from previous pass
+- add new option ssl_unlimited_reassembly_attempts (yes/NO) for enable unlimited attempts for reassembly if next packet with the same tcp.ack arrived
+- add support for crypto suites AES_CM_256_HMAC_SHA1_80, AES_CM_256_HMAC_SHA1_32 in srtp decode
+- allow comment # in voipmonitor.conf at the end of value [VS-1195]
+- fix crash when refreshing fraud in case option for storing pcap is enabled [VS-1189]
+
+
+27.8 06.04.2021
+===============
+- fix issue with synchronizing very slow and fast traffic across multiple interfaces [VS-1177]
+- fix cases where MOS 50ms jitterbuffer was low when it should not be [VS-1178]
+- fix peername parse from header with tel: prefix [VS-1181]
+- tls/ssl: fix decrypting multiple handshake messages, added support for session ticket (restore master key from previous session)), new option ssl_ignore_error_bad_finished_digest (default yes) [VS-1179]
+
+
+27.7.4 10.03.2021
+=================
+- fix interface = any and convert_dlt_sll2en10 option for SS7 pcap files 
+
+
+27.7.3 05.03.2021
+=================
+- fix name 'realm' json variable when filtering SIP REGISTER in active registration table [VG-2286]
+- add support for multi-sensor select in filters: registers, options/subscribe/notify [VG-2277]
+
+
+27.7.2 02.03.2021
+=================
+- fix memory increase for hot_restart manager command [VS-1175]
+- fix memory leak in options/subscribe/notify [VS-1175]
+- add support for space separator in load ip and number groups
+- fix lock issue for fraud_refresh manager command 
+
+
+27.7.1 23.02.2021
+=================
+- fix race condition in SIP REGISTER which can lead to exhaust all memory [VS-1173]
+- fix sip history sql store for request/response SIP messages 
+
+
+27.7 18.02.2021
+===============
+- add support for ss7/rudp (ss7_rudp_port = 7000)
+
+
+27.6.1 16.02.2021
+=================
+- fix syslog spam in cloud version [VS-1171]
+
+
+27.6 15.02.2021
+===============
+- fix buffer overflow in memcpy which can lead to remote code execution when live sniffer is enabled through GUI (credit to Sandro Gauci)
+- add support for Sonus STP SS7 stream [VS-1160]
+- client/server - fix situation when server/client has different time which leads to use all memory in buffers [VS-1161]
+- fix saveaudio_answeronly = yes for some cases [VS-1139]
+- fix counting RTPC as RTP at the beginning of a call [VS-1117]
+- ssl key logger - new define option 'DEBUG_TO_SYSLOG' 
+- new options livesniffer_timeout_s (default 0 [s]) and livesniffer_tablesize_max_mb (default 0 [MB]) [VS-2243]
+- new options for OPTION, NOTIFY, SUBSCRIBE which controls how those messages are paired -- sip-msg-compare-ip-src (YES/no)- sip-msg-compare-ip-dst (YES/no)  - sip-msg-compare-port-src (YES/no)  - sip-msg-compare-port-dst (yes/NO)  - sip-msg-compare-number-src (YES/no)  - sip-msg-compare-number-dst (YES/no)- sip-msg-compare-domain-src (YES/no)- sip-msg-compare-domain-dst (YES/no) [VG-2271]
+- fix ssl keyloger (missing pthread.h on some systems) [VS-1131]
+- add option database_backup_to_date (see voipmonitor.conf) [VS-1162]
+
+
+27.5 21.01.2021
+===============
+- video support - saving video RTP to pcap, new savertp_video = NO/yes/hdear/cdr_only [VS-312]
+- add new alert 'concurrent calls drop' [VG-2229]
+- fix memory/packetbuffer leak if call contains invite and message and if exists multiple rd threads 
+
+
+27.4 30.12.2020
+===============
+- added capture rules for sip options/subscribe/notify [VS-919]
+
+
+27.3 18.12.2020
+===============
+- implemented hourly partition options instead of per day (for extreme CDR rate >= 15000) 
+- fix RTP restore for some corner cases [VS-1147]
+- implemented hour partitions 
+- implemented storing ip for IPinIP and GRE encapsulation (save_ip_from_encaps_ipheader: yes/NO, save_ip_from_encaps_ipheader_only_gre: yes/NO) [VS-1120]
+- exclude call from active calls and CDR if content type is application/csta+xml (can be reenabled by enable_content_type_application_csta_xml option) [VS-1148]
+- add support for multiple block in dump_rtcp_xr (fixes empty MOS-LQ) [VS-1153]
+
+
+27.2.2 01.12.2020
+=================
+- fix memory leak when fraud queue is fulll [VS-1141]
+- fix FAX T.38 decode for some cases [VG-2226]
+
+
+27.2.1 23.11.2020
+=================
+- Added support for G726-16,24,32,40 and AAL2-G726-16,24,32,40 audio decoding 
+
+
+27.2 03.11.2020
+===============
+- add wireshark version fo the RTCP calculation [VS-920]
+- add utf check to listcalls and listregister [VG-2193]
+- fix destination_number_mode=1 and update_dstnum_onanswer=yes dst number was from URI instead of To header [VS-1119]
+- add support for store/restore tls sessions for DH/TLS 1.3
+- add support for encrypted key transfer in ssl key logger
+- fix crash when new configuration was applied from gui (in client/server mode) [VS-1126]
+- fix audio resample - suppress resampling in cWavMix for PCMA/PCMU (resampling PCMA/U is done in function convertALAW2WAV/convertULAW2WAV) [VS-1129]
+
+
+27.1.1 15.10.2020
+=================
+- use ipv4 for cloud connect and use ipv6 only if ipv4 is not resolved by DNS 
+
+
+27.1 14.10.2020
+===============
+- implement roundtrip (end to end) delay calculation from RTCP packets (not all RTCP has information for it) [VS-920]
+- TLS: implemnt 32bytes client-random secret 
+- WEBRTC: fix webrtc parser which ignored half of packets in some cases [VS-1121]
+- increase number of possible RTP streams in a call (was limited to 30) [VS-1115]
+- fix IP proxy detection for multibranch calls [VS-1118]
+- fix long Call-ID string in tar.gz [VS-1116]
+
+
+27.0.2 22.09.2020
+=================
+- ssl key logger is now compatible with >= 1.0.1 ssl versions (tested 1.0.1, 1.1.0 and 1.1.1) 
+
+
+27.0.1 22.09.2020
+=================
+- fix 100% CPU regression in 27.0 version
+
+
+27.0 21.09.2020
+===============
+- added support for TLS 1.3 [VS-1101]
+- new SIP decryption method with voipmonitor sslkey logger using LD_PRELOAD injecting SSL functions in openssl (decryption is possible with any SIP proxy and any TLS and CIPHER suits)  - http://www.voipmonitor.org/doc/Tls
+- modify SQL distribution in multiple threads (fixingf extreme SQL insert rates >= 60000 CDR / second) 
+
+
+26.22 03.09.2020
+================
+- fas detection will now recognize Europe and UK ringing tones [VS-878]
+- fix compilation with LIBMYSQL_VERSION_ID >= 80000
+- modify condition checking if packet is RTCP (some RTCP packets were not recognised) [VS-1109]
+- suppress duplicate TCP SIP REGISTER packet via check tcp-seq which fixes failed REGISTER (after successfull register) [VS-1108]
+- change cps_avg and cps_min calculation for small traffic (now use complete interval with seconds without calls)
+
+
+26.21.2 03.09.2020
+==================
+- fix energy levels in jitter buffer (out of sync)
+- when DNS returns ipv4 and ipv6 try to connect to ipv6 too (fixes ipv6 sniffer connection by DNS hostname) [VS-1105]
+
+
+26.21.1 28.08.2020
+==================
+- analyze energy levels after jitter buffer, fix basic energy levels calculation if jitter buffer will be disabled [VG-2169]
+
+
+26.21 27.08.2020
+================
+- added support for kamailio siptrace mirroring to the voipmonitor (see kamailio_* options) - this feature is mainly for encrypted traffic as unencrypted traffic can be sniffed directly by the voipmonitor [VS-952]
+- fix missing RTP streams if IP address is different than in SDP (in certain private/public NAT scenario) VS-1106
+- fix memory allocation issue in check_sip if websocket data is invalid [VS-1102]
+- add more option to sip-options/subscribe/notify to allow only active (in-memory) information (avoiding pulling data into database) - (nodb option) or allowing avoid pcap files but still having them in DB [VS-1103]
+- change default value for option ssl_store_sessions from 'memory' to 'persistent' which allows to decrypt stored SSL sessions after sniffer restarts 
+
+
+26.20 12.08.2020
+================
+- add support ipv6 to configuration options natalias, sdp_ignore_ip_port, ssl_ipport) [VS-1092]
+- new save-energylevels feature (see voipmonitor.conf) [VG-2169]
+- support for user restriction in alerts [VG-1266]
+- add support for regular expression in group of numbers example - R(12[34].*) [VG-2161]
+- new option icmp_process_data enables searching for SIP data in the ICMP type 3 [VS-1091]
+- SIP REGISTER behaviour change - from this version SIP REGISTER are compared by number and domain part from Contact header (to change to old behaviour set sip-register-state-compare-contact_num = no, sip-register-state-compare-contact_domain = no [VS-1099] [VS-1100]
+- fix cp behavior with --no-user-input parameter [VS-1093]
+- fix gcc 10 
+- fix ip dst filter in options/subscribe/notify [VG-2165]
+- fix memory leak (one per thread) in conv_tz (active calls in GUI) [VS-1094]
+- document mirror_require_confirmation
+
+
+26.19 21.07.2020
+================
+- fix sending SIP packets in packetbuffer_sender=yes to some other instance for low SIP traffic [VS-1083]
+- fix large TLS INVITE packets [VS-1087]
+- fix sip overlap when both caller=A callee=A [VS-1085]
+- fix G711 codec instead of opus for calls which contains video (ignore m=video) [VS-1088]
+- reenable warning when capturing (interface=any) and packets have different DLT size (with suggestion to use convert_dlt_sll2en10 = yes) [VS-1086]
+- do not insert sensor and active calls when loading pcap from file [VS-1089]
+- store audio/image/video flag in CDR (video calls will be possible to filter now) [VS-559]
+- new  mirror_require_confirmation option which is recommended to disable on high traffic throughput 
+- new multiple service connections between client and server (increses connection performance) 
+- fix memory leak in queue between database server and chart cache server (if queue is full)
+- fix cGzip::decompress
+- fix loading pcap with verbose option -v,process_rtp_header if pcap contains variable packetization and packets were saved with rtpsave=header [VS-1090]
+- fix AMR-WB decoder [VS-487]
+
+
+26.18 03.07.2020
+================
+- Support for billing recalculation [VG-2019]
+- Fix bug in packet mirroring client/server - time difference error could be wrong filling up all heap buffer 
+
+
+26.17.1 26.06.2020
+==================
+- fix client / server connection (extend rsa key length for service connection to 4096), force close connection if failed, fix typo 'sesnor' [VS-1081]
+- adjust conditions for the swap checking.
+
+
+26.17 24.06.2020
+================
+- change xPDV calculation so it will show median PDV now [VG-2115]
+- new options for client/server packet mirroring: mirror_connect_maximum_time_diff_s, client_server_connect_maximum_time_diff_s, receive_packetbuffer_maximum_time_diff_s [VS-1075]
+- log (syslog and GUI) 'Critical low disk space in spool' [VS-836]
+- log (syslog and GUI) if sniffer detects 'insufficient allocable RAM' before it crashes [VG-2084]
+- fix sensor upgrade in IPv6-only system. Now we try all ip addresses returned from DNS when downloading [VS-1072]
+- fix issue with non-ascii and utf characters like user agent and last sip response etc (only in mysql_enable_set_id mode) 
+- do not cut STUN and DTLS RTP packets for rtpsave=header 
+- fix check configuration values between mysql and default config [VG-2128]
+- fix uploading pcap without RTP payload (if rtpsave=header pcap was stored and reuploaded via sniffer/GUI) [VS-1076]
+- fix default mysql ssl values
+- fix set default values of mysql ssl parameters
+- add measure preventing overload packetbuffer in mirror receiver mode
+- add support for tcmalloc heap profiler
+- enable processing PcapQueue::pcapStat without verbose (-v1) [VS-1078]
+- break client/server connection when there are too much errors 
+- add more debug information for dssl 
+
+
+26.16 26.05.2020
+================
+- amr wb support [VS-487]
+- fix long calls ogg download [VG-2111]
+- fix pcap upload in client/server mode [VG-2109]
+- apply all capture rule types in new invite [VS-1071]
+- fix db compatibility in various client/server modes 
+- fix backup / migration db when some tables do not exist [VS-1067]
+- new option ignore_rtp_after_auth_failed (default yes) [VS-1067]
+- simplify json input - now it can be used --json_config='[{"id_sensor":"11"}]' instead of --json_config='[{"name":"id_sensor","value":"11","set":1}]'
+- fix crash in SDP processing if data are garbled [VS-1063]
+- new way to load capture rules from csv - capture_rules_sip_header_file = capturerules_sip_header.csv
+- revert primary index of cdr to ID, calldate (change was sent by mistake)
+
+
+26.15 20.04.2020
+================
+- fix saveaudio = ogg (add missing fclose) [VS-1065]
+- adjust error log for missingn ethtool [VS-1057]
+- fix new voipmonitor instance did not killed old watchdog script 
+
+
+26.14 20.04.2020
+================
+- Increase RRDs limit for packets count all/RTP to 100000000 
+- do not add packet loss (and do not lower MOS score) in cases when there is >500ms RTP gap with missing MARK bit but timestamp difference is within range <10ms which is valid silence or gap [VS-1038] [VS-1051]
+- Added support for RFC1483 (LLC-encapsulated ATM) link-layer type
+- set rx queue and coalesce rx-usecs on sniffing interfaces with ethtool utility (option interfaces_optimize default is yes) [VS-1057]
+- send warning when sniffer is swapped [VG-2088]
+- fix crash when compiled with wireshark for SS7 support [VS-1061]
+- fix crash when downloading audio from GUI [VS-1060]
+- fix empty active calls for some cases [VG-2090]
+- fix bad headers error (when in nonstandard configuration) in client-server mode [VS-1050]
+- fix capture reloading in client-server if ipv6 is enabled [VG-2087]
+
+
+26.13 20.03.2020
+================
+- fix missing RTP in caller or called for some cases [VS-1053]
+- add samplerate convert (if need) to cWavMix (create audio) [VS-1049]
+- voipmonitor --dedup-pcap='SRC.pcap DST.pcap' [VG-1816]
+- removing unnecessary calls system(cmd) from convertRawToWav [VS-1044]
+- fix audio mixing (broken in 26.12)
+
+
+26.12 13.03.2020
+================
+- document option sdp_multiplication (new option sdp_multiplication=0)
+- add file deduplication option usage: voipmonitor --config-file=/etc/voipmonitor.conf --dedup-pcap='SRC.pcap DST.pcap' [VG-1816]
+- fix issue with missing procedure __insert if it was deleted by concurrent process (if same sniffers sends CDR with the same id_sensor)
+- fix audio wav cretion for very long calls [VS-1044]
+
+
+26.11 12.03.2020
+================
+- add test billing [VG-2019]
+- rtpip_find_endpoints is now enabled by default (if calls are routed through SIP proxies with RTP proxies, enable this option so the main caller and called stream will not be selected from/to sip proxy but from real caller / called destination) [VS-1039]
+- Skip CDR now works for every SIP packets and not only for first INVITE which allows to skip CDR creation with any regexp rule [VS-1036]
+- added --no-user-input parameter for disabling user interactive input in the install script [VG-2053]
+- add support for 'last sip response' test/regexp condition in parameter cdr_ignore_response (cdr_ignore_response = 503 lsr=Call\sThrottled, 403 name=abc ip=1.2.3.4, 404 number=%123%, 405 number=.*123.* ip=1.2.3.0/24) 
+- fix sip proxy IP could be swapped between destination IP for some cases [VS-1041]
+- fix error handling when invalid regexp is set in cdr_sip_response_reg_remove 
+- lower frequency of error log with failed connection in client/server mode
+- client / server - new options server_sql_queue_limit, server_sql_concat_limit, fix CPU bound query processing from multiple sniffers 
+- auto enable ipv6 for parameter rtp-stream-analysis
+- fix error handling in manager command 'graph' [VG-2062]
+- new server_sql_queue_limit, server_sql_concat_limit options for server/client 
+- Increased rrddb max value for calls count INV/REG
+
+
+26.10 12.02.2020
+================
+- signifficantly reduce calling usleep/nanosleep in busy wait loops. Some virtualisation plaforms are sensitive to low usleep(<400) and causes almost 100% CPU load on host even when sniffer is doing nothing [VS-1034]
+
+
+26.9 06.02.2020
+===============
+- fix fraud change country alert (broken since IPV6 support) [VG-2031]
+- use enhanced billing accuracy as default [VS-1032]
+- add duration time for rtp streams (new column in cdr_rtp) [VS-2008]
+
+
+26.8.2 28.01.2020
+=================
+- fix variable name in RRD (for DEF and CDEF) (rrdtool v.1.5) 
+
+
+26.8.1 28.01.2020
+=================
+- use new static RTP functions instead of Call::tmprtp and RTP::fill (should be faster) 
+- handle dynamic DTMF events correctly (fixes dtmf2pcap=no for DTMF with dynamic payload) [VS-1025]
+- store RTP->iscaller/d to cdr_rtp.flags (used in GUI to determine to which side RTP belongs to) [VS-1030]
+
+
+26.8 23.01.2020
+===============
+- get q.850 reason from all packets now until BYE / CANCEL packet is received which will set final q.850 (q.850 was parsed only from BYE/CANCEL and not from 4X 5X and 6X responses by default) 
+- fix static compiles - snappy regretion (30% faster)
+
+
+26.7.1 17.01.2020
+=================
+- fix direct mysql access in cSslDsslSessions::deleteOldSessions which fixes stuck in packet processing [VS-1021]
+- suppress too much sdp_multiplication warnings - enable one warning per 10s [VS-1019]
+- add response sender thread in client / server mode (fixes latency in the sniffer and invalid utf-8 chars in crontab log) [VG-1709]
+
+
+26.7 15.01.2020
+===============
+- add new command line parameter json_config, add filter to manager command get_json_config
+- rrd - add auto-alter maximum of series, set maximum for "t2 CPU Usage %" to 120 * 20 % [VS-805]
+- add support for like wildcard '_' in filters [VS-1018]
+- change output for verbose 'manager' from cout to syslog
+
+
+26.6 06.01.2020
+===============
+- add UDP fragmented flag to CDR if UDP is defragmented (which is SIP RFC violation) 
+changes in billing: [VG-1971]
+- add resolution to rules for number format (original, normalized, both)
+- add resolution to rules for number type (local, international, both)
+- increase priority for regex match in rules (regex rules are now matched before prefix rules)
+- allow check multiple regex rules and select rule with the greatest match length
+- extend debug output for command line option --test-billing
+
+
+26.5 06.01.2020
+===============
+- added vxlan hedaer support (vmware mirroring) [VG-1972]
+- implemented domain check in fraud alert change cdr country [VG-1609]
+
+
+26.4.4 19.12.2019
+=================
+- update libpcap to 1.9.
+- update librrd to 1.7.0 to prevent crashes
+- log 'callslimit/ignoring call' only once in five minutes
+- add support for RFC2833 in audiocodes mirroring [VS-1009]
+- fix slow cloud connections 
+- move check minimal length of rtp packet after set last_rtp_a/b_packet_time_us (fixes pauserecordingheader) [VS-1008]
+- fix save_empty_frame for PAYLOAD_G722 (fixes pauserecordingheader) [VS-1012]
+
+
+26.4.3 13.12.2019
+=================
+- Fix Freebsd build. Includes in the hugepage and rrd headers.
+- add manager command hashtable_stats
+- add support for dumpallpackets in all threading / t2_boost modes
+- fix potential crash issue in new rrd code
+
+
+26.4.2 10.12.2019
+=================
+- fix RRD charts (create folder) 
+
+
+26.4.1 09.12.2019
+=================
+- document new option numa_balancing_set (introduced in 26.4) autodisable|enable|disable (default is autodisable) - if TLB shootdown is over 500 per second sniffer will turn off numa balancing (echo 0 > /proc/sys/kernel/numa_balancing) - on multiple node numa systems (2 or more CPU) memory balancing causes too much overhead (TLB shootdowns) when sniffer uses GBs of memory). 
+- fix crash when reading from a file directly without packetbuffer and sniffer is in mirror sender mode [VG-1955]
+
+
+26.4 09.12.2019
+===============
+- Statically compiled binaries (64bit) are now compiled again with the latest tcmalloc (fixes TLB shootdown bottleneck issues on NUMA systems - multi cpu servers), GCC 8.3, glibc 2.19, kernel >= 2.6.18
+- new option cdr_check_unique_callid_in_sensors [VS-1001]
+- calculate MOS score when call is connected and has less than 100 packets (all calls with <100 RTP packets were ignored for MOS calculateion) [VS-1002]
+- fix crash for options_qualify_refresh manager command in case OPTIONS/SUBSCRIBE/NOTIFY were not enabled 
+
+
+26.3 06.12.2019
+===============
+- more RRD chart optimizations [VS-989]
+- fix ARM build [VS-1000]
+- log packetbuffer interface error to the MySQL LOG [VS-992]
+- add support for CLIENT_RANDOM/MASTER_KEY with SERVER_KEY_EXCHANGE [VS-985]
+- add support for load client_random/masterkey from file via new parameter --ssl-master-secret-file (for testing purpose) [VS-998]
+- fix SIP performance regression when there are multiple INVITE in one SIP session (or INVITE attacks with the same Call-ID) [VS-993]
+- fix last sip response for SIP text MESSAGE type - if previous response is 407, enable set to 2XX if next response is 2XX [VS-1004]
+
+
+26.2 29.11.2019
+===============
+- fix t2_boost mode 
+- detect audiocodes port in source tcp/udp port [VS-988]
+- new options for truncating SIP response text cdr_sip_response_number_max_length and cdr_sip_response_reg_remove [VS-997]
+- workaround when MPLS GRE packets are constructed with wrong header type (GRE -> MPLS -> IP) [VS-651]
+- use vfork insted fork when generating RRD charts (fixes performance when sniffer allocates a lot of memory - TLB shootdowns) 
+
+
+26.1 25.11.2019
+===============
+- Revert compatibility for older kernels for static builds 
+- add support for new field 'by ip' (src, dst, both) in fraud realtime concurrent calls [VG-1915]
+- release memory (if used tcmalloc) only if need (new config option memory_purge_if_release_gt default 500MB)
+
+
+26.0 23.11.2019
+===============
+- Statically compiled binaries (64bit) are now compiled with the latest tcmalloc (fixes TLB shootdown bottleneck issues on NUMA systems - multi cpu servers), GCC 8.3, glibc 2.28
+- statically compiled versions (64bit) from 26.0 ARE NOT COMPATIBLE with kernels <= 3.2 (do not upgrade if you are running kernel <= 3.2 
+
+
+25.9 11.11.2019
+===============
+- sipport can be now set also in range - sipport = 5060-5090 [VG-1922]
+- add support for billing aggregation based on domain [VG-1886]
+- added support for per-sensor capture rules [VG-686]
+- added support for MySQL TLS certs [VS-965]
+- support for capturing SIPREC (passively) store xml part from sip message body, multiple media description in sdp, detect rtp caller/called direction via media description label and xml part [VG-1751]
+- allow two packets drop in FAX CED tone detector [VS-979]
+- fix packetbuffer file cache 
+- skip packets with bogus ip_header version after GRE header (warning - incorrect dataoffset/caplen ) [VS-978]
+- detect telephone-event in invite / res2xx (allow search for RFC2833 DTMF calls) [VS-331]
+- SIP REGISTER - check 'Proxy-Authorization' if 'Authorization' is missing (fixes empty SIP REGISTER username) [VS-975]
+- limit SQL syslog to 100 chars for each new attempts
+- fix issue with reinvite and proxy detect [VS-977]
+- voipmonitor --config-file=base_configuration --cmp-config=actual_configuration
+
+
+25.8 04.10.2019
+===============
+- add support for new field 'by ip' (src, dst, both) in fraud sequential alert [VG-1915]
+- support for checking mysql schema in GUI tools [VS-586]
+- auto adjust opt_pcap_queue_dequeu_window_length [VG-1837]
+- add option null_rtppayload which replaces voice in RTP by zeroing data - this option cannot be overriden by any other options [VS-818]
+- sipport can now accept port ranges and multiple values (sipport = 5060-5090,5098) [VG-1922]
+
+
+25.7.1 26.09.2019
+=================
+- fix cisco skinny (broken since ipv6 release) [VS-971]
+- fix support for rtp stream analysis
+- fix CDR delay for low traffic and setting threadingmod >= 2 [VS-972]
+- fix bind to ipv6 :: [VS-973]
+
+
+25.7 19.09.2019
+===============
+- add support for new RTP stream analysis in GUI [VG-1870]
+- fix rare crash in SIP REGISTER packet handling 
+- fix sniffer termination when stuck in bind loop (server mode) 
+- fix custom headers if millisecond precission was enabled [VS-967] [VS-968]
+- fix sdp_multiplication error message in syslog [VS-966]
+
+
+25.6.1 11.09.2019
+=================
+- fix IPv6 in t2_boost mode
+- fix billing if subnet is 0.0.0.0 (all ip ranges) [VG-1892]
+- do not check ss7 db columns if table does not exist
+- fix rtp_check_both_sides_by_sdp behaviour for some cases [VS-962]
+
+
+25.6 07.09.2019
+===============
+- SIP messages, start of the call etc. can be now stored with millisecond precision - time_precision_in_ms = yes (default disabled, DB needs upgrade) [VS-586]
+- freebsd compile fixes 
+- fix fixed jitterbuffer simulator - some calls had low MOS score (with a lot of MARK bit or burts / fixes some audio sync issues for G729 VAD frames) [VS-961] [VS-960]
+- Fix network mask priorities in the IP based capture rules 
+
+
+25.5.3 29.08.2019
+=================
+- tweak silencedetect MOS to catch more cases (lift silence threshold) 
+
+
+25.5.2 28.08.2019
+=================
+- fix audio sync issue for RTP mark [VS-960]
+- fix MOS score for VAD (RTP mark bits) 
+
+
+25.5.1 21.08.2019
+=================
+- add audio conversion (get rid of sox) [VG-1883]
+- fix audio sync when there are mark bit in every packets [VS-957]
+- remove libssh code and library dependency (not needed anymore) [VS-947]
+
+
+25.5 19.08.2019
+===============
+- fix savertp=header and store VSS-Monitoring ethernet trailer and other possible payloads
+- new voipmonitor.conf option dtmf2pcap (default yes) and support for the same in capture rules. For PCI compliance change it to no  [VG-1880], [VS-951], [VS-796]
+- allow restricting users using custom SIP headers, import/export user restrictions, show custom headers in active calls [VS-943], [VG-1703]
+- fix upgrading sniffer when binary is not named voipmonitor [VS-955]
+- fix audio sync for some cases [VS-954]
+- add limit in fraud async queues to prevent memory exhaustion [VS-948]
+- fix cleanspool - delete orphaned old empty directories (fixes spamming syslog with : cleanspool[0]: call erase_dir_if_empty... [VS-956]
+
+
+25.4 08.08.2019
+===============
+- solve SIP processing bottleneck - SIP thread optimizations + automatically split workload to more threads, new option destroy_calls_in_storing_cdr
+- added regex number into billing rule [VS-917]
+- fix parsing SSRC in PUBLISH message [VS-941]
+- fix all compiler warnings 
+- fix crash in ssl if keyfile is missing or if there is any problem reading it 
+- fix potential crash when handling SIP REGISTER
+
+
+25.3.2 29.07.2019
+=================
+- more 32bit fixes (i686/arm), fix compile warnings 
+- fix live packet sniffing 
+
+
+25.3.1 26.07.2019
+=================
+- fix client/server when mixing 32 and 64 bit version  
+- new option sip-msg-compare-vlan
+
+
+25.3 24.07.2019
+===============
+- REGISTER: support for detect sip register ports, new options sip-register-compare-sipcalledport, sip-register-compare-sipcallerport (default no) [VS-938]
+- REGISTER: fix failed counter for multiple registrations, new options sip-register-max-registers, sip-register-max-messages [VS-926]
+- after SIP 404 response remove RTP ports from list to not store wrong calls into pcap [VS-940]
+- fix crash for option -r with enabled packetbuffer_sender = yes [VS-922]
+- fix audio desync when RTP is clockdrifting (also slightly degrade MOS score for this case) [VS-937] 
+- support filtering calls in active calls and live sniffing by vlan id [VG-1827]
+- fix mos_xr from SIP PUBLISH [VS-941]
+- fixes for 32bit platforms (x86, arm) 
+
+
+25.2.1 10.07.2019
+=================
+- close REGISTER after 403, 404 [VS-926]
+- fix possible race condition leading to crash when SIP Opt.,Subsc.,Notify is enabled 
+
+
+25.2 08.07.2019
+===============
+- add support for audiocodes mirroring. New options audiocodes, udp_port_audiocodes, tcp_port_audiocodes [VS-939]
+- fix crash in packetbuffer / disc buffer (if packetbuffer_file_path and packetbuffer_file_totalmaxsize is set)
+
+
+25.1.1 04.07.2019
+=================
+- fix potential crash in convertRawToWav
+- fix some 401 failed registration issues [VS-926]
+
+
+25.1 28.06.2019
+===============
+- fix audio sync issue in case there is timestamp jump < 5000ms with MARK bit set [VS-937]
+- fix destination IP in DB when there are multiple INVITEs [VS-933]
+- fix parsing rtp->rtcp_xr.avgmos (suppress unavailable mos_lq / 0x7F) [VS-935]
+- check ps and bash only in not read from file mode
+- fix issue with rtpc-mux (RTCP packets were treated as RTP for some rtcp-mux cases) [VS-932]
+- store VLAN tag into DB [VG-1827]
+
+
+25.0.5 27.06.2019
+=================
+- fix capture rules for 0.0.0.0/0
+- limit maximal value of the interarrival jitter (X_rtcp_maxjitter columns)
+- The RTCP 'cumulative number of packets lost' can be signed value (X_rtcp_loss in the db)
+- check ps binary version (missing or busybox ps is incompatible with voipmonitor watchdog) [VS-936]
+
+
+25.0.4 20.06.2019
+=================
+- fix capture rules by IP (broken since ipv6)
+
+
+-25.0.3 14.06.2019
+=================
+- properly fix version number
+
+
+25.0.2 14.06.2019
+=================
+- add missing scripts/ipv6_alter.sql
+- fix version number
+
+
+25.0.1 13.06.2019
+=================
+-  IPv6 - fix issue with ip type in socket create
+
+
+25.0 12.06.2019
+===============
+- ipv6 support! [VG-1350]
+- fix storing ssl_sessions if query_cache is enabled
+- added CPU count + hyperthread flag to the syslog output 
+- add option packetbuffer_disable (for testing purpose) 
+- remove lifetime from srtp key [VS-925]
+- suppress set flag zerossrc_detected for not-rtp packets, allow space (' ') terminator in domain detect [VS-928]
+- fix udptl packets shorter than 12 bytes (fixes T.38 FAXes) [VS-927]
+- fix vlan tag handling for SIP register failed [VS-926]
+- fix parse domain from: "To: sip:domain" [VS-914]
+- fix sip reason for multi INVITE (check branch in CANCEL packets) [VS-921]
+- new option strict for rtp_check_both_sides_by_sdp [VS-929]
+
+
+24.2.1 10.05.2019
+=================
+- add build options (--with-dpdk-include, --with-dpdk-lib) for including the headers and libraries.
+- change sip-register-compare-to_domain to yes as default
+
+
+24.2 23.04.2019
+===============
+- fix issue with sipcalledip vs proxy ip [VS-911]
+- add cleandatabase_sip_msg option for the cleaning of the OPTIONS/SUBSCRIBE/NOTIFY
+- new option storing_cdr_next_threads (dfault 0) 
+- new options remoteparty_caller, remoteparty_called (see voipmonitor.conf) 
+
+
+24.1.1 10.04.2019
+===============
+- fix issue with set lastSIPresponse if any of legs is canceled [VG-1808]
+
+
+24.1 10.04.2019
+===============
+- new legs merging option (call_id_alternative = Session-ID,Join) developed mainly for merging Cisco CUCM legs / bridges [VS-906]
+- fix SKIP flag in capture rules for IP / both [VS-909]
+- warn if max_allowed_packet is low [VG-1812] [VS-903]
+- increase limit for mysqlstore_max_threads_message (9 -> 30)
+- added support for codec MP4A-LATM [VS-907]
+- support for generating logs [VG-1808]
+
+
+24.0.4 22.03.2019
+=================
+- fix SIP INFO (DTMF) corrupted packet in pcap file 
+- fix compilation with mysqlclient librray v.8
+- do not insert log to log_sensor when parameter --run-droppartitions-maxdays is used
+
+
+24.0.3 19.03.2019
+=================
+- add new manager command: get_oldest_spooldir_date
+
+
+24.0.2 14.03.2019
+=================
+- fix new silence MOS around DTMF frames
+
+
+24.0.1 14.03.2019
+=================
+- fix 24.0 MOS silence (properly reset counter)
+
+
+24.0 14.03.2019
+===============
+- fix MOS score for calls longer than 10 seconds - within the lenght of the call the MOS score (calculated every 10 seconds intervals) gradually increases to 4.5 (MOS score was wrongly delimited by total number of packets instead of last 10 second interval). Broken since 2016 (>= 17.0.1) 
+- new silence frame detection for G711a/u codec which treats absolute silence 20ms frames as packet loss providing new MOS score values (mos_silence_min and mos_silence_avg) - this enables detection of dropped frames behind SIP providers where there is no RTP issues. silencedetect must be set to yes in /etc/voipmonitor.conf (default is disabled) and cdr table must be upgraded (altered). More information http://www.voipmonitor.org/doc/Silence_detection
+- fix unlink temp files from unzip in load pcaps via scanpcapdir [VS-897]
+- fix SQL error when FAS and DTMF detection was enabled (sniffer were losing batch of CDR inserts) 
+- fix SIP history in GUI for TCP packets (enhanced duplicity check in sip reassembly) [VS-900]
+- fix memory leak in client/server mode when time is desynced [VS-901]
+
+
+23.7.1 10.03.2019
+=================
+- fix broken mirroring in 23.7 (indefinite query: select * from cdr_sip_response)
+
+
+23.7 08.03.2019
+===============
+- new SQL mode for cloud mode 
+- set default sipport to 5060 
+- do not log cannot be converted to WAV because the codec to syslog [VS-873]
+- implement reassemble of decrypted SIP packets [VS-890]
+
+
+23.6.1 11.02.2019
+=================
+- fix 23.6 regression sql store_001 error
+
+
+23.6 08.02.2019
+===============
+- fix deadlock when OPTIONS/NOTIFY/SUBSCRIBE feature is enabled 
+- ssl sessions will now expire after 12 hours which fixes  [call __insert_99();]: 1114 - The table 'ssl_sessions_mem' is full. There is new option ssl_store_sessions_expiration_hours to change it [VS-872]
+- fix set threading mode 5 a 6 in server mode / new config
+- fix crash when using RRD and custom libpcap [VS-881]
+- mysql_enable_multiple_rows_insert is enabled by default now
+- fix slow start when cdr_ua has millions records [VS-883]
+- fix dns resolve for static builds on arm [VS-884]
+
+
 23.5 17.01.2019
 ===============
 - new option quick_save_cdr = NO/yes/quick when 10 seconds timeout when call ends between database write is too long (default is disabled which is recommended) [VS-879]
@@ -3758,3 +4543,4 @@ version 1.2
 - support for graph compress via gzstream library (included)
 - new long options (--mysql-user, etc.)
 - add support for pid file to make start scripts happy (thanks Vladislav Krakhalev)
+

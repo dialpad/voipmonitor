@@ -9,6 +9,21 @@
 #include "websocket.h"
 
 
+#define LF_CHAR '\n'
+#define CR_CHAR '\r'
+#define LF_STR "\n"
+#define CR_STR "\r"
+#define LF_STR_ESC "\\n"
+#define CR_STR_ESC "\\r"
+#define LF_LINE_SEPARATOR "\n"
+#define CR_LF_LINE_SEPARATOR "\r\n"
+#define SIP_LINE_SEPARATOR(lf) (lf ? LF_LINE_SEPARATOR : CR_LF_LINE_SEPARATOR)
+#define SIP_DBLLINE_SEPARATOR(lf) (lf ? LF_LINE_SEPARATOR LF_LINE_SEPARATOR :CR_LF_LINE_SEPARATOR CR_LF_LINE_SEPARATOR)
+#define SIP_LINE_SEPARATOR_SIZE(lf) (lf ? 1 : 2)
+#define SIP_DBLLINE_SEPARATOR_SIZE(lf) (lf ? 2 : 4)
+#define SIP_LINE_SEPARATOR_STR(lf, str) (lf ? LF_LINE_SEPARATOR str: CR_LF_LINE_SEPARATOR str)
+
+
 class TcpReassemblySip {
 public:
 	struct tcp_stream_packet {
@@ -35,17 +50,17 @@ public:
 		u_int64_t last_time_us;
 	};
 	struct tcp_stream_id {
-		tcp_stream_id(u_int32_t saddr = 0, u_int16_t source = 0, 
-			      u_int32_t daddr = 0, u_int16_t dest = 0) {
+		tcp_stream_id(vmIP saddr = 0, vmPort source = 0, 
+			      vmIP daddr = 0, vmPort dest = 0) {
 			this->saddr = saddr;
 			this->source = source;
 			this->daddr = daddr; 
 			this->dest = dest;
 		}
-		u_int32_t saddr;
-		u_int16_t source;
-		u_int32_t daddr;
-		u_int16_t dest;
+		vmIP saddr;
+		vmPort source;
+		vmIP daddr;
+		vmPort dest;
 		bool operator < (const tcp_stream_id& other) const {
 			return((this->saddr < other.saddr) ? 1 : (this->saddr > other.saddr) ? 0 :
 			       (this->source < other.source) ? 1 : (this->source > other.source) ? 0 :
@@ -80,8 +95,8 @@ private:
 			data_len = stream->complete_data->size();
 			data = stream->complete_data->data();
 		} else {
-			data_len = stream->packets->packetS->datalen;
-			data = (u_char*)stream->packets->packetS->data;
+			data_len = stream->packets->packetS->datalen_();
+			data = (u_char*)stream->packets->packetS->data_();
 		}
 		return(this->checkSip(data, data_len, false));
 	}
@@ -109,20 +124,37 @@ public:
 			return(rslt);
 		}
 		extern int check_sip20(char *data, unsigned long len, ParsePacket::ppContentsX *parseContents, bool isTcp);
-		u_int32_t offset = 0;
 		if(!data || data_len < 10 ||
 		   !check_sip20((char*)data, data_len, NULL, true)) {
 			return(false);
 		}
+		return(_checkSip(data, data_len, strict, offsets));
+	}
+	static bool _checkSip(u_char *data, int data_len, bool strict, list<d_u_int32_t> *offsets = NULL) {
+		extern int check_sip20(char *data, unsigned long len, ParsePacket::ppContentsX *parseContents, bool isTcp);
+		u_int32_t offset = 0;
 		while(data_len > 0) {
 			unsigned int contentLength = 0;
-			u_char *endHeaderSepPos = (u_char*)memmem(data, min(data_len, 5000), "\r\n\r\n", 4);
+			bool use_lf_line_separator = false;
+			u_char *endHeaderSepPos = NULL;
+			for(int pass_line_separator = 0; pass_line_separator < 2 && !endHeaderSepPos; pass_line_separator++) {
+				endHeaderSepPos = (u_char*)memmem(data, min(data_len, 5000), 
+								  SIP_DBLLINE_SEPARATOR(pass_line_separator == 1), 
+								  SIP_DBLLINE_SEPARATOR_SIZE(pass_line_separator == 1));
+				if(endHeaderSepPos && pass_line_separator == 1) {
+					use_lf_line_separator = true;
+				}
+			}
 			if(endHeaderSepPos) {
+				u_char endHeaderSepPos_char = *endHeaderSepPos;
 				*endHeaderSepPos = 0;
 				for(int pass = 0; pass < 2; ++pass) {
-					char *contentLengthPos = strcasestr((char*)data, pass ? "\r\nl:" : "\r\nContent-Length:");
+					char *contentLengthPos = strcasestr((char*)data, 
+									    pass ? 
+									     LF_LINE_SEPARATOR "l:" : 
+									     LF_LINE_SEPARATOR "Content-Length:");
 					if(contentLengthPos) {
-						contentLengthPos += pass ? 4 : 17;
+						contentLengthPos += (pass ? 2 : 15) + 1;
 						while(*contentLengthPos == ' ') {
 							++contentLengthPos;
 						}
@@ -130,11 +162,11 @@ public:
 						break;
 					}
 				}
-				*endHeaderSepPos = '\r';
+				*endHeaderSepPos = endHeaderSepPos_char;
 			} else {
 				break;
 			}
-			int sipDataLen = (endHeaderSepPos - data) + 4 + contentLength;
+			int sipDataLen = (endHeaderSepPos - data) + SIP_DBLLINE_SEPARATOR_SIZE(use_lf_line_separator) + contentLength;
 			if(offsets) {
 				offsets->push_back(d_u_int32_t(offset, sipDataLen));
 			}
@@ -183,27 +215,67 @@ private:
 };
 */
 
-class ReassemblyWebsocketBuffer {
+class ReassemblyBuffer {
 public:
-	~ReassemblyWebsocketBuffer();
-	u_char *processPacket(u_int32_t saddr, u_int16_t sport, u_int32_t daddr, u_int16_t dport, 
-			      u_char *data, unsigned length, bool createStream,
-			      unsigned *completed_length);
-	bool existsStream(u_int32_t saddr, u_int16_t sport, u_int32_t daddr, u_int16_t dport);
+	enum eType {
+		_na                   = 0x00,
+		_websocket            = 0x01,
+		_sip                  = 0x02,
+		_type_mask            = 0x0F,
+		_incomplete_flag      = 0x10,
+		_websocket_incomplete = _incomplete_flag | _websocket,
+		_sip_incomplete       = _incomplete_flag | _sip
+	};
+	struct sData_base {
+		eType type;
+		timeval time;
+		u_int32_t ack;
+		u_int32_t seq;
+		u_int16_t handle_index;
+		int dlt;
+		int sensor_id;
+		vmIP sensor_ip;
+		sPacketInfoData pid;
+	};
+	struct sData : sData_base {
+		SimpleBuffer *ethHeader;
+		SimpleBuffer *buffer;
+	};
+	struct sDataRslt : sData_base {
+		u_char *ethHeader;
+		unsigned ethHeaderLength;
+		bool ethHeaderAlloc;
+		u_char *data;
+		unsigned dataLength;
+		bool dataAlloc;
+		vmIP saddr;
+		vmPort sport;
+		vmIP daddr;
+		vmPort dport;
+	};
+public:
+	ReassemblyBuffer();
+	~ReassemblyBuffer();
+	void processPacket(u_char *ethHeader, unsigned ethHeaderLength,
+			   vmIP saddr, vmPort sport, vmIP daddr, vmPort dport, 
+			   eType type, u_char *data, unsigned length, bool createStream,
+			   timeval time, u_int32_t ack, u_int32_t seq,
+			   u_int16_t handle_index, int dlt, int sensor_id, vmIP sensor_ip, sPacketInfoData pid,
+			   list<sDataRslt> *dataRslt);
+	bool existsStream(vmIP saddr, vmPort sport, vmIP daddr, vmPort dport);
+	void cleanup(timeval time, list<sDataRslt> *dataRslt);
 private:
-	map<sStreamId, SimpleBuffer*> streams;
+	sDataRslt complete(sStreamId *streamId, sData *b_data);
+private:
+	map<sStreamId, sData> streams;
+	u_int64_t minTimeInStreams;
 };
 
-
-//#define PREPROCESS_DETACH2
 
 class PreProcessPacket {
 public:
 	enum eTypePreProcessThread {
 		ppt_detach,
-		#ifdef PREPROCESS_DETACH2
-		ppt_detach2,
-		#endif
 		ppt_sip,
 		ppt_extend,
 		ppt_pp_call,
@@ -211,7 +283,14 @@ public:
 		ppt_pp_sip_other,
 		ppt_pp_rtp,
 		ppt_pp_other,
-		ppt_end
+		ppt_end_base,
+		ppt_pp_callx,
+		ppt_pp_callfindx
+	};
+	enum eCallX_state {
+		callx_na,
+		callx_process,
+		callx_find
 	};
 	struct batch_packet_s {
 		batch_packet_s(unsigned max_count) {
@@ -225,8 +304,6 @@ public:
 		}
 		~batch_packet_s() {
 			for(unsigned i = 0; i < max_count; i++) {
-				batch[i]->blockstore_clear();
-				batch[i]->packetdelete();
 				delete batch[i];
 			}
 			delete [] batch;
@@ -259,133 +336,192 @@ public:
 		volatile int used;
 		unsigned max_count;
 	};
+	struct arg_next_thread {
+		PreProcessPacket *preProcessPacket;
+		int next_thread_id;
+	};
+	struct s_next_thread_data {
+		volatile void *batch;
+		volatile unsigned start;
+		volatile unsigned end;
+		volatile unsigned skip;
+		volatile int processing;
+		void null() {
+			batch = NULL;
+			start = 0;
+			end = 0;
+			skip = 0;
+			processing = 0;
+		}
+	};
 public:
-	PreProcessPacket(eTypePreProcessThread typePreProcessThread);
+	PreProcessPacket(eTypePreProcessThread typePreProcessThread, unsigned idPreProcessThread = 0);
 	~PreProcessPacket();
-	inline void push_packet(bool is_ssl, 
+	inline void push_packet(
 				#if USE_PACKET_NUMBER
 				u_int64_t packet_number,
 				#endif
-				unsigned int saddr, int source, unsigned int daddr, int dest, 
+				vmIP saddr, vmPort source, vmIP daddr, vmPort dest, 
 				int datalen, int dataoffset,
 				u_int16_t handle_index, pcap_pkthdr *header, const u_char *packet, bool packetDelete,
-				int istcp, int isother, struct iphdr2 *header_ip,
-				pcap_block_store *block_store, int block_store_index, int dlt, int sensor_id, u_int32_t sensor_ip,
+				packet_flags pflags, struct iphdr2 *header_ip_encaps, struct iphdr2 *header_ip,
+				pcap_block_store *block_store, int block_store_index, int dlt, int sensor_id, vmIP sensor_ip, sPacketInfoData pid,
 				int blockstore_lock = 1) {
-		if(opt_enable_ssl) {
-			this->lock_push();
-		}
-		packet_s packetS;
-		#if USE_PACKET_NUMBER
-		packetS.packet_number = packet_number;
-		#endif
-		packetS.saddr = saddr;
-		packetS.source = source;
-		packetS.daddr = daddr; 
-		packetS.dest = dest;
-		packetS.datalen = datalen; 
-		packetS.dataoffset = dataoffset;
-		packetS.handle_index = handle_index; 
-		packetS.header_pt = header;
-		packetS.packet = packet; 
-		packetS._packet_alloc = packetDelete; 
-		packetS.istcp = istcp; 
-		packetS.isother = isother; 
-		packetS.header_ip_offset = header_ip ? ((u_char*)header_ip - packet) : 0; 
-		packetS.block_store = block_store; 
-		packetS.block_store_index =  block_store_index; 
-		packetS.dlt = dlt; 
-		packetS.sensor_id_u = (u_int16_t)sensor_id;
-		packetS.sensor_ip = sensor_ip;
-		packetS.is_ssl = is_ssl;
+		extern int opt_t2_boost;
 		extern int opt_skinny;
 		extern char *sipportmatrix;
 		extern char *skinnyportmatrix;
-		packetS.is_skinny = opt_skinny && istcp && (skinnyportmatrix[source] || skinnyportmatrix[dest]);
 		extern int opt_mgcp;
 		extern unsigned opt_tcp_port_mgcp_gateway;
 		extern unsigned opt_udp_port_mgcp_gateway;
 		extern unsigned opt_tcp_port_mgcp_callagent;
 		extern unsigned opt_udp_port_mgcp_callagent;
-		packetS.is_mgcp = opt_mgcp && 
-				  (istcp ?
-				    ((unsigned)source == opt_tcp_port_mgcp_gateway || (unsigned)dest == opt_tcp_port_mgcp_gateway ||
-				     (unsigned)source == opt_tcp_port_mgcp_callagent || (unsigned)dest == opt_tcp_port_mgcp_callagent) :
-				    ((unsigned)source == opt_udp_port_mgcp_gateway || (unsigned)dest == opt_udp_port_mgcp_gateway ||
-				     (unsigned)source == opt_udp_port_mgcp_callagent || (unsigned)dest == opt_udp_port_mgcp_callagent));
-		packetS.is_need_sip_process = !packetS.isother &&
-					      (is_ssl ||
-					       sipportmatrix[source] || sipportmatrix[dest] ||
-					       packetS.is_skinny ||
-					       packetS.is_mgcp);
-		extern bool opt_t2_boost;
-		if(!opt_t2_boost ||
-		   packetS.is_need_sip_process ||
-		   datalen > 2 ||
-		   blockstore_lock != 1) {
-			if(blockstore_lock == 1) {
-				packetS.blockstore_lock(3 /*pb lock flag*/);
-			} else if(blockstore_lock == 2) {
-				packetS.blockstore_setlock();
+		extern bool opt_audiocodes;
+		extern unsigned opt_udp_port_audiocodes;
+		extern unsigned opt_tcp_port_audiocodes;
+		pflags.skinny = opt_skinny && pflags.tcp && (skinnyportmatrix[source] || skinnyportmatrix[dest]);
+		pflags.mgcp = opt_mgcp && 
+			      (pflags.tcp ?
+				((unsigned)source == opt_tcp_port_mgcp_gateway || (unsigned)dest == opt_tcp_port_mgcp_gateway ||
+				 (unsigned)source == opt_tcp_port_mgcp_callagent || (unsigned)dest == opt_tcp_port_mgcp_callagent) :
+				((unsigned)source == opt_udp_port_mgcp_gateway || (unsigned)dest == opt_udp_port_mgcp_gateway ||
+				 (unsigned)source == opt_udp_port_mgcp_callagent || (unsigned)dest == opt_udp_port_mgcp_callagent));
+		sAudiocodes *audiocodes = NULL;
+		if(opt_audiocodes &&
+		   (pflags.tcp ?
+		     (opt_tcp_port_audiocodes && 
+		      (source.getPort() == opt_tcp_port_audiocodes || dest.getPort() == opt_tcp_port_audiocodes)) : 
+		     (opt_udp_port_audiocodes && 
+		      (source.getPort() == opt_udp_port_audiocodes || dest.getPort() == opt_udp_port_audiocodes)))) {
+			audiocodes = new FILE_LINE(0) sAudiocodes;
+			if(!audiocodes->parse((u_char*)(packet + dataoffset), datalen)) {
+				delete audiocodes;
+				audiocodes = NULL;
 			}
-			this->push_packet_detach(&packetS);
-		} else if(packetDelete) {
-			delete header;
-			delete [] packet;
 		}
-		if(opt_enable_ssl) {
+		bool need_sip_process = (!pflags.other_processing() &&
+					 (pflags.ssl ||
+					  sipportmatrix[source] || sipportmatrix[dest] ||
+					  pflags.skinny ||
+					  pflags.mgcp)) ||
+					(audiocodes && audiocodes->media_type == sAudiocodes::ac_mt_SIP);
+		bool ok_push = !opt_t2_boost ||
+			       need_sip_process ||
+			       datalen > 2 ||
+			       blockstore_lock != 1;
+		if(!ok_push) {
+			if(packetDelete) {
+				delete header;
+				delete [] packet;
+			}
+			return;
+		}
+		if(need_lock_push()) {
+			this->lock_push();
+		}
+		packet_s *packetS;
+		if(this->outThreadState == 2) {
+			packetS = push_packet_detach__get_pointer();
+		} else {
+			static packet_s _packetS;
+			packetS = &_packetS;
+		}
+		packetS->packet_s::init();
+		#if USE_PACKET_NUMBER
+		packetS->packet_number = packet_number;
+		#endif
+		packetS->_saddr = saddr;
+		packetS->_source = source;
+		packetS->_daddr = daddr; 
+		packetS->_dest = dest;
+		packetS->_datalen = datalen; 
+		packetS->_datalen_set = 0; 
+		packetS->_dataoffset = dataoffset;
+		packetS->handle_index = handle_index; 
+		packetS->header_pt = header;
+		packetS->packet = packet; 
+		packetS->_packet_alloc = packetDelete; 
+		packetS->pflags = pflags;
+		packetS->header_ip_encaps_offset = header_ip_encaps ? ((u_char*)header_ip_encaps - packet) : 0xFFFF; 
+		packetS->header_ip_offset = header_ip ? ((u_char*)header_ip - packet) : 0; 
+		packetS->block_store = block_store; 
+		packetS->block_store_index =  block_store_index; 
+		packetS->dlt = dlt; 
+		packetS->sensor_id_u = (u_int16_t)sensor_id;
+		packetS->sensor_ip = sensor_ip;
+		packetS->pid = pid;
+		packetS->audiocodes = audiocodes;
+		if(audiocodes) {
+			packetS->pid.flags |= FLAG_AUDIOCODES;
+		}
+		packetS->need_sip_process = need_sip_process;
+		if(blockstore_lock == 1) {
+			packetS->blockstore_lock(3 /*pb lock flag*/);
+		} else if(blockstore_lock == 2) {
+			packetS->blockstore_setlock();
+		}
+		if(this->outThreadState == 2) {
+			push_packet_detach__finish(packetS);
+		} else {
+			push_packet_detach(packetS);
+		}
+		if(need_lock_push()) {
 			this->unlock_push();
+		}
+	}
+	inline packet_s *push_packet_detach__get_pointer() {
+		if(!qring_push_index) {
+			unsigned int usleepCounter = 0;
+			while(this->qring_detach[this->writeit]->used != 0) {
+				USLEEP_C(20, usleepCounter++);
+			}
+			qring_push_index = this->writeit + 1;
+			qring_push_index_count = 0;
+			qring_detach_active_push_item = qring_detach[qring_push_index - 1];
+		}
+		return((packet_s_plus_pointer*)qring_detach_active_push_item->batch[qring_push_index_count]);
+	}
+	inline void push_packet_detach__finish(packet_s *packetS) {
+		extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
+		void **p = ((packet_s_plus_pointer*)packetS)->pointer;
+		if(packetS->need_sip_process) {
+			p[0] = preProcessPacket[PreProcessPacket::ppt_detach]->packetS_sip_pop_from_stack();
+			p[1] = preProcessPacket[PreProcessPacket::ppt_detach]->stackSip;
+		} else if(!packetS->pflags.other_processing()) {
+			p[0] = preProcessPacket[PreProcessPacket::ppt_detach]->packetS_rtp_pop_from_stack();
+			p[1] = preProcessPacket[PreProcessPacket::ppt_detach]->stackRtp;
+		} else {
+			p[0] = preProcessPacket[PreProcessPacket::ppt_detach]->packetS_other_pop_from_stack();
+			p[1] = preProcessPacket[PreProcessPacket::ppt_detach]->stackOther;
+		}
+		++qring_push_index_count;
+		if(qring_push_index_count == qring_detach_active_push_item->max_count) {
+			#if RQUEUE_SAFE
+				__SYNC_SET_TO_LOCK(qring_detach_active_push_item->count, qring_push_index_count, this->_sync_count);
+				__SYNC_SET(qring_detach_active_push_item->used);
+				__SYNC_INCR(this->writeit, this->qring_length);
+			#else
+				qring_detach_active_push_item->count = qring_push_index_count;
+				qring_detach_active_push_item->used = 1;
+				if((this->writeit + 1) == this->qring_length) {
+					this->writeit = 0;
+				} else {
+					this->writeit++;
+				}
+			#endif
+			qring_push_index = 0;
+			qring_push_index_count = 0;
 		}
 	}
 	inline void push_packet_detach(packet_s *packetS) {
 		if(this->outThreadState == 2) {
-			if(!qring_push_index) {
-				unsigned usleepCounter = 0;
-				while(this->qring_detach[this->writeit]->used != 0) {
-					usleep(20 *
-					       (usleepCounter > 10 ? 50 :
-						usleepCounter > 5 ? 10 :
-						usleepCounter > 2 ? 5 : 1));
-					++usleepCounter;
-				}
-				qring_push_index = this->writeit + 1;
-				qring_push_index_count = 0;
-				qring_detach_active_push_item = qring_detach[qring_push_index - 1];
-			}
-			*(packet_s*)qring_detach_active_push_item->batch[qring_push_index_count] = *packetS;
-			extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end];
-			void **p = qring_detach_active_push_item->batch[qring_push_index_count]->pointer;
-			if(packetS->is_need_sip_process) {
-				p[0] = preProcessPacket[PreProcessPacket::ppt_detach]->packetS_sip_pop_from_stack();
-				p[1] = preProcessPacket[PreProcessPacket::ppt_detach]->stackSip;
-			} else if(!packetS->isother) {
-				p[0] = preProcessPacket[PreProcessPacket::ppt_detach]->packetS_rtp_pop_from_stack();
-				p[1] = preProcessPacket[PreProcessPacket::ppt_detach]->stackRtp;
-			} else {
-				p[0] = preProcessPacket[PreProcessPacket::ppt_detach]->packetS_other_pop_from_stack();
-				p[1] = preProcessPacket[PreProcessPacket::ppt_detach]->stackOther;
-			}
-			++qring_push_index_count;
-			if(qring_push_index_count == qring_detach_active_push_item->max_count) {
-				#if RQUEUE_SAFE
-					__SYNC_SET_TO_LOCK(qring_detach_active_push_item->count, qring_push_index_count, this->_sync_count);
-					__SYNC_SET(qring_detach_active_push_item->used);
-					__SYNC_INCR(this->writeit, this->qring_length);
-				#else
-					qring_detach_active_push_item->count = qring_push_index_count;
-					qring_detach_active_push_item->used = 1;
-					if((this->writeit + 1) == this->qring_length) {
-						this->writeit = 0;
-					} else {
-						this->writeit++;
-					}
-				#endif
-				qring_push_index = 0;
-				qring_push_index_count = 0;
-			}
+			packet_s *packetS_pointer = push_packet_detach__get_pointer();
+			*packetS_pointer = *packetS;
+			push_packet_detach__finish(packetS_pointer);
 		} else {
+			unsigned int usleepCounter = 0;
 			while(this->outThreadState) {
-				usleep(10);
+				USLEEP_C(10, usleepCounter++);
 			}
 			this->process_DETACH(packetS);
 		}
@@ -398,16 +534,12 @@ public:
 		if(this->outThreadState == 2) {
 			++qringPushCounter;
 			if(!qring_push_index) {
-				unsigned usleepCounter = 0;
+				unsigned int usleepCounter = 0;
 				while(this->qring[this->writeit]->used != 0) {
-					usleep(20 *
-					       (usleepCounter > 10 ? 50 :
-						usleepCounter > 5 ? 10 :
-						usleepCounter > 2 ? 5 : 1));
 					if(usleepCounter == 0) {
 						++qringPushCounter_full;
 					}
-					++usleepCounter;
+					USLEEP_C(20, usleepCounter++);
 				}
 				qring_push_index = this->writeit + 1;
 				qring_push_index_count = 0;
@@ -433,17 +565,15 @@ public:
 				qring_push_index_count = 0;
 			}
 		} else {
+			unsigned int usleepCounter = 0;
 			while(this->outThreadState) {
-				usleep(10);
+				USLEEP_C(10, usleepCounter++);
 			}
 			if(qring_push_index && qring_push_index_count) {
 				for(unsigned int i = 0; i < qring_push_index_count; i++) {
 					packet_s_process *_packetS = qring[qring_push_index - 1]->batch[i];
 					switch(this->typePreProcessThread) {
 					case ppt_detach:
-					#ifdef PREPROCESS_DETACH2
-					case ppt_detach2:
-					#endif
 						break;
 					case ppt_sip:
 						this->process_SIP(_packetS);
@@ -453,6 +583,12 @@ public:
 						break;
 					case ppt_pp_call:
 						this->process_CALL(_packetS);
+						break;
+					case ppt_pp_callx:
+						this->process_CALLX(_packetS);
+						break;
+					case ppt_pp_callfindx:
+						this->process_CallFindX(_packetS);
 						break;
 					case ppt_pp_register:
 						this->process_REGISTER(_packetS);
@@ -466,7 +602,7 @@ public:
 					case ppt_pp_other:
 						this->process_OTHER(_packetS);
 						break;
-					case ppt_end:
+					case ppt_end_base:
 						break;
 					}
 				}
@@ -475,9 +611,6 @@ public:
 			}
 			switch(this->typePreProcessThread) {
 			case ppt_detach:
-			#ifdef PREPROCESS_DETACH2
-			case ppt_detach2:
-			#endif
 				break;
 			case ppt_sip:
 				this->process_SIP(packetS);
@@ -487,6 +620,12 @@ public:
 				break;
 			case ppt_pp_call:
 				this->process_CALL(packetS);
+				break;
+			case ppt_pp_callx:
+				this->process_CALLX(packetS);
+				break;
+			case ppt_pp_callfindx:
+				this->process_CallFindX(packetS);
 				break;
 			case ppt_pp_register:
 				this->process_REGISTER(packetS);
@@ -500,13 +639,13 @@ public:
 			case ppt_pp_other:
 				this->process_OTHER(packetS);
 				break;
-			case ppt_end:
+			case ppt_end_base:
 				break;
 			}
 		}
 	}
 	inline void push_batch() {
-		if(typePreProcessThread == ppt_detach && opt_enable_ssl) {
+		if(typePreProcessThread == ppt_detach && need_lock_push()) {
 			this->lock_push();
 		}
 		if(this->outThreadState == 2) {
@@ -538,20 +677,23 @@ public:
 				qring_push_index_count = 0;
 			}
 		} else {
+			unsigned int usleepCounter = 0;
 			while(this->outThreadState) {
-				usleep(10);
+				USLEEP_C(10, usleepCounter++);
 			}
 			push_batch_nothread();
 		}
-		if(typePreProcessThread == ppt_detach && opt_enable_ssl) {
+		if(typePreProcessThread == ppt_detach && need_lock_push()) {
 			this->unlock_push();
 		}
 	}
 	void push_batch_nothread();
-	void preparePstatData();
-	double getCpuUsagePerc(bool preparePstatData, double *percFullQring = NULL);
+	void preparePstatData(int nextThreadId = 0);
+	double getCpuUsagePerc(bool preparePstatData, int nextThreadId = 0, double *percFullQring = NULL);
 	void terminate();
+	void addNextThread();
 	static void autoStartNextLevelPreProcessPacket();
+	static void autoStartCallX_PreProcessPacket();
 	static void autoStopLastLevelPreProcessPacket(bool force = false);
 	double getQringFillingPerc() {
 		unsigned int _readit = readit;
@@ -565,7 +707,7 @@ public:
 		return(packetS);
 	}
 	inline packet_s_process_0 *packetS_rtp_create() {
-		packet_s_process_0 *packetS = new FILE_LINE(28005) packet_s_process_0;
+		packet_s_process_0 *packetS = packet_s_process_0::create();
 		return(packetS);
 	}
 	inline packet_s_stack *packetS_other_create() {
@@ -587,7 +729,7 @@ public:
 		if(this->stackRtp->popq((void**)&packetS)) {
 			++allocStackCounter[0];
 		} else {
-			packetS = new FILE_LINE(28007) packet_s_process_0;
+			packetS = packet_s_process_0::create();
 			++allocCounter[0];
 		}
 		return(packetS);
@@ -617,7 +759,7 @@ public:
 		return(check_enable_destroy(packetS));
 	}
 	inline void packetS_destroy(packet_s *packetS) {
-		extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end];
+		extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
 		if(packetS->__type == _t_packet_s_process) {
 			preProcessPacket[PreProcessPacket::ppt_detach]->packetS_destroy((packet_s_process**)&packetS);
 		} else if(packetS->__type == _t_packet_s_process_0) {
@@ -642,12 +784,14 @@ public:
 		}
 		(*packetS)->blockstore_unlock();
 		(*packetS)->packetdelete();
-		delete *packetS;
+		(*packetS)->term();
+		packet_s_process_0::free(*packetS);
 		*packetS = NULL;
 	}
 	inline void packetS_destroy(packet_s_stack **packetS) {
 		(*packetS)->blockstore_unlock();
 		(*packetS)->packetdelete();
+		(*packetS)->term();
 		delete *packetS;
 		*packetS = NULL;
 	}
@@ -690,11 +834,12 @@ public:
 			delete (*packetS)->header_pt;
 			delete [] (*packetS)->packet;
 		}
+		(*packetS)->term();
 		extern int opt_block_alloc_stack;
 		if(opt_block_alloc_stack ||
 		   !(*packetS)->stack ||
 		   !(*packetS)->stack->push((void*)*packetS, queue_index)) {
-			delete *packetS;
+			packet_s_process_0::free(*packetS);
 		}
 		*packetS = NULL;
 	}
@@ -710,6 +855,7 @@ public:
 			delete (*packetS)->header_pt;
 			delete [] (*packetS)->packet;
 		}
+		(*packetS)->term();
 		extern int opt_block_alloc_stack;
 		if(opt_block_alloc_stack ||
 		   !(*packetS)->stack ||
@@ -746,16 +892,16 @@ public:
 		switch(typePreProcessThread) {
 		case ppt_detach:
 			return("detach");
-		#ifdef PREPROCESS_DETACH2
-		case ppt_detach2:
-			return("detach2");
-		#endif
 		case ppt_sip:
 			return("sip");
 		case ppt_extend:
 			return("extend");
 		case ppt_pp_call:
 			return("call");
+		case ppt_pp_callx:
+			return("callx");
+		case ppt_pp_callfindx:
+			return("callfindx");
 		case ppt_pp_register:
 			return("register");
 		case ppt_pp_sip_other:
@@ -764,7 +910,7 @@ public:
 			return("rtp");
 		case ppt_pp_other:
 			return("other");
-		case ppt_end:
+		case ppt_end_base:
 			break;
 		}
 		return("");
@@ -773,16 +919,16 @@ public:
 		switch(typePreProcessThread) {
 		case ppt_detach:
 			return("d");
-		#ifdef PREPROCESS_DETACH2
-		case ppt_detach2:
-			return("2:");
-		#endif
 		case ppt_sip:
 			return("s");
 		case ppt_extend:
 			return("e");
 		case ppt_pp_call:
 			return("c");
+		case ppt_pp_callx:
+			return("cx");
+		case ppt_pp_callfindx:
+			return("cfx");
 		case ppt_pp_register:
 			return("g");
 		case ppt_pp_sip_other:
@@ -791,28 +937,55 @@ public:
 			return("r");
 		case ppt_pp_other:
 			return("o");
-		case ppt_end:
+		case ppt_end_base:
 			break;
 		}
 		return("");
 	}
 	static packet_s_process *clonePacketS(u_char *newData, unsigned newDataLength, packet_s_process *packetS);
+	bool existsNextThread(int next_thread_index) {
+		return(next_thread_index < MAX_PRE_PROCESS_PACKET_NEXT_THREADS &&
+		       this->nextThreadId[next_thread_index]);
+	}
 private:
-	void process_DETACH(packet_s *packetS_detach);
-	void process_DETACH_plus(packet_s_plus_pointer *packetS_detach);
-	void process_SIP(packet_s_process *packetS);
+	inline void process_DETACH(packet_s *packetS_detach) {
+		extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
+		packet_s_process *packetS = packetS_detach->need_sip_process ?
+					     preProcessPacket[PreProcessPacket::ppt_detach]->packetS_sip_pop_from_stack() : 
+					    !packetS_detach->pflags.other_processing() ?
+					     (packet_s_process*)preProcessPacket[PreProcessPacket::ppt_detach]->packetS_rtp_pop_from_stack() :
+					     (packet_s_process*)preProcessPacket[PreProcessPacket::ppt_detach]->packetS_other_pop_from_stack();
+		u_int8_t __type = packetS->__type;
+		*(packet_s*)packetS = *(packet_s*)packetS_detach;
+		packetS->__type = __type;
+		preProcessPacket[ppt_sip]->push_packet(packetS);
+	}
+	inline void process_DETACH_plus(packet_s_plus_pointer *packetS_detach, bool push = true) {
+		extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
+		packet_s_process *packetS = (packet_s_process*)packetS_detach->pointer[0];
+		u_int8_t __type = packetS->__type;
+		*(packet_s*)packetS = *(packet_s*)packetS_detach;
+		packetS->__type = __type;
+		packetS->stack = (cHeapItemsPointerStack*)packetS_detach->pointer[1];
+		if(push) {
+			preProcessPacket[ppt_sip]->push_packet(packetS);
+		}
+	}
+	void process_SIP(packet_s_process *packetS, bool parallel_threads = false);
 	void process_SIP_EXTEND(packet_s_process *packetS);
 	void process_CALL(packet_s_process *packetS);
+	void process_CALLX(packet_s_process *packetS);
+	void process_CallFindX(packet_s_process *packetS);
 	void process_REGISTER(packet_s_process *packetS);
 	void process_SIP_OTHER(packet_s_process *packetS);
 	void process_RTP(packet_s_process_0 *packetS);
 	void process_OTHER(packet_s_stack *packetS);
-	void process_parseSipDataExt(packet_s_process **packetS_ref);
-	inline void process_parseSipData(packet_s_process **packetS_ref);
+	void process_parseSipDataExt(packet_s_process **packetS_ref, packet_s_process *packetS_orig);
+	inline void process_parseSipData(packet_s_process **packetS_ref, packet_s_process *packetS_orig);
 	inline void process_sip(packet_s_process **packetS_ref);
 	inline void process_skinny(packet_s_process **packetS_ref);
 	inline void process_mgcp(packet_s_process **packetS_ref);
-	inline void process_websocket(packet_s_process **packetS_ref);
+	inline void process_websocket(packet_s_process **packetS_ref, packet_s_process *packetS_orig);
 	inline bool process_getCallID(packet_s_process **packetS_ref);
 	inline bool process_getCallID_publish(packet_s_process **packetS_ref);
 	inline void process_getSipMethod(packet_s_process **packetS_ref);
@@ -822,16 +995,30 @@ private:
 	void runOutThread();
 	void endOutThread(bool force = false);
 	void *outThreadFunction();
+	void *nextThreadFunction(int next_thread_index_plus);
+	inline void processNextAction(packet_s_process *packetS);
+	bool isNextThreadsGt2Processing(int next_threads) {
+		for(int i = 2; i < next_threads; i++) {
+			if(this->next_thread_data[i].processing) {
+				return(true);
+			}
+		}
+		return(false);
+	}
 	void lock_push() {
 		while(__sync_lock_test_and_set(&this->_sync_push, 1)) {
-			usleep(10);
+			USLEEP(10);
 		}
 	}
 	void unlock_push() {
 		__sync_lock_release(&this->_sync_push);
 	}
+	inline bool need_lock_push() {
+		return(opt_enable_ssl || opt_ipfix);
+	}
 private:
 	eTypePreProcessThread typePreProcessThread;
+	unsigned idPreProcessThread;
 	unsigned int qring_batch_item_length;
 	unsigned int qring_length;
 	batch_packet_s **qring_detach;
@@ -843,10 +1030,16 @@ private:
 	volatile unsigned int readit;
 	volatile unsigned int writeit;
 	pthread_t out_thread_handle;
-	pstat_data threadPstatData[2];
+	int next_threads;
+	pthread_t next_thread_handle[MAX_PRE_PROCESS_PACKET_NEXT_THREADS];
+	pstat_data threadPstatData[1 + MAX_PRE_PROCESS_PACKET_NEXT_THREADS][2];
+	sem_t sem_sync_next_thread[MAX_PRE_PROCESS_PACKET_NEXT_THREADS][2];
+	s_next_thread_data next_thread_data[MAX_PRE_PROCESS_PACKET_NEXT_THREADS];
 	u_int64_t qringPushCounter;
 	u_int64_t qringPushCounter_full;
 	int outThreadId;
+	int nextThreadId[MAX_PRE_PROCESS_PACKET_NEXT_THREADS];
+	volatile int *items_flag;
 	volatile int _sync_push;
 	volatile int _sync_count;
 	bool term_preProcess;
@@ -860,42 +1053,43 @@ private:
 	u_int64_t getCpuUsagePerc_counter_at_start_out_thread;
 	static u_long autoStartNextLevelPreProcessPacket_last_time_s;
 friend inline void *_PreProcessPacket_outThreadFunction(void *arg);
+friend inline void *_PreProcessPacket_nextThreadFunction(void *arg);
 friend class TcpReassemblySip;
 friend class SipTcpData;
 };
 
 inline packet_s_process *PACKET_S_PROCESS_SIP_CREATE() {
-	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end];
+	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
 	return(preProcessPacket[PreProcessPacket::ppt_detach]->packetS_sip_create());
 }
 
 inline packet_s_process_0 *PACKET_S_PROCESS_RTP_CREATE() {
-	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end];
+	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
 	return(preProcessPacket[PreProcessPacket::ppt_detach]->packetS_rtp_create());
 }
 
 inline packet_s_stack *PACKET_S_PROCESS_OTHER_CREATE() {
-	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end];
+	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
 	return(preProcessPacket[PreProcessPacket::ppt_detach]->packetS_other_create());
 }
 
 inline packet_s_process *PACKET_S_PROCESS_SIP_POP_FROM_STACK() {
-	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end];
+	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
 	return(preProcessPacket[PreProcessPacket::ppt_detach]->packetS_sip_pop_from_stack());
 }
 
 inline packet_s_process_0 *PACKET_S_PROCESS_RTP_POP_FROM_STACK() {
-	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end];
+	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
 	return(preProcessPacket[PreProcessPacket::ppt_detach]->packetS_rtp_pop_from_stack());
 }
 
 inline packet_s_stack *PACKET_S_PROCESS_OTHER_POP_FROM_STACK() {
-	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end];
+	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
 	return(preProcessPacket[PreProcessPacket::ppt_detach]->packetS_other_pop_from_stack());
 }
 
 inline void PACKET_S_PROCESS_DESTROY(packet_s_process_0 **packet) {
-	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end];
+	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
 	if((*packet)->__type == _t_packet_s_process_0) {
 		preProcessPacket[PreProcessPacket::ppt_detach]->packetS_destroy(packet);
 	} else if((*packet)->__type == _t_packet_s_process) {
@@ -906,7 +1100,7 @@ inline void PACKET_S_PROCESS_DESTROY(packet_s_process_0 **packet) {
 }
 
 inline void PACKET_S_PROCESS_DESTROY(packet_s_process **packet) {
-	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end];
+	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
 	if((*packet)->__type == _t_packet_s_process) {
 		preProcessPacket[PreProcessPacket::ppt_detach]->packetS_destroy(packet);
 	} else if((*packet)->__type == _t_packet_s_process_0) {
@@ -917,7 +1111,7 @@ inline void PACKET_S_PROCESS_DESTROY(packet_s_process **packet) {
 }
 
 inline void PACKET_S_PROCESS_DESTROY(packet_s_stack **packet) {
-	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end];
+	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
 	if((*packet)->__type == _t_packet_s_stack) {
 		preProcessPacket[PreProcessPacket::ppt_detach]->packetS_destroy(packet);
 	} else if((*packet)->__type == _t_packet_s_process) {
@@ -928,7 +1122,7 @@ inline void PACKET_S_PROCESS_DESTROY(packet_s_stack **packet) {
 }
 
 inline void PACKET_S_PROCESS_PUSH_TO_STACK(packet_s_process_0 **packet, u_int16_t queue_index) {
-	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end];
+	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
 	if((*packet)->__type == _t_packet_s_process_0) {
 		preProcessPacket[PreProcessPacket::ppt_detach]->packetS_push_to_stack(packet, queue_index);
 	} else if((*packet)->__type == _t_packet_s_process) {
@@ -939,7 +1133,7 @@ inline void PACKET_S_PROCESS_PUSH_TO_STACK(packet_s_process_0 **packet, u_int16_
 }
 
 inline void PACKET_S_PROCESS_PUSH_TO_STACK(packet_s_process **packet, u_int16_t queue_index) {
-	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end];
+	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
 	if((*packet)->__type == _t_packet_s_process) {
 		preProcessPacket[PreProcessPacket::ppt_detach]->packetS_push_to_stack(packet, queue_index);
 	} else if((*packet)->__type == _t_packet_s_process_0) {
@@ -950,7 +1144,7 @@ inline void PACKET_S_PROCESS_PUSH_TO_STACK(packet_s_process **packet, u_int16_t 
 }
 
 inline void PACKET_S_PROCESS_PUSH_TO_STACK(packet_s_stack **packet, u_int16_t queue_index) {
-	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end];
+	extern PreProcessPacket *preProcessPacket[PreProcessPacket::ppt_end_base];
 	if((*packet)->__type == _t_packet_s_stack) {
 		preProcessPacket[PreProcessPacket::ppt_detach]->packetS_push_to_stack(packet, queue_index);
 	} else if((*packet)->__type == _t_packet_s_process) {
@@ -1019,16 +1213,12 @@ public:
 		}
 		if(!qring_push_index) {
 			++qringPushCounter;
-			unsigned usleepCounter = 0;
+			unsigned int usleepCounter = 0;
 			while(this->qring[this->writeit]->used != 0) {
-				usleep(20 *
-				       (usleepCounter > 10 ? 50 :
-					usleepCounter > 5 ? 10 :
-					usleepCounter > 2 ? 5 : 1));
 				if(usleepCounter == 0) {
 					++qringPushCounter_full;
 				}
-				++usleepCounter;
+				USLEEP_C(20, usleepCounter++);
 			}
 			qring_push_index = this->writeit + 1;
 			qring_push_index_count = 0;
