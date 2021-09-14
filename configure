@@ -587,8 +587,11 @@ PACKAGE_URL=''
 ac_unique_file="voipmonitor.cpp"
 ac_subst_vars='LTLIBOBJS
 LIBOBJS
+<<<<<<< HEAD
 DPDK_LDFLAGS
 DPDK_CFLAGS
+=======
+>>>>>>> 0d00fd42 (Voipmonitor code rebase v28.7 (#1))
 HEAPPROF_CXXFLAG
 LIBTCMALLOC
 LIBGNUTLSSTATIC
@@ -609,7 +612,10 @@ LIBJSON_NAME
 LIBLD
 OPENSSLDIRINC
 OPENSSLDIRLIB
+<<<<<<< HEAD
 PKGCONFIG
+=======
+>>>>>>> 0d00fd42 (Voipmonitor code rebase v28.7 (#1))
 SET_MAKE
 INSTALL_DATA
 INSTALL_SCRIPT
@@ -3129,6 +3135,7 @@ fi
 
 
 
+<<<<<<< HEAD
 # Extract the first word of "pkg-config", so it can be a program name with args.
 set dummy pkg-config; ac_word=$2
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
@@ -3169,6 +3176,8 @@ fi
 
 
 
+=======
+>>>>>>> 0d00fd42 (Voipmonitor code rebase v28.7 (#1))
 LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/lib"
 LDFLAGS="$LDFLAGS -L/usr/local/lib"
 
@@ -4602,6 +4611,7 @@ $as_echo "$as_me: Unable to find tcmalloc_minimal library which speeds up thread
 fi
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 fi
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for main in -lrte_net" >&5
@@ -4645,6 +4655,8 @@ LIBSSH_8=1
 LIBSSH_VERSION=`dpkg -s libssh-dev | grep Version | cut -c 12`
 if  test $LIBSSH_VERSION -lt 8; then
     LIBSSH_8=0
+=======
+>>>>>>> 0d00fd42 (Voipmonitor code rebase v28.7 (#1))
 fi
 >>>>>>> 910cbe97 (debian 10 - voipmonitor)
 
@@ -4689,6 +4701,7 @@ $as_echo "#define HAVE_LIBLZO 1" >>confdefs.h
 fi
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 HAVE_LIBSSH_T=no
 if test "x$HAVE_LIBSSH" = "x1"; then
@@ -4705,6 +4718,8 @@ $as_echo "#define HAVE_LIBSSH 1" >>confdefs.h
 fi
 
 >>>>>>> 910cbe97 (debian 10 - voipmonitor)
+=======
+>>>>>>> 0d00fd42 (Voipmonitor code rebase v28.7 (#1))
 LIBGNUTLS_T=no
 if test "x$HAVE_LIBGNUTLS" = "x1" && test "x$HAVE_LIBGCRYPT" = "x1"; then
 
@@ -4760,6 +4775,7 @@ if pkg-config --atleast-version 1.1.1 openssl; then
 $as_echo "#define HAVE_DSSL_TLS13 1" >>confdefs.h
 
 	OPENSSL111_T=yes
+<<<<<<< HEAD
 fi
 
 DPDK_T=no
@@ -4772,6 +4788,8 @@ $as_echo "#define HAVE_LIBDPDK 1" >>confdefs.h
 	DPDK_LDFLAGS=`"$PKGCONFIG" --libs libdpdk`
 
 	DPDK_T=yes
+=======
+>>>>>>> 0d00fd42 (Voipmonitor code rebase v28.7 (#1))
 fi
 
 # Checks for header files.

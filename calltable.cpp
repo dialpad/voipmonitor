@@ -964,7 +964,6 @@ Call::_removeRTP() {
 			rtp_canceled->push_back(rtp_fix[i]);
 			rtp_fix[i] = NULL;
 		}
-	}
 	#if CALL_RTP_DYNAMIC_ARRAY
 	if(rtp_dynamic) {
 		for(CALL_RTP_DYNAMIC_ARRAY_TYPE::iterator iter = rtp_dynamic->begin(); iter != rtp_dynamic->end(); iter++) {
@@ -1011,6 +1010,24 @@ Call::~Call(){
 		if(rtp_fix[i]) {
 			delete rtp_fix[i];
 		}
+	}
+	#if CALL_RTP_DYNAMIC_ARRAY
+	if(rtp_dynamic) {
+		for(CALL_RTP_DYNAMIC_ARRAY_TYPE::iterator iter = rtp_dynamic->begin(); iter != rtp_dynamic->end(); iter++) {
+			delete *iter;
+		}
+		delete rtp_dynamic;
+	}
+	#endif
+	if(rtp_canceled) {
+		for(list<RTP*>::iterator iter = rtp_canceled->begin(); iter != rtp_canceled->end(); iter++) {
+			delete *iter;
+		}
+		delete rtp_canceled;
+	}
+	
+	if(dtls) {
+		delete dtls;
 	}
 	#if CALL_RTP_DYNAMIC_ARRAY
 	if(rtp_dynamic) {
@@ -1794,7 +1811,7 @@ read:
 			add_rtp_stream(rtp_new);
 			return(true);
 		}
-		
+
 		bool confirm_both_sides_by_sdp = false;
 		int index_call_ip_port_find_side = this->get_index_by_ip_port(find_by_dest ? packetS->daddr_() : packetS->saddr_(),
 									      find_by_dest ? packetS->dest_() : packetS->source_());
@@ -2123,6 +2140,7 @@ Call::_save_rtp(packet_s *packetS, s_sdp_flags_base sdp_flags, char enable_save_
 				this->last_udptl_seq[last_udptl_seq_index] = seq;
 			}
 		}
+    
 	} else {
 		if(sdp_flags.is_image() && packetS->isUdptlOkDataLen()) {
 			UDPTLFixedHeader *udptl = (UDPTLFixedHeader*)packetS->data_();
@@ -2132,7 +2150,7 @@ Call::_save_rtp(packet_s *packetS, s_sdp_flags_base sdp_flags, char enable_save_
 		}
 	}
 	if(enable_save_packet) {
-		if((this->silencerecording || (this->flags & (sdp_flags.is_video() ? FLAG_SAVERTP_VIDEO_HEADER : FLAG_SAVERTPHEADER))) && 
+		if((this->silencerecording || (this->flags & (sdp_flags.is_video() ? FLAG_SAVERTP_VIDEO_HEADER : FLAG_SAVERTPHEADER))) &&
 		   !this->isfax && !record_dtmf) {
 			if(packetS->isStun()) {
 				save_packet(this, packetS, _t_packet_rtp, forceVirtualUdp);
@@ -9007,7 +9025,7 @@ Calltable::Calltable(SqlDb *sqlDb) {
 	active_calls_cache_count = 0;
 	active_calls_cache_fill_at_ms = 0;
 	active_calls_cache_sync = 0;
-	
+
 };
 
 /* destructor */
@@ -9438,7 +9456,359 @@ Calltable::_hashAdd(vmIP addr, vmPort port, long int time_s, Call* call, int isc
 	if (useLock) unlock_calls_hash();
 	
 #else 
+
+}
+ 
+void
+Calltable::_hashAdd(vmIP addr, vmPort port, long int time_s, Call* call, int iscaller, int is_rtcp, s_sdp_flags sdp_flags, bool useLock) {
+ 
+	if(call->end_call_rtp) {
+		return;
+	}
 	
+#if NEW_RTP_FIND__NODES
+
+	#if NEW_RTP_FIND__NODES__LIST
+	
+	node_call_rtp_ports *ports;
+	if (useLock) lock_calls_hash();
+	if(addr.is_v6()) {
+		ports = calls_ipv6_port->add((u_char*)addr.getPointerToIP(), 16
+					     #if NEW_RTP_FIND__NODES__PORT_MODE == 1
+					     ,(u_char*)&port.port + 1, 1
+					     #endif
+					     );
+	} else {
+		ports = calls_ip_port->add((u_char*)addr.getPointerToIP(), 4
+					   #if NEW_RTP_FIND__NODES__PORT_MODE == 1
+					   ,(u_char*)&port.port + 1, 1
+					   #endif
+					   );
+	}
+	node_call_rtp *n_call = &ports->ports[
+					      #if NEW_RTP_FIND__NODES__PORT_MODE == 1
+					      *((u_char*)&port.port + 0)
+					      #else
+					      port.port
+					      #endif
+					      ];
+	int found = 0;
+	for(list<call_rtp*>::iterator iter = n_call->begin(); iter != n_call->end();) {
+		if((*iter)->call->destroy_call_at != 0 &&
+		   ((*iter)->call->seenbye ||
+		    (*iter)->call->lastSIPresponseNum / 10 == 48 ||
+		    (time_s != 0 && time_s > (*iter)->call->destroy_call_at))) {
+			if(sverb.hash_rtp) {
+				cout << "remove call with destroy_call_at: " 
+				     << (*iter)->call->call_id << " " << addr.getString() << ":" << port.getString() << " " 
+				     << endl;
+			}
+			--(*iter)->call->rtp_ip_port_counter;
+			delete *iter;
+			n_call->erase(iter++);
+		} else {
+			if((*iter)->call == call) {
+				found = 1;
+				(*iter)->sdp_flags = sdp_flags;
+			}
+			iter++;
+		}
+	}
+	if(!found) {
+		if((int)n_call->size() >= opt_sdp_multiplication) {
+			// this port/ip combination is already in (opt_sdp_multiplication) calls - do not add to (opt_sdp_multiplication+1)th to not cause multiplication attack. 
+			if(!opt_disable_sdp_multiplication_warning && !call->syslog_sdp_multiplication) {
+				string call_ids;
+				for(list<call_rtp*>::iterator iter = n_call->begin(); iter != n_call->end(); iter++) {
+					if(!call_ids.empty()) {
+						call_ids += " ";
+					}
+					call_ids += string("[") + (*iter)->call->fbasename + "]";
+				}
+				syslog(LOG_NOTICE, "call-id[%s] SDP: %s:%u is already in calls %s. Limit is %u to not cause multiplication DDOS. You can increase it sdp_multiplication = N\n", 
+				       call->fbasename, addr.getString().c_str(), (int)port,
+				       call_ids.c_str(),
+				       opt_sdp_multiplication);
+				call->syslog_sdp_multiplication = true;
+			}
+			if (useLock) unlock_calls_hash();
+			return;
+		}
+		call_rtp *call_new = new FILE_LINE(0) call_rtp;
+		call_new->call = call;
+		call_new->iscaller = iscaller;
+		call_new->is_rtcp = is_rtcp;
+		call_new->sdp_flags = sdp_flags;
+		n_call->push_back(call_new);
+		++call->rtp_ip_port_counter;
+		call->rtp_ip_port_list.push_back(vmIPport(addr, port));
+	}
+	if (useLock) unlock_calls_hash();
+	
+	#else
+	
+	node_call_rtp_ports *ports;
+	if (useLock) lock_calls_hash();
+	if(addr.is_v6()) {
+		ports = calls_ipv6_port->add((u_char*)addr.getPointerToIP(), 16
+					     #if NEW_RTP_FIND__NODES__PORT_MODE == 1
+					     ,(u_char*)&port.port + 1, 1
+					     #endif
+					     );
+	} else {
+		ports = calls_ip_port->add((u_char*)addr.getPointerToIP(), 4
+					   #if NEW_RTP_FIND__NODES__PORT_MODE == 1
+					   ,(u_char*)&port.port + 1, 1
+					   #endif
+					   );
+	}
+	node_call_rtp **n_call_ptr = &ports->ports[
+						   #if NEW_RTP_FIND__NODES__PORT_MODE == 1
+						   *((u_char*)&port.port + 0)
+						   #else
+						   port.port
+						   #endif
+						   ];
+	node_call_rtp *n_call = *n_call_ptr;
+	node_call_rtp *n_prev = NULL;
+	int found = 0;
+	if(n_call) {
+		int count = 0;
+		while(n_call) {
+			if(n_call->call->destroy_call_at != 0 &&
+			   (n_call->call->seenbye ||
+			    n_call->call->lastSIPresponseNum / 10 == 48 ||
+			    (time_s != 0 && time_s > n_call->call->destroy_call_at))) {
+				if(sverb.hash_rtp) {
+					cout << "remove call with destroy_call_at: " 
+					     << n_call->call->call_id << " " << addr.getString() << ":" << port.getString() << " " 
+					     << endl;
+				}
+				// remove this call
+				if(n_prev) {
+					n_prev->next = n_call->next;
+					--n_call->call->rtp_ip_port_counter;
+					delete n_call;
+					n_call = n_prev;
+					continue;
+				} else {
+					//removing first node
+					*n_call_ptr = (*n_call_ptr)->next;
+					--n_call->call->rtp_ip_port_counter;
+					delete n_call;
+					n_call = *n_call_ptr;
+					continue;
+				}
+			} else {
+				if(n_call->call == call) {
+					found = 1;
+					n_call->sdp_flags = sdp_flags;
+				}
+				n_prev = n_call;
+				n_call = n_call->next;
+				count++;
+			}
+		}
+		if(!found && count >= opt_sdp_multiplication) {
+			if(!opt_disable_sdp_multiplication_warning && !call->syslog_sdp_multiplication) {
+				string call_ids;
+				n_call = *n_call_ptr;
+				while(n_call != NULL) {
+					if(!call_ids.empty()) {
+						call_ids += " ";
+					}
+					call_ids += string("[") + n_call->call->fbasename + "]";
+					n_call = n_call->next;
+				}
+				syslog(LOG_NOTICE, "call-id[%s] SDP: %s:%u is already in calls %s. Limit is %u to not cause multiplication DDOS. You can increase it sdp_multiplication = N\n", 
+				       call->fbasename, addr.getString().c_str(), (int)port,
+				       call_ids.c_str(),
+				       opt_sdp_multiplication);
+				call->syslog_sdp_multiplication = true;
+			}
+			if (useLock) unlock_calls_hash();
+			return;
+		}
+	}
+	if(!found) {
+		#if 1
+		n_call = new FILE_LINE(0) node_call_rtp;
+		n_call->next = *n_call_ptr;
+		n_call->call = call;
+		n_call->iscaller = iscaller;
+		n_call->is_rtcp = is_rtcp;
+		n_call->sdp_flags = sdp_flags;
+		*n_call_ptr = n_call;
+		#else
+		n_call = new FILE_LINE(0) node_call_rtp;
+		n_call->next = NULL;
+		n_call->call = call;
+		n_call->iscaller = iscaller;
+		n_call->is_rtcp = is_rtcp;
+		n_call->sdp_flags = sdp_flags;
+		if(n_prev) {
+			n_prev->next = n_call;
+		} else {
+			*n_call_ptr = n_call;
+		}
+		#endif
+		++call->rtp_ip_port_counter;
+		call->rtp_ip_port_list.push_back(vmIPport(addr, port));
+	}
+	if (useLock) unlock_calls_hash();
+	
+	#endif
+	
+#elif NEW_RTP_FIND__PORT_NODES
+	
+	node_call_rtp **n_call_ptr;
+	if (useLock) lock_calls_hash();
+	if(addr.is_v6()) {
+		n_call_ptr = (node_call_rtp**)calls_ipv6_port[port.port]._add((u_char*)addr.getPointerToIP(), 16);
+	} else {
+		n_call_ptr = (node_call_rtp**)calls_ip_port[port.port]._add((u_char*)addr.getPointerToIP(), 4);
+	}
+	int found = 0;
+	if(*n_call_ptr) {
+		int count = 0;
+		node_call_rtp *n_call = *n_call_ptr;
+		node_call_rtp *n_prev = NULL;
+		while(n_call) {
+			if(n_call->call->destroy_call_at != 0 &&
+			   (n_call->call->seenbye ||
+			    n_call->call->lastSIPresponseNum / 10 == 48 ||
+			    (time_s != 0 && time_s > n_call->call->destroy_call_at))) {
+				if(sverb.hash_rtp) {
+					cout << "remove call with destroy_call_at: " 
+					     << n_call->call->call_id << " " << addr.getString() << ":" << port.getString() << " " 
+					     << endl;
+				}
+				// remove this call
+				if(n_prev) {
+					n_prev->next = n_call->next;
+					--n_call->call->rtp_ip_port_counter;
+					delete n_call;
+					n_call = n_prev;
+					continue;
+				} else {
+					//removing first node
+					*n_call_ptr = (*n_call_ptr)->next;
+					--n_call->call->rtp_ip_port_counter;
+					delete n_call;
+					n_call = *n_call_ptr;
+					continue;
+				}
+			} else {
+				if(n_call->call == call) {
+					found = 1;
+					n_call->sdp_flags = sdp_flags;
+				}
+				n_prev = n_call;
+				n_call = n_call->next;
+				count++;
+			}
+		}
+		if(!found && count >= opt_sdp_multiplication) {
+			if(!opt_disable_sdp_multiplication_warning && !call->syslog_sdp_multiplication) {
+				string call_ids;
+				n_call = *n_call_ptr;
+				while(n_call != NULL) {
+					if(!call_ids.empty()) {
+						call_ids += " ";
+					}
+					call_ids += string("[") + n_call->call->fbasename + "]";
+					n_call = n_call->next;
+				}
+				syslog(LOG_NOTICE, "call-id[%s] SDP: %s:%u is already in calls %s. Limit is %u to not cause multiplication DDOS. You can increase it sdp_multiplication = N\n", 
+				       call->fbasename, addr.getString().c_str(), (int)port,
+				       call_ids.c_str(),
+				       opt_sdp_multiplication);
+				call->syslog_sdp_multiplication = true;
+			}
+			if (useLock) unlock_calls_hash();
+			return;
+		}
+	}
+	if(!found) {
+		node_call_rtp *n_call = new FILE_LINE(0) node_call_rtp;
+		n_call->next = *n_call_ptr;
+		n_call->call = call;
+		n_call->iscaller = iscaller;
+		n_call->is_rtcp = is_rtcp;
+		n_call->sdp_flags = sdp_flags;
+		*n_call_ptr = n_call;
+		++call->rtp_ip_port_counter;
+	}
+	if (useLock) unlock_calls_hash();
+	
+	
+#elif NEW_RTP_FIND__MAP_LIST
+	
+	if (useLock) lock_calls_hash();
+	u_int64_t ip_port = addr.ip.v4.n;
+	ip_port = (ip_port << 32) + port.port;
+	node_call_rtp *n_call_rtp;
+	map<u_int64_t, node_call_rtp*>::iterator iter = calls_ip_port.find(ip_port);
+	if(iter != calls_ip_port.end()) {
+		n_call_rtp = iter->second;
+	} else {
+		n_call_rtp = new FILE_LINE(0) node_call_rtp;
+		calls_ip_port[ip_port] = n_call_rtp;
+	}
+	int found = 0;
+	for(list<call_rtp*>::iterator iter = n_call_rtp->begin(); iter != n_call_rtp->end();) {
+		if((*iter)->call->destroy_call_at != 0 &&
+		   ((*iter)->call->seenbye ||
+		    (*iter)->call->lastSIPresponseNum / 10 == 48 ||
+		    (time_s != 0 && time_s > (*iter)->call->destroy_call_at))) {
+			if(sverb.hash_rtp) {
+				cout << "remove call with destroy_call_at: " 
+				     << (*iter)->call->call_id << " " << addr.getString() << ":" << port.getString() << " " 
+				     << endl;
+			}
+			--(*iter)->call->rtp_ip_port_counter;
+			delete *iter;
+			n_call_rtp->erase(iter++);
+		} else {
+			if((*iter)->call == call) {
+				found = 1;
+				(*iter)->sdp_flags = sdp_flags;
+			}
+			iter++;
+		}
+	}
+	if(!found) {
+		if((int)n_call_rtp->size() >= opt_sdp_multiplication) {
+			// this port/ip combination is already in (opt_sdp_multiplication) calls - do not add to (opt_sdp_multiplication+1)th to not cause multiplication attack. 
+			if(!opt_disable_sdp_multiplication_warning && !call->syslog_sdp_multiplication) {
+				string call_ids;
+				for(list<call_rtp*>::iterator iter = n_call_rtp->begin(); iter != n_call_rtp->end(); iter++) {
+					if(!call_ids.empty()) {
+						call_ids += " ";
+					}
+					call_ids += string("[") + (*iter)->call->fbasename + "]";
+				}
+				syslog(LOG_NOTICE, "call-id[%s] SDP: %s:%u is already in calls %s. Limit is %u to not cause multiplication DDOS. You can increase it sdp_multiplication = N\n", 
+				       call->fbasename, addr.getString().c_str(), (int)port,
+				       call_ids.c_str(),
+				       opt_sdp_multiplication);
+				call->syslog_sdp_multiplication = true;
+			}
+			if (useLock) unlock_calls_hash();
+			return;
+		}
+		call_rtp *call_new = new FILE_LINE(0) call_rtp;
+		call_new->call = call;
+		call_new->iscaller = iscaller;
+		call_new->is_rtcp = is_rtcp;
+		call_new->sdp_flags = sdp_flags;
+		n_call_rtp->push_back(call_new);
+		++call->rtp_ip_port_counter;
+	}
+	if (useLock) unlock_calls_hash();
+	
+#else 
+
 	u_int32_t h;
 	node_call_rtp_ip_port *node = NULL;
 	#if not HASH_RTP_FIND__LIST
@@ -9672,7 +10042,7 @@ int
 Calltable::_hashRemove(Call *call, vmIP addr, vmPort port, bool rtcp, bool use_lock) {
  
 #if NEW_RTP_FIND__NODES
- 
+
 	#if NEW_RTP_FIND__NODES__LIST
  
 	int removeCounter = 0;
@@ -10563,7 +10933,6 @@ Calltable::getCallTableJson(char *params, bool *zip) {
 				}
 			} else {
 				callFilters.push_back(new FILE_LINE(0) cCallFilter(filter.c_str()));
-			}
 		}
 	} else {
 		if(zip) {
@@ -10701,7 +11070,7 @@ Calltable::getCallTableJson(char *params, bool *zip) {
 		}
 		__SYNC_UNLOCK(active_calls_cache_sync);
 	}
-	
+
 	unsigned custom_headers_size = 0;
 	unsigned custom_headers_reserve = 0;
 	if(custom_headers_cdr) {
@@ -10997,7 +11366,7 @@ Calltable::cleanup_calls( struct timeval *currtime, bool forceClose, const char 
 	closeCallsMax += closeCallsMax / 4;
 	Call **closeCalls = new FILE_LINE(0) Call*[closeCallsMax];
 	unsigned closeCallsCount = 0;
-	
+
 	if(opt_processing_limitations && opt_processing_limitations_active_calls_cache &&
 	   opt_processing_limitations_active_calls_cache_type == 1) {
 		u_int64_t now_ms = getTimeMS();
@@ -11014,7 +11383,7 @@ Calltable::cleanup_calls( struct timeval *currtime, bool forceClose, const char 
 		}
 		__SYNC_UNLOCK(active_calls_cache_sync);
 	}
-	
+
 	int rejectedCalls_count = 0;
 	for(int passTypeCall = 0; passTypeCall < 2; passTypeCall++) {
 		int typeCall = passTypeCall == 0 ? INVITE : MGCP;

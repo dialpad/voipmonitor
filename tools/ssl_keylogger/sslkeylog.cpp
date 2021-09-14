@@ -444,7 +444,6 @@ static void write_keylog(const SSL *ssl, const char *key) {
 		write_keylog_to_dest(key);
 	#endif
 }
-
 static void write_keylog_to_dest(const char *key) {
 	if(
 	   #ifdef SSLKEYLOG_TCP

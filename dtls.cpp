@@ -108,6 +108,7 @@ void cDtlsLink::processHandshake(sHeaderHandshake *handshake) {
 				}
 			}
 		}
+
 	} else if(handshake->handshake_type == DTLS_HANDSHAKE_TYPE_SERVER_HELLO) {
 		cDtlsLink::sHeaderHandshakeHello *handshake_hello = (cDtlsLink::sHeaderHandshakeHello*)handshake;
 		memcpy(server_random, handshake_hello->random, DTLS_RANDOM_SIZE);

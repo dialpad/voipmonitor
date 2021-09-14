@@ -946,6 +946,25 @@ bool string_looks_like_client_random(u_char *data, unsigned datalen) {
 	return(false);
 }
 
+bool string_looks_like_client_random(u_char *data, unsigned datalen) {
+	#if defined(HAVE_OPENSSL101) and defined(HAVE_LIBGNUTLS)
+	if(!datalen) {
+		return(false);
+	}
+	if(data[0] == '{' && data[datalen - 1] == '}') {
+		return(true);
+	}
+	for(unsigned i = 0; cSslDsslSessionKeys::session_key_types[i].str; i++) {
+		if(datalen > cSslDsslSessionKeys::session_key_types[i].length &&
+		   toupper(data[0]) == cSslDsslSessionKeys::session_key_types[i].str[0] &&
+		   !strncasecmp(cSslDsslSessionKeys::session_key_types[i].str, (char*)data, cSslDsslSessionKeys::session_key_types[i].length)) {
+			return(true);
+		}
+	}
+	#endif //HAVE_OPENSSL101 && HAVE_LIBGNUTLS
+	return(false);
+}
+
 bool ssl_parse_client_random(u_char *data, unsigned datalen) {
 	#if defined(HAVE_OPENSSL101) and defined(HAVE_LIBGNUTLS)
 	if(!SslDsslSessions) {

@@ -1932,6 +1932,36 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 							outStr << sizeSQLq;
 						}
 					}
+					for(int i = 0; i < opt_mysqlstore_max_threads_charts_cache; i++) {
+						sizeSQLq = sqlStore->getSize(STORE_PROC_ID_CHARTS_CACHE, i) +
+							   (loadFromQFiles ? loadFromQFiles->getSize(STORE_PROC_ID_CHARTS_CACHE, i) : 0);
+						if(sizeSQLq >= 0) {
+							if(i) {
+								outStr << " ch" << (i+1) << ":";
+							} else {
+								outStr << " ch:";
+								if(sizeSQLq < 0) {
+									sizeSQLq = 0;
+								}
+							}
+							outStr << sizeSQLq;
+						}
+					}
+					for(int i = 0; i < opt_mysqlstore_max_threads_charts_cache; i++) {
+						sizeSQLq = sqlStore->getSize(STORE_PROC_ID_CHARTS_CACHE_REMOTE, i) +
+						           (loadFromQFiles ? loadFromQFiles->getSize(STORE_PROC_ID_CHARTS_CACHE_REMOTE, i) : 0);
+						if(sizeSQLq >= 0) {
+							if(i) {
+								outStr << " chr" << (i+1) << ":";
+							} else {
+								outStr << " chr:";
+								if(sizeSQLq < 0) {
+									sizeSQLq = 0;
+								}
+							}
+							outStr << sizeSQLq;
+						}
+					}
 					for(int i = 0; i < opt_mysqlstore_max_threads_message; i++) {
 						sizeSQLq = sqlStore->getSize(STORE_PROC_ID_MESSAGE, i) +
 							   (loadFromQFiles ? loadFromQFiles->getSize(STORE_PROC_ID_MESSAGE, i) : 0);
@@ -2282,6 +2312,7 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 						syslog(LOG_INFO, "decrease pcap_queue_deque_window_length to %i", 
 						       opt_pcap_queue_dequeu_window_length / opt_pcap_queue_dequeu_window_length_div);
 					}
+
 				} else if(heap_pb_used_perc < 5 && t2cpu < 30 &&
 					  opt_pcap_queue_dequeu_window_length_div > 0) {
 					if(opt_pcap_queue_dequeu_window_length_div > 2) {
@@ -2867,6 +2898,7 @@ void PcapQueue::pcapStat(int statPeriod, bool statCalls) {
 			}
 		}
 	}
+
 
 	extern int global_livesniffer;
 	extern map<unsigned int, livesnifferfilter_s*> usersniffer;

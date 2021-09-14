@@ -8072,6 +8072,7 @@ cEvalFormula::sValueStr cEvalFormula::getBracketsBlock(const char *formula, unsi
 	} else {
 		return(sValueStr());
 	}
+	return(sValue());
 }
 
 cEvalFormula::sOperator *cEvalFormula::getU_Operator(const char *formula, unsigned pos, unsigned pos_max, unsigned *pos_end) {
