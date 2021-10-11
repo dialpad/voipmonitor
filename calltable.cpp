@@ -964,6 +964,7 @@ Call::_removeRTP() {
 			rtp_canceled->push_back(rtp_fix[i]);
 			rtp_fix[i] = NULL;
 		}
+	}
 	#if CALL_RTP_DYNAMIC_ARRAY
 	if(rtp_dynamic) {
 		for(CALL_RTP_DYNAMIC_ARRAY_TYPE::iterator iter = rtp_dynamic->begin(); iter != rtp_dynamic->end(); iter++) {
