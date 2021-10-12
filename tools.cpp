@@ -6482,7 +6482,6 @@ void cDbStrings::explodeCsv(const char *csv) {
 			break;
 		}
 	}
-	zero_term_set = true;
 }
 
 void cDbStrings::setZeroTerm() {
@@ -6516,8 +6515,6 @@ void cDbStrings::print() {
 			cout << '|' << (strings[i].begin + strings[i].offset) << '|' << endl;
 		}
 	}
-	rslt += " )";
-	return(rslt);
 }
 
 void cDbStrings::substCB(cSqlDbData *dbData, list<string> *cb_inserts) {
