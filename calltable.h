@@ -2834,6 +2834,7 @@ private:
 	u_int64_t active_calls_cache_fill_at_ms;
 	map<string, d_item2<u_int32_t, string> > active_calls_cache_map;
 	volatile int active_calls_cache_sync;
+
 };
 
 

@@ -2000,7 +2000,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 	vmPort sdp_media_port[sdp_media_start_max];
 	while(sdp_media_start_count < sdp_media_start_max) {
 		s = _gettag(sdp_media_start_count ? sdp_media_start[sdp_media_start_count - 1] + 1 : sdp_text,
-			    sdp_text_len - (sdp_media_start_count ? sdp_media_start[sdp_media_start_count - 1] + 1 - sdp_text: 0), 
+			    sdp_text_len - (sdp_media_start_count ? sdp_media_start[sdp_media_start_count - 1] + 1 - sdp_text: 0),
 			    "\nm=", &l);
 		if(l > 0) {
 			e_sdp_media_type media_type = l > 5 ?
@@ -2031,7 +2031,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 	
 	unsigned sdp_media_counter = 0;
 	for(unsigned sdp_media_i = 0; sdp_media_i < sdp_media_start_count; sdp_media_i++) {
-	 
+
 		if(sdp_media_type[sdp_media_i] == sdp_media_type_video && !processing_rtp_video(call)) {
 			continue;
 		}
@@ -2046,7 +2046,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		if(pointToBeginProtocol) {
 			++pointToBeginProtocol;
 			char *pointToEndProtocol = strnchr(pointToBeginProtocol, ' ', sdp_media_text_len - (pointToBeginProtocol - sdp_media_text));
-			unsigned lengthProtocol = pointToEndProtocol ? 
+			unsigned lengthProtocol = pointToEndProtocol ?
 						   pointToEndProtocol - pointToBeginProtocol :
 						   sdp_media_text_len - (pointToBeginProtocol - sdp_media_text);
 			if(lengthProtocol > 0 && lengthProtocol < 100) {
@@ -2078,7 +2078,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		   !(sdp_protocol == sdp_proto_tcp_mrcpv2 && cFilters::saveMrcp())) {
 			continue;
 		}
-					       
+
 		s_sdp_media_data *sdp_media_data_item;
 		if(sdp_media_counter == 0) {
 			sdp_media_data_item = sdp_media_data;
@@ -2092,7 +2092,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		sdp_media_data_item->ip = ip;
 		sdp_media_data_item->port = sdp_media_port[sdp_media_i];
 		sdp_media_data_item->sdp_flags.media_type = sdp_media_type[sdp_media_i];
-		
+
 		sdp_media_data_item->sdp_flags.protocol = sdp_protocol;
 
 		if(sdp_media_i > 0) {
@@ -2207,7 +2207,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		if(!sdp_media_data_item->ip.isSet() && memmem(sdp_media_text, sdp_media_text_len, "a=inactive", 10)) {
 			sdp_media_data_item->inactive_ip0 = true;
 		}
-		
+
 		if(sdp_media_type[sdp_media_i] != sdp_media_type_application) {
 			get_rtpmap_from_sdp(sdp_media_text, sdp_media_text_len, sdp_media_type[sdp_media_i] == sdp_media_type_video, sdp_media_data_item->rtpmap, &sdp_media_data_item->exists_payload_televent);
 		}
@@ -2217,7 +2217,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		}
 		
 		++sdp_media_counter;
-		
+
 	}
 
 	return sdp_media_counter;
@@ -3456,7 +3456,7 @@ void process_packet_sip_call(packet_s_process *packetS) {
 	if(packetS->pid.flags & FLAG_FRAGMENTED) {
 		call->sip_fragmented = true;
 	}
-	
+
 	if((packetS->sip_method == INVITE && call->typeIsOnly(MESSAGE)) ||
 	   (packetS->sip_method == MESSAGE && call->typeIsOnly(INVITE))) {
 		call->addNextType(packetS->sip_method);

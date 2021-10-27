@@ -4104,7 +4104,7 @@ int main_init_read() {
 			return(2);
 		}
 		if(pcap_set_snaplen(global_pcap_handle, opt_snaplen ? opt_snaplen : 3200) != 0) {
-			fprintf(stderr, "pcap_snaplen failed: %s", pcap_geterr(global_pcap_handle)); 
+			fprintf(stderr, "pcap_snaplen failed: %s", pcap_geterr(global_pcap_handle));
 			return(2);
 		}
 		if(pcap_set_promisc(global_pcap_handle, opt_promisc) != 0) {
@@ -8753,7 +8753,7 @@ void set_context_config() {
 			mysql_enable_set_id_notice = true;
 		}
 	}
- 
+
 	if(opt_scanpcapdir[0]) {
 		sniffer_mode = snifferMode_read_from_files;
 		opt_use_oneshot_buffer = 0;
@@ -9097,7 +9097,7 @@ void set_context_config() {
 			syslog(LOG_ERR, "%s", error.c_str());
 		}
 	}
-	
+
 	if(opt_t2_boost && opt_t2_boost_call_find_threads && opt_call_id_alternative[0]) {
 		opt_t2_boost_call_find_threads = false;
 		syslog(LOG_ERR, "option t2_boost_enable_call_find_threads is not suported with option call_id_alternative");
