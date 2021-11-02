@@ -967,7 +967,7 @@ bool TcpReassemblyLink::push_normal(
 			} else if(reassembly->extCleanupStreamsLimitStreams &&
 				  reassembly->extCleanupStreamsLimitHeap &&
 				  this->queueStreams.size() > reassembly->extCleanupStreamsLimitStreams &&
-				  buffersControl.getPercUsePBwithouttrash() > reassembly->extCleanupStreamsLimitHeap) {
+				  buffersControl.getPerc_pb_used() > reassembly->extCleanupStreamsLimitHeap) {
 				this->extCleanup(2, true);
 			}
 		}
@@ -2167,15 +2167,15 @@ void TcpReassemblyLink::clearRemainData(TcpReassemblyDataItem::eDirection direct
 	}
 }
 
-u_char *TcpReassemblyLink::completeRemainData(TcpReassemblyDataItem::eDirection direction, u_int32_t *rslt_datalen, u_int32_t ack, u_int32_t seq, u_char *data, u_int32_t datalen) {
+u_char *TcpReassemblyLink::completeRemainData(TcpReassemblyDataItem::eDirection direction, u_int32_t *rslt_datalen, u_int32_t ack, u_int32_t seq, u_char *data, u_int32_t datalen, u_int32_t skip_first_items) {
 	int index = direction == TcpReassemblyDataItem::DIRECTION_TO_DEST ? 0 :
 		    direction == TcpReassemblyDataItem::DIRECTION_TO_SOURCE ? 1 : -1;
 	if(index >= 0) {
-		*rslt_datalen = getRemainDataLength(direction) + datalen;
+		*rslt_datalen = getRemainDataLength(direction, skip_first_items) + datalen;
 		u_char *rslt_data = new FILE_LINE(0) u_char[*rslt_datalen];
 		if(ack && seq && existsAllAckSeq(direction)) {
 			map<u_int64_t, list<int> > sort_by_ack_seq;
-			for(unsigned i = 0; i < remainData[index].size(); i++) {
+			for(unsigned i = skip_first_items; i < remainData[index].size(); i++) {
 				sort_by_ack_seq[(u_int64_t)remainData[index][i].ack << 32 | remainData[index][i].seq].push_back(i);
 			}
 			if(data && datalen) {
@@ -2198,7 +2198,7 @@ u_char *TcpReassemblyLink::completeRemainData(TcpReassemblyDataItem::eDirection 
 			}
 		} else {
 			u_int32_t offset = 0;
-			for(unsigned i = 0; i < remainData[index].size(); i++) {
+			for(unsigned i = skip_first_items; i < remainData[index].size(); i++) {
 				memcpy(rslt_data + offset, remainData[index][i].data, remainData[index][i].datalen);
 				offset += remainData[index][i].datalen;
 			}
@@ -2213,15 +2213,24 @@ u_char *TcpReassemblyLink::completeRemainData(TcpReassemblyDataItem::eDirection 
 	return(NULL);
 }
 
-u_int32_t TcpReassemblyLink::getRemainDataLength(TcpReassemblyDataItem::eDirection direction) {
+u_int32_t TcpReassemblyLink::getRemainDataLength(TcpReassemblyDataItem::eDirection direction, u_int32_t skip_first_items) {
 	int index = direction == TcpReassemblyDataItem::DIRECTION_TO_DEST ? 0 :
 		    direction == TcpReassemblyDataItem::DIRECTION_TO_SOURCE ? 1 : -1;
 	if(index >= 0) {
 		u_int32_t length = 0;
-		for(unsigned i = 0; i < remainData[index].size(); i++) {
+		for(unsigned i = skip_first_items; i < remainData[index].size(); i++) {
 			length += remainData[index][i].datalen;
 		}
 		return(length);
+	}
+	return(0);
+}
+
+u_int32_t TcpReassemblyLink::getRemainDataItems(TcpReassemblyDataItem::eDirection direction) {
+	int index = direction == TcpReassemblyDataItem::DIRECTION_TO_DEST ? 0 :
+		    direction == TcpReassemblyDataItem::DIRECTION_TO_SOURCE ? 1 : -1;
+	if(index >= 0) {
+		return(remainData[index].size());
 	}
 	return(0);
 }
@@ -3109,7 +3118,7 @@ void TcpReassembly::cleanup_simple(bool all) {
 				if(this->extCleanupStreamsLimitStreams &&
 				   this->extCleanupStreamsLimitHeap &&
 				   link->queueStreams.size() > this->extCleanupStreamsLimitStreams &&
-				   buffersControl.getPercUsePBwithouttrash() > this->extCleanupStreamsLimitHeap) {
+				   buffersControl.getPerc_pb_used() > this->extCleanupStreamsLimitHeap) {
 					link->extCleanup(1, true);
 				} else {
 					deque<TcpReassemblyStream*>::iterator iterStream;

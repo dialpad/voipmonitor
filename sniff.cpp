@@ -274,6 +274,8 @@ extern int opt_cleanup_calls_period;
 extern int opt_destroy_calls_period;
 extern int opt_ss7timeout_rlc;
 
+extern cProcessingLimitations processing_limitations;
+
 inline char * gettag(const void *ptr, unsigned long len, ParsePacket::ppContentsX *parseContents,
 		     const char *tag, unsigned long *gettaglen, unsigned long *limitLen = NULL);
 inline char * gettag_sip(packet_s_process *packetS,
@@ -1957,6 +1959,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		sdp_text_len = strlen(sdp_text);
 	}
 
+
 	s = _gettag(sdp_text,sdp_text_len, "o=", &l);
 	if(l == 0) return 0;
 	while(l > 0 && *s != ' ') {
@@ -1976,6 +1979,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 	memcpy(sessid, s, sessid_length);
 	sessid[sessid_length] = 0;
 
+
 	vmIP ip;
 	s = _gettag(sdp_text, sdp_text_len,
 		    packetS->saddr_().is_v6() ? "c=IN IP6 " : "c=IN IP4 ",
@@ -1987,6 +1991,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		ip_str[ip_length] = 0;
 		ip.setFromString(ip_str);
 	}
+
 
 	unsigned sdp_media_start_max = 10;
 	unsigned sdp_media_start_count = 0;
@@ -2023,7 +2028,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 			break;
 		}
 	}
-
+	
 	unsigned sdp_media_counter = 0;
 	for(unsigned sdp_media_i = 0; sdp_media_i < sdp_media_start_count; sdp_media_i++) {
 
@@ -2068,8 +2073,8 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 				}
 			}
 		}
-
-		if(sdp_media_type[sdp_media_i] == sdp_media_type_application &&
+		
+		if(sdp_media_type[sdp_media_i] == sdp_media_type_application && 
 		   !(sdp_protocol == sdp_proto_tcp_mrcpv2 && cFilters::saveMrcp())) {
 			continue;
 		}
@@ -2083,7 +2088,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 			}
 			sdp_media_data_item = new FILE_LINE(0) s_sdp_media_data;
 		}
-
+		
 		sdp_media_data_item->ip = ip;
 		sdp_media_data_item->port = sdp_media_port[sdp_media_i];
 		sdp_media_data_item->sdp_flags.media_type = sdp_media_type[sdp_media_i];
@@ -2106,12 +2111,14 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 			}
 		}
 
+
 		s = _gettag(sdp_media_text, sdp_media_text_len, "a=label:", &l);
 		if(l > 0) {
 			unsigned label_length = MIN(l, MAXLEN_SDP_LABEL - 1);
 			memcpy(sdp_media_data_item->label, s, label_length);
 			sdp_media_data_item->label[label_length] = 0;
 		}
+
 
 		if(sdp_media_data_item->sdp_flags.protocol == sdp_proto_srtp) {
 			s = _gettag(sdp_media_text, sdp_media_text_len, "a=crypto:", &l);
@@ -2177,12 +2184,12 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 				}
 			}
 		}
-
+		
 		if(memmem(sdp_media_text, sdp_media_text_len, "a=rtcp-mux", 10)) {
 			sdp_media_data_item->sdp_flags.rtcp_mux = 1;
 			call->use_rtcp_mux = true;
 		}
-
+		
 		bool sdp_sendonly = false;
 		bool sdp_sendrecv = false;
 		if(memmem(sdp_media_text, sdp_media_text_len, "a=sendonly", 10)) {
@@ -2196,7 +2203,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 
 			call->HandleHold(sdp_sendonly, sdp_sendrecv);
 		}
-
+		
 		if(!sdp_media_data_item->ip.isSet() && memmem(sdp_media_text, sdp_media_text_len, "a=inactive", 10)) {
 			sdp_media_data_item->inactive_ip0 = true;
 		}
@@ -2208,7 +2215,7 @@ int get_ip_port_from_sdp(Call *call, packet_s_process *packetS, char *sdp_text, 
 		if(sdp_media_counter > 0) {
 			(*next_sdp_media_data)->push_back(sdp_media_data_item);
 		}
-
+		
 		++sdp_media_counter;
 
 	}
@@ -2346,8 +2353,12 @@ void *rtp_read_thread_func(void *arg) {
 					}
 				}
 				rtpp_pq->call->shift_destroy_call_at(rtpp_pq->packet->getTime_s());
-				if(rslt_read_rtp && !rtpp_pq->is_rtcp) {
-					rtpp_pq->call->set_last_rtp_packet_time_us(rtpp_pq->packet->getTimeUS());
+				if(rslt_read_rtp) {
+					if(rtpp_pq->is_rtcp) {
+						rtpp_pq->call->set_last_rtcp_packet_time_us(rtpp_pq->packet->getTimeUS());
+					} else {
+						rtpp_pq->call->set_last_rtp_packet_time_us(rtpp_pq->packet->getTimeUS());
+					}
 				}
 				rtpp_pq->packet->blockstore_addflag(71 /*pb lock flag*/);
 				//PACKET_S_PROCESS_DESTROY(&rtpp_pq->packet);
@@ -3122,7 +3133,7 @@ inline Call *new_invite_register(packet_s_process *packetS, int sip_method, char
 	return call;
 }
 
-void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from_data, unsigned sdplen, 
+void process_sdp(Call *call, packet_s_process *packetS, int iscaller, char *from_data, unsigned sdplen,
 		 char *callidstr, char *to, char *branch) {
  
 	extern bool opt_disable_process_sdp;
@@ -3433,7 +3444,11 @@ void process_packet_sip_call(packet_s_process *packetS) {
 		}
 		goto endsip;
 	}
-	
+
+	if(processing_limitations.suppressRtpAllProcessing()) {
+		call->suppress_rtp_proc_due_to_insufficient_hw_performance = true;
+	}
+
 	if(contenttype_is_app_csta_xml) {
 		call->exclude_from_active_calls = true;
 	}
@@ -3441,7 +3456,7 @@ void process_packet_sip_call(packet_s_process *packetS) {
 	if(packetS->pid.flags & FLAG_FRAGMENTED) {
 		call->sip_fragmented = true;
 	}
-	
+
 	if((packetS->sip_method == INVITE && call->typeIsOnly(MESSAGE)) ||
 	   (packetS->sip_method == MESSAGE && call->typeIsOnly(INVITE))) {
 		call->addNextType(packetS->sip_method);
@@ -3955,6 +3970,7 @@ void process_packet_sip_call(packet_s_process *packetS) {
 					}
 					if(packetS->cseq.method == INVITE) {
 						call->seeninviteok = true;
+						call->seenbyeandok_permanent = false;
 						if(!call->connect_time_us) {
 							call->connect_time_us = packetS->getTimeUS();
 							if(opt_enable_fraud && isFraudReady()) {
@@ -4069,6 +4085,8 @@ void process_packet_sip_call(packet_s_process *packetS) {
 				// 481 CallLeg/Transaction doesnt exist - set timeout to 180 seconds
 				if(call->is_enable_set_destroy_call_at_for_call(&packetS->cseq, merged)) {
 					call->destroy_call_at = packetS->getTime_s() + 180;
+				} else if(call->seenbyeandok_permanent) {
+					call->destroy_call_at = packetS->getTime_s() + 60;
 				}
 			} else if(lastSIPresponseNum == 491) {
 				// do not set timeout for 491
@@ -5002,7 +5020,7 @@ inline int process_packet__rtp_call_info(packet_s_process_calls_info *call_info,
 		call = call_info->calls[call_info_index].call;
 		iscaller = call_info->calls[call_info_index].iscaller;
 		sdp_flags = call_info->calls[call_info_index].sdp_flags;
-		is_rtcp = call_info->calls[call_info_index].is_rtcp || 
+		is_rtcp = call_info->calls[call_info_index].is_rtcp ||
 			  ((sdp_flags.is_audio() || sdp_flags.is_video()) && packetS->datalen_() > 1 &&
 			  ((u_char)packetS->data_()[1] == 0xC8 || (u_char)packetS->data_()[1] == 0xC9) && RTP::isRTCP_enforce(packetS->data_()));
 		stream_in_multiple_calls = call_info->calls[call_info_index].multiple_calls;
@@ -5059,8 +5077,12 @@ inline int process_packet__rtp_call_info(packet_s_process_calls_info *call_info,
 								       packetS->block_store && packetS->block_store->ifname[0] ? packetS->block_store->ifname : NULL);
 				}
 			}
-			if(rslt_read_rtp && !is_rtcp) {
-				call->set_last_rtp_packet_time_us(packetS->getTimeUS());
+			if(rslt_read_rtp) {
+				if(is_rtcp) {
+					call->set_last_rtcp_packet_time_us(packetS->getTimeUS());
+				} else {
+					call->set_last_rtp_packet_time_us(packetS->getTimeUS());
+				}
 			}
 			packetS->blockstore_addflag(59 /*pb lock flag*/);
 			PACKET_S_PROCESS_DESTROY(&packetS);
@@ -5188,6 +5210,41 @@ Call *process_packet__rtp_nosip(vmIP saddr, vmPort source, vmIP daddr, vmPort de
 	return(call);
 }
 
+inline bool call_confirmation_for_rtp_processing(Call *call, packet_s_process_calls_info *call_info, packet_s_process_0 *packetS) {
+	if(call->suppress_rtp_proc_due_to_insufficient_hw_performance) {
+		return(false);
+	}
+	if(!(call->typeIs(SKINNY_NEW) ? opt_rtpfromsdp_onlysip_skinny : opt_rtpfromsdp_onlysip) ||
+	   (call_info->find_by_dest ?
+	     call->checkKnownIP_inSipCallerdIP(packetS->saddr_()) :
+	     call->checkKnownIP_inSipCallerdIP(packetS->daddr_())) ||
+	   (call_info->find_by_dest ?
+	     calltable->check_call_in_hashfind_by_ip_port(call, packetS->saddr_(), packetS->source_(), false) &&
+	     call->checkKnownIP_inSipCallerdIP(packetS->daddr_()) :
+	     calltable->check_call_in_hashfind_by_ip_port(call, packetS->daddr_(), packetS->dest_(), false) &&
+	     call->checkKnownIP_inSipCallerdIP(packetS->saddr_()))) {
+		if((opt_ignore_rtp_after_bye_confirmed &&
+		    call->seenbyeandok && call->seenbyeandok_time_usec &&
+		    packetS->getTimeUS() > call->seenbyeandok_time_usec) ||
+		   (opt_ignore_rtp_after_cancel_confirmed &&
+		    call->seencancelandok && call->seencancelandok_time_usec &&
+		    packetS->getTimeUS() > call->seencancelandok_time_usec) ||
+		   (opt_ignore_rtp_after_auth_failed &&
+		    call->seenauthfailed && call->seenauthfailed_time_usec &&
+		    packetS->getTimeUS() > call->seenauthfailed_time_usec) ||
+		   (opt_hash_modify_queue_length_ms && call->end_call_rtp) ||
+		   (call->flags & FLAG_SKIPCDR)) {
+			return(false);
+		}
+		if(processing_limitations.suppressRtpSelectiveProcessing()) {
+			call->suppress_rtp_proc_due_to_insufficient_hw_performance = true;
+			return(false);
+		}
+		return(true);
+	}
+	return(false);
+}
+
 bool process_packet_rtp(packet_s_process_0 *packetS) {
 	packetS->blockstore_addflag(21 /*pb lock flag*/);
 	if(packetS->datalen_() <= 2) { // && (htons(*(unsigned int*)data) & 0xC000) == 0x8000) { // disable condition - failure for udptl (fax)
@@ -5237,24 +5294,7 @@ bool process_packet_rtp(packet_s_process_0 *packetS) {
 				call_rtp *call_rtp = n_call;
 			#endif
 				Call *call = call_rtp->call;
-				if((!(call->typeIs(SKINNY_NEW) ? opt_rtpfromsdp_onlysip_skinny : opt_rtpfromsdp_onlysip) ||
-				    (call_info->find_by_dest ?
-				      call->checkKnownIP_inSipCallerdIP(packetS->saddr_()) :
-				      call->checkKnownIP_inSipCallerdIP(packetS->daddr_())) ||
-				    (call_info->find_by_dest ?
-				      calltable->check_call_in_hashfind_by_ip_port(call, packetS->saddr_(), packetS->source_(), false) &&
-				      call->checkKnownIP_inSipCallerdIP(packetS->daddr_()) :
-				      calltable->check_call_in_hashfind_by_ip_port(call, packetS->daddr_(), packetS->dest_(), false) &&
-				      call->checkKnownIP_inSipCallerdIP(packetS->saddr_()))) &&
-				   !(opt_ignore_rtp_after_bye_confirmed &&
-				     call->seenbyeandok && call->seenbyeandok_time_usec &&
-				     packetS->getTimeUS() > call->seenbyeandok_time_usec) &&
-				   !(opt_ignore_rtp_after_cancel_confirmed &&
-				     call->seencancelandok && call->seencancelandok_time_usec &&
-				     packetS->getTimeUS() > call->seencancelandok_time_usec) &&
-				   !(opt_ignore_rtp_after_auth_failed &&
-				     call->seenauthfailed && call->seenauthfailed_time_usec &&
-				     packetS->getTimeUS() > call->seenauthfailed_time_usec)) {
+				if(call_confirmation_for_rtp_processing(call, call_info, packetS)) {
 					/*
 					if(packetS->getTimeUS() < (call->first_packet_time * 1000000ull + call->first_packet_usec) + (0 * 60 + 0) * 1000000ull) {
 						continue;
@@ -5512,6 +5552,10 @@ inline void process_packet__cleanup_calls(timeval *ts_input, const char *file, i
 	timeval ts;
 	if(ts_input) {
 		process_packet__last_cleanup_calls_diff = getTimeMS(ts_input) - actTimeMS;
+		if(opt_scanpcapdir[0] &&
+		   process_packet__last_cleanup_calls > ts_input->tv_sec) {
+			process_packet__last_cleanup_calls = ts_input->tv_sec;
+		}
 		if(!doQuickCleanup &&
 		   getTimeS(ts_input) <= (time_t)(process_packet__last_cleanup_calls + (opt_quick_save_cdr ? 1 : (unsigned)opt_cleanup_calls_period))) {
 			return;
@@ -5556,7 +5600,8 @@ inline void process_packet__cleanup_calls(timeval *ts_input, const char *file, i
 	extern bool opt_hugepages_anon;
 	extern int opt_hugepages_max;
 	extern int opt_hugepages_overcommit_max;
-	if(((!opt_hugepages_max && !opt_hugepages_overcommit_max) || opt_hugepages_anon) &&
+	if(opt_memory_purge_interval &&
+	   ((!opt_hugepages_max && !opt_hugepages_overcommit_max) || opt_hugepages_anon) &&
 	   ts.tv_sec - __last_memory_purge >= (unsigned)opt_memory_purge_interval) {
 		bool firstRun = __last_memory_purge == 0;
 		__last_memory_purge = ts.tv_sec;
@@ -7110,7 +7155,8 @@ void readdump_libpcap(pcap_t *handle, u_int16_t handle_index, int handle_dlt, Pc
 			pcap_pkthdr *header_new = NULL;
 			u_char *packet_new = NULL;
 			extern cConfigItem_net_map::t_net_map opt_anonymize_ip_map;
-			convertIPsInPacket(header_packet, &ppd, &header_new, &packet_new, &opt_anonymize_ip_map);
+			extern cConfigItem_domain_map::t_domain_map opt_anonymize_domain_map;
+			convertAnonymousInPacket(header_packet, &ppd, &header_new, &packet_new, &opt_anonymize_ip_map, &opt_anonymize_domain_map);
 			if(header_new && packet_new) {
 				destination->dump(header_new, packet_new, handle_dlt);
 				delete header_new;
@@ -7401,7 +7447,7 @@ void _process_packet__cleanup_calls(timeval *ts, const char *file, int line) {
 
 void _process_packet__cleanup_calls(const char *file, int line) {
 	process_packet__cleanup_calls(NULL, file, line);
-	u_long timeS = getTimeS();
+	u_int32_t timeS = getTimeS_rdtsc();
 	if(timeS - process_packet__last_destroy_calls >= (unsigned)opt_destroy_calls_period) {
 		calltable->destroyCallsIfPcapsClosed();
 		process_packet__last_destroy_calls = timeS;
@@ -7410,7 +7456,7 @@ void _process_packet__cleanup_calls(const char *file, int line) {
 
 void _process_packet__cleanup_registers() {
 	process_packet__cleanup_registers(NULL);
-	u_long timeS = getTimeS();
+	u_int32_t timeS = getTimeS_rdtsc();
 	if(timeS - process_packet__last_destroy_registers >= 2) {
 		calltable->destroyRegistersIfPcapsClosed();
 		process_packet__last_destroy_registers = timeS;
@@ -8850,7 +8896,8 @@ void PreProcessPacket::process_SIP_OTHER(packet_s_process *packetS) {
 }
 
 void PreProcessPacket::process_RTP(packet_s_process_0 *packetS) {
-	if(!process_packet_rtp(packetS)) {
+	if(processing_limitations.suppressRtpAllProcessing() ||
+	   !process_packet_rtp(packetS)) {
 		PACKET_S_PROCESS_PUSH_TO_STACK(&packetS, 3);
 	}
 }
@@ -9676,26 +9723,7 @@ void ProcessRtpPacket::find_hash(packet_s_process_0 *packetS, bool lock) {
 			call_rtp *call_rtp = n_call;
 		#endif
 			Call *call = call_rtp->call;
-			if((!(call->typeIs(SKINNY_NEW) ? opt_rtpfromsdp_onlysip_skinny : opt_rtpfromsdp_onlysip) ||
-			    (packetS->call_info.find_by_dest ?
-			      call->checkKnownIP_inSipCallerdIP(packetS->saddr_()) :
-			      call->checkKnownIP_inSipCallerdIP(packetS->daddr_())) ||
-			    (packetS->call_info.find_by_dest ?
-			      calltable->check_call_in_hashfind_by_ip_port(call, packetS->saddr_(), packetS->source_(), false) &&
-			      call->checkKnownIP_inSipCallerdIP(packetS->daddr_()) :
-			      calltable->check_call_in_hashfind_by_ip_port(call, packetS->daddr_(), packetS->dest_(), false) &&
-			      call->checkKnownIP_inSipCallerdIP(packetS->saddr_()))) &&
-			   !(opt_ignore_rtp_after_bye_confirmed &&
-			     call->seenbyeandok && call->seenbyeandok_time_usec &&
-			     packetS->getTimeUS() > call->seenbyeandok_time_usec) &&
-			   !(opt_ignore_rtp_after_cancel_confirmed &&
-			     call->seencancelandok && call->seencancelandok_time_usec &&
-			     packetS->getTimeUS() > call->seencancelandok_time_usec) &&
-			   !(opt_ignore_rtp_after_auth_failed &&
-			     call->seenauthfailed && call->seenauthfailed_time_usec &&
-			     packetS->getTimeUS() > call->seenauthfailed_time_usec) &&
-			   !(opt_hash_modify_queue_length_ms && call->end_call_rtp) &&
-			   !(call->flags & FLAG_SKIPCDR)) {
+			if(call_confirmation_for_rtp_processing(call, &packetS->call_info, packetS)) {
 				++counter_rtp_packets[1];
 				packetS->blockstore_addflag(34 /*pb lock flag*/);
 				packetS->call_info.calls[packetS->call_info.length].call = call;
@@ -9893,6 +9921,7 @@ void rtp_read_thread::term_thread_buffer() {
 
 size_t rtp_read_thread::qring_size() {
 	return(writeit >= readit ? writeit - readit : writeit + this->qring_length - readit);
+
 }
 
 

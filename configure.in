@@ -179,11 +179,6 @@ if  test $LIBSSH_VERSION -lt 8; then
     LIBSSH_8=0
 fi
 
-LIBSSH_8=1
-LIBSSH_VERSION=`dpkg -s libssh-dev | grep Version | cut -d ' ' -f 2 | cut -d '.' -f 2`
-if  test $LIBSSH_VERSION -lt 8; then
-    LIBSSH_8=0
-fi
 
 HAVE_LIBPNG_T=no
 if test "x$HAVE_LIBPNG" = "x1"; then 
@@ -249,6 +244,14 @@ OPENSSL111_T=no
 if pkg-config --atleast-version 1.1.1 openssl; then
 	AC_DEFINE([HAVE_DSSL_TLS13], [1], [Define if we have openssl >= 1.1.1])
 	OPENSSL111_T=yes
+fi
+
+DPDK_T=no
+if test "x$HAVE_LIBDPDK" = "x1"; then 
+	AC_DEFINE([HAVE_LIBDPDK], [1], [Define if using dpdk])
+	AC_SUBST([DPDK_CFLAGS],[`"$PKGCONFIG" --cflags libdpdk`])
+	AC_SUBST([DPDK_LDFLAGS],[`"$PKGCONFIG" --libs libdpdk`])
+	DPDK_T=yes
 fi
 
 # Checks for header files.

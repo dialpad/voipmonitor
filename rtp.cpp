@@ -1305,15 +1305,20 @@ RTP::read(unsigned char* data, iphdr2 *header_ip, unsigned *len, struct pcap_pkt
 		diffSsrcInEqAddrPort = lastssrc and *lastssrc != ssrc and 
 				       lastrtp and this->eqAddrPort(lastrtp);
 	}
-	
-	if(is_video()) {
+
+	extern cProcessingLimitations processing_limitations;
+	if(processing_limitations.suppressRtpRead()) {
+		owner->suppress_rtp_read_due_to_insufficient_hw_performance = true;
+	}
+	if(is_video() || 
+	   owner->suppress_rtp_read_due_to_insufficient_hw_performance) {
 		last_seq = seq;
 		if(update_seq(seq)) {
 			update_stats();
 		}
 		prev_payload = curpayload;
 		prev_codec = codec;
-		lastframetype = AST_FRAME_VIDEO;
+		lastframetype = is_video() ? AST_FRAME_VIDEO : AST_FRAME_VOICE;
 		if(first_codec < 0) {
 			first_codec = codec;
 		}
@@ -2567,7 +2572,7 @@ void RTP::rtp_stream_analysis_output() {
 	     << rsa.counter << ","
 	     << ((int64_t)getTimeUS(header_ts) - (int64_t)rsa.first_packet_time_us) << ","
 	     << (((int64_t)getTimestamp() - (int64_t)rsa.first_timestamp)/(samplerate/1000.0)*1000) << ","
-	     << seq << ","
+	     << getSeqNum() << ","
 	     << (rsa.counter > 1 ? ((int64_t)getTimeUS(header_ts) - (int64_t)rsa.last_packet_time_us) : 0) << ","
 	     << (rsa.counter > 1 ? (((int64_t)getTimestamp() - (int64_t)rsa.last_timestamp)/(samplerate/1000.0)*1000) : 0) << ","
 	     << transit << ","
