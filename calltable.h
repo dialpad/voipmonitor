@@ -362,6 +362,9 @@ struct ip_port_call_info {
 	list<srtp_crypto_config> *srtp_crypto_config_list;
 	string *srtp_fingerprint;
 	string to;
+	string to_uri;
+	string domain_to;
+	string domain_to_uri;
 	string branch;
 	vmIP sip_src_addr;
 	s_sdp_flags sdp_flags;
@@ -622,11 +625,27 @@ public:
 	bool isAllocFlagSetAsFree() {
 		return(alloc_flag == 0);
 	}
+	inline void updateTimeShift(u_int64_t time_us) {
+		time_shift_ms = (int64_t)getTimeMS_rdtsc() - (int64_t)(time_us / 1000);
+	}
+	inline u_int64_t unshiftCallTime_ms(u_int64_t time_ms) {
+		return(time_ms + time_shift_ms);
+	}
+	inline u_int64_t unshiftCallTime_s(u_int64_t time_s) {
+		return(time_s + time_shift_ms / 1000);
+	}
+	inline u_int64_t unshiftSystemTime_ms(u_int64_t time_ms) {
+		return(time_ms - time_shift_ms);
+	}
+	inline u_int64_t unshiftSystemTime_s(u_int64_t time_s) {
+		return(time_s - time_shift_ms / 1000);
+	}
 public:
 	volatile uint8_t alloc_flag;
 	int type_base;
 	int type_next;
 	u_int64_t first_packet_time_us;
+	int64_t time_shift_ms;
 	char fbasename[MAX_FNAME];
 	char fbasename_safe[MAX_FNAME];
 	u_int64_t fname_register;
@@ -738,6 +757,12 @@ public:
 		string called;
 		string called_invite;
 		string branch;
+	};
+	struct sCalledInviteBranchItem {
+		string to;
+		string to_uri;
+		string domain_to;
+		string domain_to_uri;
 	};
 	struct sSipResponse {
 		sSipResponse(const char *SIPresponse = NULL, int SIPresponseNum = 0) {
@@ -869,18 +894,108 @@ public:
 	char called_to[256];		//!< To: xxx
 	char called_uri[256];
 	char called_final[256];
-	inline char *called() {
+	inline const char *get_called() {
 		extern int opt_destination_number_mode;
-		return(called_final[0] ? called_final :
-		       called_uri[0] && opt_destination_number_mode == 2 ? called_uri : called_to);
+		if(is_multiple_to_branch()) {
+			if(called_final[0]) {
+				if(to_is_canceled(called_final)) {
+					const char *rslt = opt_destination_number_mode == 2 ? get_to_uri_not_canceled() : get_to_not_canceled();
+					if(rslt && rslt[0]) {
+						return(rslt);
+					}
+				}
+				return(called_final);
+			} else {
+				if(opt_destination_number_mode == 2) {
+					const char *rslt = get_called_uri();
+					if(rslt && rslt[0]) {
+						return(rslt);
+					}
+				}
+				return(get_called_to());
+			}
+		} else {
+			return(called_final[0] ? called_final :
+			       called_uri[0] && opt_destination_number_mode == 2 ? called_uri : called_to);
+		}
 	}
-	map<string, dstring> called_invite_branch_map;
+	inline const char *get_called_to() {
+		if(is_multiple_to_branch()) {
+			if(to_is_canceled(called_to)) {
+				const char *rslt = get_to_not_canceled();
+				if(rslt && rslt[0]) {
+					return(rslt);
+				}
+			}
+		}
+		return(called_to);
+	}
+	inline const char *get_called_uri() {
+		if(is_multiple_to_branch()) {
+			if(to_is_canceled(called_to)) {
+				const char *rslt = get_to_uri_not_canceled();
+				if(rslt && rslt[0]) {
+					return(rslt);
+				}
+			}
+			return(get_called_to());
+		} else {
+			return(called_uri[0] ? called_uri : called_to);
+		}
+	}
 	char called_domain_to[256];	//!< To: xxx
 	char called_domain_uri[256];
-	inline char *called_domain() {
+	char called_domain_final[256];
+	inline const char *get_called_domain() {
 		extern int opt_destination_number_mode;
-		return(called_domain_uri[0] && opt_destination_number_mode == 2 ? called_domain_uri : called_domain_to);
+		if(is_multiple_to_branch()) {
+			if(called_final[0]) {
+				if(to_is_canceled(called_final)) {
+					const char *rslt = opt_destination_number_mode == 2 ? get_domain_to_uri_not_canceled() : get_domain_to_not_canceled();
+					if(rslt && rslt[0]) {
+						return(rslt);
+					}
+				}
+				return(called_domain_final);
+			} else {
+				if(opt_destination_number_mode == 2) {
+					const char *rslt = get_called_domain_uri();
+					if(rslt && rslt[0]) {
+						return(rslt);
+					}
+				}
+				return(get_called_domain_to());
+			}
+		} else {
+			return(called_domain_final[0] ? called_domain_final :
+			       called_domain_uri[0] && opt_destination_number_mode == 2 ? called_domain_uri : called_domain_to);
+		}
 	}
+	inline const char *get_called_domain_to() {
+		if(is_multiple_to_branch()) {
+			if(to_is_canceled(called_to)) {
+				const char *rslt = get_domain_to_not_canceled();
+				if(rslt && rslt[0]) {
+					return(rslt);
+				}
+			}
+		}
+		return(called_domain_to);
+	}
+	inline const char *get_called_domain_uri() {
+		if(is_multiple_to_branch()) {
+			if(to_is_canceled(called_to)) {
+				const char *rslt = get_domain_to_uri_not_canceled();
+				if(rslt && rslt[0]) {
+					return(rslt);
+				}
+			}
+			return(get_called_domain_to());
+		} else {
+			return(called_domain_uri[0] ? called_domain_uri : called_domain_to);
+		}
+	}
+	map<string, sCalledInviteBranchItem> called_invite_branch_map;
 	char contact_num[64];		//!< 
 	char contact_domain[128];	//!< 
 	char digest_username[64];	//!< 
@@ -957,7 +1072,7 @@ public:
 	list<u_int32_t> *reg_tcp_seq;
 	
 	int last_sip_method;
-	volatile unsigned int rtppacketsinqueue;
+	volatile int rtppacketsinqueue;
 	volatile int end_call_rtp;
 	volatile int end_call_hash_removed;
 	volatile int push_call_to_calls_queue;
@@ -1098,10 +1213,11 @@ public:
 	volatile int _proxies_lock;
 	list<vmIP> proxies;
 	
-	bool onInvite;
-	bool onCall_2XX;
-	bool onCall_18X;
-	bool onHangup;
+	u_int16_t onInvite_counter;
+	u_int16_t onCall_2XX_counter;
+	u_int16_t onCall_18X_counter;
+	u_int16_t onHangup_counter;
+	
 	bool updateDstnumOnAnswer;
 	bool updateDstnumFromMessage;
 	
@@ -1175,7 +1291,14 @@ public:
 	bool is_multiple_to_branch();
 	bool all_invite_is_multibranch(vmIP saddr);
 	bool to_is_canceled(char *to);
-	string get_to_not_canceled();
+	const char *get_to_not_canceled(bool uri = false);
+	const char *get_to_uri_not_canceled() {
+		return(get_to_not_canceled(true));
+	}
+	const char *get_domain_to_not_canceled(bool uri = false);
+	const char *get_domain_to_uri_not_canceled() {
+		return(get_domain_to_not_canceled(true));
+	}
 
 	/**
 	 * @brief close all rtp[].gfileRAW
@@ -1218,7 +1341,8 @@ public:
 	int add_ip_port(vmIP sip_src_addr, vmIP addr, ip_port_call_info::eTypeAddr type_addr, vmPort port, struct timeval *ts, 
 			char *sessid, char *sdp_label, 
 			list<srtp_crypto_config> *srtp_crypto_config_list, string *srtp_fingerprint,
-			char *to, char *branch, int iscaller, RTPMAP *rtpmap, s_sdp_flags sdp_flags);
+			char *to, char *to_uri, char *domain_to, char *domain_to_uri, char *branch, 
+			int iscaller, RTPMAP *rtpmap, s_sdp_flags sdp_flags);
 	
 	bool refresh_data_ip_port(vmIP addr, vmPort port, struct timeval *ts, 
 				  list<srtp_crypto_config> *srtp_crypto_config_list, string *rtp_fingerprint,
@@ -1227,7 +1351,8 @@ public:
 	void add_ip_port_hash(vmIP sip_src_addr, vmIP addr, ip_port_call_info::eTypeAddr type_addr, vmPort port, struct timeval *ts, 
 			      char *sessid, char *sdp_label, bool multipleSdpMedia, 
 			      list<srtp_crypto_config> *srtp_crypto_config_list, string *rtp_fingerprint,
-			      char *to, char *branch, int iscaller, RTPMAP *rtpmap, s_sdp_flags sdp_flags);
+			      char *to, char *to_uri, char *domain_to, char *domain_to_uri, char *branch,
+			      int iscaller, RTPMAP *rtpmap, s_sdp_flags sdp_flags);
 
 	void cancel_ip_port_hash(vmIP sip_src_addr, char *to, char *branch, struct timeval *ts);
 	
@@ -1318,7 +1443,15 @@ public:
 	 *
 	 * @return lenght of the call in seconds
 	*/
-	u_int64_t duration_us() { return((typeIs(MGCP) ? last_mgcp_connect_packet_time_us : get_last_packet_time_us()) - first_packet_time_us); };
+	u_int64_t duration_us() {
+		extern bool opt_ignore_duration_after_bye_confirmed;
+		return((typeIs(MGCP) ? 
+			 last_mgcp_connect_packet_time_us : 
+			 (opt_ignore_duration_after_bye_confirmed && this->seenbyeandok_time_usec && this->seenbyeandok_time_usec > first_packet_time_us ? 
+			   this->seenbyeandok_time_usec :
+			   get_last_packet_time_us())) - 
+		       first_packet_time_us);
+	};
 	double duration_sf() { return(TIME_US_TO_SF(duration_us())); };
 	u_int32_t duration_s() { return(TIME_US_TO_S(duration_us())); };
 	u_int64_t connect_duration_us() { return(connect_time_us ? duration_us() - (connect_time_us - first_packet_time_us) : 0); };
@@ -1326,18 +1459,20 @@ public:
 	u_int64_t callend_us() { return calltime_us() + duration_us(); };
 	u_int32_t callend_s() { return TIME_US_TO_S(callend_us()); };
 	
-	u_int32_t duration_active_s() { return(getGlobalPacketTimeS() - TIME_US_TO_S(first_packet_time_us)); };
-	u_int32_t connect_duration_active_s() { return(connect_time_us ? duration_active_s() - TIME_US_TO_S(connect_time_us - first_packet_time_us) : 0); };
+	u_int32_t duration_active_us() { return(unshiftSystemTime_ms(getTimeMS_rdtsc()) * 1000 - first_packet_time_us); };
+	u_int32_t duration_active_s() { return(TIME_US_TO_S(duration_active_us())); };
+	u_int32_t connect_duration_active_us() { return(connect_time_us ? duration_active_us() - (connect_time_us - first_packet_time_us) : 0); };
+	u_int32_t connect_duration_active_s() { return(TIME_US_TO_S(connect_duration_active_us())); };
 	
 	/**
 	 * @brief remove call from hash table
 	 *
 	*/
-	void hashRemove(struct timeval *ts, bool useHashQueueCounter = false);
+	void hashRemove(bool useHashQueueCounter = false);
 	
 	void skinnyTablesRemove();
 	
-	void removeFindTables(struct timeval *ts, bool set_end_call = false, bool destroy = false);
+	void removeFindTables(bool set_end_call = false, bool destroy = false);
 	
 	void destroyCall();
 
@@ -1998,6 +2133,8 @@ private:
 	vector<d_item2<vmIPport, bool> > sdp_rows_list;
 	bool set_call_counter;
 	bool set_register_counter;
+	double price_customer;
+	double price_operator;
 friend class RTP;
 friend class RTPsecure;
 };
@@ -2556,9 +2693,9 @@ public:
 	 *
 	 * @return reference of the Call if found, otherwise return NULL
 	*/
-	int cleanup_calls( struct timeval *currtime, bool forceClose = false, const char *file = NULL, int line = 0);
-	int cleanup_registers( struct timeval *currtime);
-	int cleanup_ss7( struct timeval *currtime );
+	int cleanup_calls(bool closeAll, bool forceClose = false, const char *file = NULL, int line = 0);
+	int cleanup_registers(bool closeAll);
+	int cleanup_ss7(bool closeAll);
 
 	/**
 	 * @brief add call to hash table
@@ -2717,13 +2854,13 @@ public:
 	 * @brief remove call from hash
 	 *
 	*/
-	void hashRemove(Call *call, vmIP addr, vmPort port, struct timeval *ts, bool rtcp = false, bool useHashQueueCounter = true);
+	void hashRemove(Call *call, vmIP addr, vmPort port, bool rtcp = false, bool useHashQueueCounter = true);
 	inline int _hashRemove(Call *call, vmIP addr, vmPort port, bool rtcp = false, bool use_lock = true);
-	int hashRemove(Call *call, struct timeval *ts, bool useHashQueueCounter = true);
+	int hashRemove(Call *call, bool useHashQueueCounter = true);
 	int hashRemoveForce(Call *call);
 	inline int _hashRemove(Call *call, bool use_lock = true);
-	void applyHashModifyQueue(struct timeval *ts, bool setBegin, bool use_lock_calls_hash = true);
-	inline void _applyHashModifyQueue(struct timeval *ts, bool setBegin, bool use_lock_calls_hash = true);
+	void applyHashModifyQueue(bool setBegin, bool use_lock_calls_hash = true);
+	inline void _applyHashModifyQueue(bool setBegin, bool use_lock_calls_hash = true);
 	string getHashStats();
 	
 	void processCallsInAudioQueue(bool lock = true);
@@ -2916,6 +3053,7 @@ public:
 	string getValue(Call *call, int type, const char *header);
 	static string tCH_Content_value(tCH_Content *ch_content, int i1, int i2);
 	unsigned getSize();
+	int getCustomHeaderMaxSize();
 private:
 	void lock_custom_headers() {
 		while(__sync_lock_test_and_set(&this->_sync_custom_headers, 1));

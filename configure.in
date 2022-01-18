@@ -179,6 +179,8 @@ if  test $LIBSSH_VERSION -lt 8; then
     LIBSSH_8=0
 fi
 
+AC_ARG_ENABLE([dpdk], AS_HELP_STRING([--disable-dpdk], [Disable searching for dpdk libs (librte_*)]))
+AS_IF([test "x$enable_dpdk" != "xno"], [AC_CHECK_LIB([rte_net], [main], HAVE_LIBDPDK=1)])
 
 HAVE_LIBPNG_T=no
 if test "x$HAVE_LIBPNG" = "x1"; then 

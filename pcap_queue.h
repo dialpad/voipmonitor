@@ -984,7 +984,7 @@ protected:
 private:
 	void createConnection(int socketClient, vmIP socketClientIP, vmPort socketClientPort);
 	void cleanupConnections(bool all = false);
-	inline int processPacket(sHeaderPacketPQout *hp, eHeaderPacketPQoutState hp_state);
+	int processPacket(sHeaderPacketPQout *hp, eHeaderPacketPQoutState hp_state);
 	void pushBatchProcessPacket();
 	void checkFreeSizeCachedir();
 	void cleanupBlockStoreTrash(bool all = false);

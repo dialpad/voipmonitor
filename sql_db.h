@@ -20,6 +20,7 @@
 
 
 #define MYSQL_ROW_FORMAT_COMPRESSED "ROW_FORMAT=COMPRESSED"
+#define MARIADB_PAGE_COMPRESSED "PAGE_COMPRESSED=1"
 
 #define NULL_CHAR_PTR (const char*)NULL
 
@@ -345,9 +346,9 @@ public:
 	virtual string getCsvResult() { return(""); }
 	virtual string getJsonError() { return(""); }
 	virtual string getFieldsStr(list<SqlDb_field> *fields);
-	virtual string getCondStr(list<SqlDb_condField> *cond);
-	virtual string selectQuery(string table, list<SqlDb_field> *fields = NULL, list<SqlDb_condField> *cond = NULL, unsigned limit = 0);
-	virtual string selectQuery(string table, const char *field, const char *condField = NULL, const char *condValue = NULL, unsigned limit = 0);
+	virtual string getCondStr(list<SqlDb_condField> *cond, bool forceLatin1 = false);
+	virtual string selectQuery(string table, list<SqlDb_field> *fields = NULL, list<SqlDb_condField> *cond = NULL, unsigned limit = 0, bool forceLatin1 = false);
+	virtual string selectQuery(string table, const char *field, const char *condField = NULL, const char *condValue = NULL, unsigned limit = 0, bool forceLatin1 = false);
 	virtual string insertQuery(string table, SqlDb_row row, bool enableSqlStringInContent = false, bool escapeAll = false, bool insertIgnore = false, SqlDb_row *row_on_duplicate = NULL);
 	virtual string insertOrUpdateQuery(string table, SqlDb_row row, SqlDb_row row_on_duplicate, bool enableSqlStringInContent = false, bool escapeAll = false, bool insertIgnore = false);
 	virtual string insertQuery(string table, vector<SqlDb_row> *rows, bool enableSqlStringInContent = false, bool escapeAll = false, bool insertIgnore = false);
@@ -355,8 +356,8 @@ public:
 						       bool enableSqlStringInContent = false, bool escapeAll = false, bool insertIgnore = false);
 	virtual string updateQuery(string table, SqlDb_row row, const char *whereCond, bool enableSqlStringInContent = false, bool escapeAll = false);
 	virtual string updateQuery(string table, SqlDb_row row, SqlDb_row whereCond, bool enableSqlStringInContent = false, bool escapeAll = false);
-	virtual bool select(string table, list<SqlDb_field> *fields = NULL, list<SqlDb_condField> *cond = NULL, unsigned limit = 0);
-	virtual bool select(string table, const char *field, const char *condField = NULL, const char *condValue = NULL, unsigned limit = 0);
+	virtual bool select(string table, list<SqlDb_field> *fields = NULL, list<SqlDb_condField> *cond = NULL, unsigned limit = 0, bool forceLatin1 = false);
+	virtual bool select(string table, const char *field, const char *condField = NULL, const char *condValue = NULL, unsigned limit = 0, bool forceLatin1 = false);
 	virtual int64_t insert(string table, SqlDb_row row);
 	virtual int64_t insert(string table, vector<SqlDb_row> *rows);
 	virtual bool update(string table, SqlDb_row row, const char *whereCond);
@@ -673,6 +674,7 @@ public:
 	bool createSchema_procedures_other(int connectId);
 	bool createSchema_procedure_partition(int connectId, bool abortIfFailed = true);
 	bool createSchema_init_cdr_partitions(int connectId);
+	string getPartMonthName(string *limitDay_str, int next = 0);
 	string getPartDayName(string *limitDay_str, int next = 0);
 	string getPartHourName(string *limitHour_str, int next = 0);
 	string getPartHourName(string *limitHour_str, int next_day, int hour);
@@ -686,6 +688,7 @@ public:
 	void checkColumns_cdr_rtp(bool log = false);
 	void checkColumns_cdr_dtmf(bool log = false);
 	void checkColumns_cdr_child(bool log = false);
+	void checkColumns_cdr_stat(bool log = false);
 	void checkColumns_ss7(bool log = false);
 	void checkColumns_message(bool log = false);
 	void checkColumns_message_child(bool log = false);
@@ -735,12 +738,21 @@ public:
 	MYSQL *getH_Mysql() {
 		return(this->hMysql);
 	}
+	string getOptimalCompressType(bool memoryEngine = false, bool useCache = true);
+	string getOptimalCompressType_mysql(bool memoryEngine, bool useCache);
+	string getOptimalCompressType_mariadb(bool memoryEngine, bool useCache);
+	bool testCreateTable(bool memoryEngine, const char *compressType);
+	void setSelectedCompressType(bool memoryEngine, const char *type, const char *subtype = NULL);
 private:
 	MYSQL *hMysql;
 	MYSQL *hMysqlConn;
 	MYSQL_RES *hMysqlRes;
 	string dbVersion;
 	unsigned long mysqlThreadId;
+	string selectedCompressType;
+	string selectedCompressSubtype;
+	string selectedCompressType_memoryEngine;
+	string selectedCompressSubtype_memoryEngine;
 };
 
 class SqlDb_odbc_bindBufferItem {
@@ -1151,14 +1163,16 @@ string prepareQueryForPrintf(string &query);
 void createMysqlPartitionsCdr();
 void _createMysqlPartitionsCdr(char type, int next_day, int connectId, SqlDb *sqlDb);
 void createMysqlPartitionsSs7();
+void createMysqlPartitionsCdrStat();
 void createMysqlPartitionsRtpStat();
 void createMysqlPartitionsLogSensor();
 void createMysqlPartitionsBillingAgregation(SqlDb *sqlDb = NULL);
-void createMysqlPartitionsTable(const char* table, bool partition_oldver, bool disableHourPartitions = false);
+void createMysqlPartitionsTable(const char* table, bool partition_oldver, bool disableHourPartitions = false, char type = 0);
 void createMysqlPartitionsIpacc();
 void _createMysqlPartition(string table, char type, int next_day, bool old_ver, const char *database, SqlDb *sqlDb);
 void dropMysqlPartitionsCdr();
 void dropMysqlPartitionsSs7();
+void dropMysqlPartitionsCdrStat();
 void dropMysqlPartitionsRtpStat();
 void dropMysqlPartitionsLogSensor();
 void dropMysqlPartitionsBillingAgregation();
@@ -1346,6 +1360,8 @@ public:
 		dropCdr = false;
 		createSs7 = false;
 		dropSs7 = false;
+		createCdrStat = false;
+		dropCdrStat = false;
 		createRtpStat = false;
 		dropRtpStat = false;
 		createLogSensor = false;
@@ -1358,6 +1374,7 @@ public:
 	bool isSet() {
 		return(createCdr || dropCdr || 
 		       createSs7 || dropSs7 ||
+		       createCdrStat || dropCdrStat ||
 		       createRtpStat || dropRtpStat ||
 		       createLogSensor || dropLogSensor ||
 		       createIpacc || 
@@ -1376,7 +1393,9 @@ public:
 	bool dropCdr;
 	bool createSs7;
 	bool dropSs7;
+	bool createCdrStat;
 	bool createRtpStat;
+	bool dropCdrStat;
 	bool dropRtpStat;
 	bool createLogSensor;
 	bool dropLogSensor;
