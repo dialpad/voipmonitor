@@ -2,7 +2,7 @@
 #define VOIPMONITOR_DEFINE_H
 
 
-#define RTPSENSOR_VERSION "28.8"
+#define RTPSENSOR_VERSION "29.1.1"
 #define NAT
 
 #define FORMAT_WAV	1
@@ -47,19 +47,21 @@
 
 #define DEBUG_ASYNC_TAR_WRITE false
 
-#define HEAPSAFE true
+#define HEAPSAFE false
 
 #define RQUEUE_SAFE true
 
 #define TAR_PROF false
 
 #define MAX_PRE_PROCESS_PACKET_NEXT_THREADS 4
-#define MAX_PROCESS_RTP_PACKET_HASH_NEXT_THREADS 4
-#define MAX_PROCESS_RTP_PACKET_THREADS 4
+#define MAX_PROCESS_RTP_PACKET_HASH_NEXT_THREADS 8
+#define MAX_PROCESS_RTP_PACKET_THREADS 8
 
 #define USE_PACKET_NUMBER false
 
 #define CALL_RTP_DYNAMIC_ARRAY true
+
+#define PCAP_QUEUE_PCAP_HEADER_FORCE_STD false
 
 #define CAST_OBJ_TO_VOID(obj) ((void*)(obj))
 

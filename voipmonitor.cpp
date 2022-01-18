@@ -352,6 +352,9 @@ int opt_rtpfromsdp_onlysip_skinny = 1;
 int opt_rtp_streams_max_in_call = 1000;
 int opt_rtp_check_both_sides_by_sdp = 0;
 char opt_keycheck[1024] = "";
+bool opt_cdr_stat_values = true;
+bool opt_cdr_stat_sources = false;
+int opt_cdr_stat_interval = 15;
 bool opt_charts_cache = false;
 int opt_charts_cache_max_threads = 3;
 bool opt_charts_cache_store = false;
@@ -372,6 +375,7 @@ char opt_pb_read_from_file[256] = "";
 double opt_pb_read_from_file_speed = 0;
 int opt_pb_read_from_file_acttime = 0;
 int opt_pb_read_from_file_acttime_diff_days = 0;
+int opt_pb_read_from_file_acttime_diff_secs = 0;
 int64_t opt_pb_read_from_file_time_adjustment = 0;
 unsigned int opt_pb_read_from_file_max_packets = 0;
 bool opt_continue_after_read = false;
@@ -426,6 +430,7 @@ bool opt_ssl_ignore_tcp_handshake = true;
 bool opt_ssl_log_errors = false;
 bool opt_ssl_ignore_error_invalid_mac = false;
 bool opt_ssl_ignore_error_bad_finished_digest = true;
+int opt_ssl_tls_12_sessionkey_mode = 0;
 bool opt_ssl_unlimited_reassembly_attempts = false;
 bool opt_ssl_destroy_tcp_link_on_rst = false;
 bool opt_ssl_destroy_ssl_session_on_rst = false;
@@ -484,6 +489,7 @@ int opt_onewaytimeout = 15;
 int opt_bye_timeout = 20 * 60;
 int opt_bye_confirmed_timeout = 10 * 60;
 bool opt_ignore_rtp_after_bye_confirmed = false;
+bool opt_ignore_duration_after_bye_confirmed = true;
 bool opt_ignore_rtp_after_cancel_confirmed = false;
 bool opt_ignore_rtp_after_auth_failed = true;
 int opt_saveaudio_reversestereo = 0;
@@ -656,6 +662,7 @@ int opt_cleandatabase_webrtc = 0;
 int opt_cleandatabase_register_state = 0;
 int opt_cleandatabase_register_failed = 0;
 int opt_cleandatabase_sip_msg = 0;
+int opt_cleandatabase_cdr_stat = 71;
 int opt_cleandatabase_rtp_stat = 2;
 int opt_cleandatabase_log_sensor = 30;
 unsigned int graph_delimiter = GRAPH_DELIMITER;
@@ -696,8 +703,10 @@ CustomHeaders *custom_headers_sip_msg;
 NoHashMessageRules *no_hash_message_rules;
 bool opt_callernum_numberonly = true;
 int opt_custom_headers_last_value = 1;
+int opt_custom_headers_max_size = 0;
 bool opt_sql_time_utc = false;
 bool opt_socket_use_poll = true;
+bool opt_interrupts_counters = true;
 
 char configfile[1024] = "";	// config file name
 
@@ -908,6 +917,11 @@ char opt_spooldir_group[100];
 unsigned opt_spooldir_group_id;
 char opt_cachedir[1024];
 
+int opt_tar_move = 0;
+string opt_tar_move_destination_path;
+string opt_tar_move_source_trim_path;
+int opt_tar_move_max_threads = 2;
+
 int opt_upgrade_try_http_if_https_fail = 0;
 
 pthread_t storing_cdr_thread;		// ID of worker storing CDR thread 
@@ -1078,6 +1092,7 @@ int opt_memory_purge_if_release_gt = 500;
 CleanSpool *cleanSpool[2] = { NULL, NULL };
 
 TarQueue *tarQueue[2] = { NULL, NULL };
+TarCopy *tarCopy;
 
 pthread_mutex_t terminate_packetbuffer_lock;
 
@@ -1102,7 +1117,7 @@ int opt_query_cache_check_utf;
 int opt_load_query_from_files;
 char opt_load_query_from_files_directory[1024];
 int opt_load_query_from_files_period;
-bool opt_load_query_from_files_inotify;
+bool opt_load_query_from_files_inotify = true;
 
 bool opt_virtualudppacket = false;
 int opt_sip_tcp_reassembly_stream_timeout = 10 * 60;
@@ -1218,6 +1233,8 @@ cConfigItem_net_map::t_net_map opt_anonymize_ip_map;
 cConfigItem_domain_map::t_domain_map opt_anonymize_domain_map;
 
 char opt_curl_hook_wav[256] = "";
+
+bool opt_is_client_packetbuffer_sender = false;
 
 
 #include <stdio.h>
@@ -1684,9 +1701,27 @@ void *moving_cache( void */*dummy*/ ) {
 			strcpy_null_term(dst_c, (char*)dst.c_str());
 
 			if(verbosity > 2) syslog(LOG_ERR, "rename([%s] -> [%s])\n", src_c, dst_c);
-			cachedirtransfered += move_file(src_c, dst_c, true);
+			int64_t _cachedirtransfered = move_file(src_c, dst_c, true);
+			if(_cachedirtransfered > 0) {
+				cachedirtransfered += _cachedirtransfered;
+			}
 			//TODO: error handling
 			//perror ("The following error occurred");
+
+			// Here we put our CURL hook
+			// And use it only if cacheing is turned on
+			if (opt_curl_hook_wav[0] != '\0' && opt_cachedir[0] != '\0') {
+				SimpleBuffer responseBuffer;
+				s_get_curl_response_params curl_params(s_get_curl_response_params::_rt_json);
+				curl_params.addParam("voipmonitor", "true");
+				curl_params.addParam("stereo", opt_saveaudio_stereo ? "false" : "true");
+				curl_params.addParam("wav_file_name_with_path", dst_c);
+				if (!get_curl_response(opt_curl_hook_wav, &responseBuffer, &curl_params)) {
+					if(verbosity > 1) syslog(LOG_ERR, "FAIL: Send event to hook[%s], error[%s]\n", opt_curl_hook_wav, curl_params.error.c_str());
+				} else {
+					if(verbosity > 1) syslog(LOG_INFO, "SUCCESS: Send event to hook[%s], response[%s]\n", opt_curl_hook_wav, (char*)responseBuffer);
+				}
+			}
 		}
 		if(terminating_moving_cache) {
 			break;
@@ -1800,6 +1835,8 @@ void *storing_cdr( void */*dummy*/ ) {
 	time_t dropPartitionCdrAt = 0;
 	time_t createPartitionSs7At = 0;
 	time_t dropPartitionSs7At = 0;
+	time_t createPartitionCdrStatAt = 0;
+	time_t dropPartitionCdrStatAt = 0;
 	time_t createPartitionRtpStatAt = 0;
 	time_t dropPartitionRtpStatAt = 0;
 	time_t createPartitionLogSensorAt = 0;
@@ -1856,6 +1893,16 @@ void *storing_cdr( void */*dummy*/ ) {
 				if(check_time_partition_operation(dropPartitionSs7At)) {
 					createPartitions.dropSs7 = true;
 					dropPartitionSs7At = actTime;
+				}
+			}
+			if(true /* cdr_stat */) {
+				if(check_time_partition_operation(createPartitionCdrStatAt)) {
+					createPartitions.createCdrStat = true;
+					createPartitionCdrStatAt = actTime;
+				}
+				if(check_time_partition_operation(dropPartitionCdrStatAt)) {
+					createPartitions.dropCdrStat = true;
+					dropPartitionCdrStatAt = actTime;
 				}
 			}
 			if(true /* rtp_stat */) {
@@ -2065,7 +2112,7 @@ void *storing_cdr( void */*dummy*/ ) {
 				if(useConvertToWav) {
 					calltable->unlock_calls_audioqueue();
 				}
-				if(useChartsCacheInProcessCall()) {
+				if(useChartsCacheOrCdrStatInProcessCall()) {
 					calltable->lock_calls_charts_cache_queue();
 					for(list<Call*>::iterator iter_call = calls_for_delete.begin(); iter_call != calls_for_delete.end(); iter_call++) {
 						calltable->calls_charts_cache_queue.push_back(sChartsCallData(sChartsCallData::_call, *iter_call));
@@ -2214,7 +2261,7 @@ void *storing_cdr_next_thread( void *_indexNextThread ) {
 		if(useConvertToWav) {
 			calltable->unlock_calls_audioqueue();
 		}
-		if(useChartsCacheInProcessCall()) {
+		if(useChartsCacheOrCdrStatInProcessCall()) {
 			calltable->lock_calls_charts_cache_queue();
 			for(list<Call*>::iterator iter_call = calls_for_delete.begin(); iter_call != calls_for_delete.end(); iter_call++) {
 				calltable->calls_charts_cache_queue.push_back(sChartsCallData(sChartsCallData::_call, *iter_call));
@@ -3056,6 +3103,8 @@ int main(int argc, char *argv[]) {
 		}
 		if(strstr(argv[i], "heapreserve")) {
 			HeapSafeCheck = _HeapSafeSafeReserve;
+		} else if(strstr(argv[i], "heapfillff")) {
+			HeapSafeCheck = _HeapSafeErrorFillFF;
 		} else if(strstr(argv[i], "heapsafe")) {
 			HeapSafeCheck = _HeapSafeErrorNotEnoughMemory |
 					_HeapSafeErrorBeginEnd |
@@ -3360,9 +3409,9 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 	
+	runAt = time(NULL);
 	if(!is_read_from_file() && !is_set_gui_params() && command_line_data.size()) {
 		printf("voipmonitor version %s\n", RTPSENSOR_VERSION);
-		runAt = time(NULL);
 		string localActTime = sqlDateTimeString(runAt);
 		printf("local time %s\n", localActTime.c_str());
 		syslog(LOG_NOTICE, "local time %s", localActTime.c_str());
@@ -3744,7 +3793,6 @@ int main(int argc, char *argv[]) {
 		if(opt_fork) {
 			opt_save_query_to_files = true;
 			opt_load_query_from_files = 1;
-			opt_load_query_from_files_inotify = true;
 		}
 	} else if(is_client()) {
 		snifferClientService = snifferClientStart(&snifferClientOptions, NULL, snifferClientService);
@@ -3761,7 +3809,7 @@ int main(int argc, char *argv[]) {
 										  snifferClientNextServices[i]);
 			}
 		}
-		if(useChartsCacheInStore() &&
+		if(useChartsCacheOrCdrStatInStore() &&
 		   !snifferClientOptions_charts_cache.host.empty()) {
 			snifferClientService_charts_cache = snifferClientStart(&snifferClientOptions_charts_cache, NULL, snifferClientService_charts_cache);
 		}
@@ -4039,6 +4087,9 @@ int main_init_read() {
 	}
 	
 	dbDataInit(sqlDbInit);
+	if(useCdrStatProcessThreads()) {
+		cdrStatInit(sqlDbInit);
+	}
 	if(useChartsCacheProcessThreads()) {
 		chartsCacheInit(sqlDbInit);
 	}
@@ -4225,6 +4276,15 @@ int main_init_read() {
 				tarQueue[i] = new FILE_LINE(42019) TarQueue(i);
 			}
 		}
+		if(opt_tar_move && !opt_tar_move_destination_path.empty() && !is_read_from_file_simple()) {
+			tarCopy = new FILE_LINE(0) TarCopy;
+			tarCopy->setDestination(opt_tar_move_destination_path);
+			tarCopy->setTrimSrcPath(opt_tar_move_source_trim_path);
+			tarCopy->setMove(opt_tar_move == 1);
+			tarCopy->setMaxThreads(opt_tar_move_max_threads);
+			tarCopy->addTarsFromSpool();
+			tarCopy->start_threads();
+		}
 	}
 	
 	if(!is_sender() && !is_client_packetbuffer_sender()) {
@@ -4272,7 +4332,7 @@ int main_init_read() {
 		/*
 		vm_pthread_create(&destroy_calls_thread, NULL, destroy_calls, NULL, __FILE__, __LINE__);
 		*/
-		if(useChartsCacheProcessThreads()) {
+		if(useChartsCacheOrCdrStatProcessThreads()) {
 			calltable->processCallsInChartsCache_start();
 		}
 	}
@@ -4756,10 +4816,13 @@ void main_term_read() {
 
 	Call *call;
 	Ss7 *ss7;
-	calltable->cleanup_calls(NULL);
-	calltable->cleanup_registers(NULL);
-	calltable->cleanup_ss7(NULL);
+	calltable->cleanup_calls(true);
+	calltable->cleanup_registers(true);
+	calltable->cleanup_ss7(true);
 
+	if(useCdrStatProcessThreads()) {
+		cdrStatStore(true);
+	}
 	if(useChartsCacheProcessThreads()) {
 		chartsCacheStore(true);
 	}
@@ -4837,6 +4900,10 @@ void main_term_read() {
 				delete tarQueue[i];
 				tarQueue[i] = NULL;
 			}
+			if(tarCopy) {
+				delete tarCopy;
+				tarCopy = NULL;
+			}
 		}
 		if(sverb.chunk_buffer > 1) { 
 			cout << "end destroy tar queue" << endl << flush;
@@ -4870,7 +4937,7 @@ void main_term_read() {
 		terminating_storing_registers = 1;
 		pthread_join(storing_registers_thread, NULL);
 	}
-	if(useChartsCacheProcessThreads()) {
+	if(useChartsCacheOrCdrStatProcessThreads()) {
 		calltable->processCallsInChartsCache_stop();
 	}
 	while(calltable->calls_queue.size() != 0) {
@@ -4983,6 +5050,9 @@ void main_term_read() {
 	CountryDetectTerm();
 	
 	dbDataTerm();
+	if(useCdrStatProcessThreads()) {
+		cdrStatTerm();
+	}
 	if(useChartsCacheProcessThreads()) {
 		chartsCacheTerm();
 	}
@@ -6163,6 +6233,7 @@ void test() {
 			opt_cleandatabase_register_state =
 			opt_cleandatabase_sip_msg =
 			opt_cleandatabase_register_failed = 
+			opt_cleandatabase_cdr_stat = 
 			opt_cleandatabase_rtp_stat = atoi(opt_test_arg);
 		} else {
 			return;
@@ -6177,6 +6248,14 @@ void test() {
 			return;
 		}
 		dropMysqlPartitionsRtpStat();
+		break;
+	case 348:
+		if(atoi(opt_test_arg) > 0) {
+			opt_cleandatabase_cdr_stat = atoi(opt_test_arg);
+		} else {
+			return;
+		}
+		dropMysqlPartitionsCdrStat();
 		break;
 	case 310:
 		{
@@ -6728,6 +6807,7 @@ void cConfig::addConfigItems() {
 			addConfigItem(new FILE_LINE(42120) cConfigItem_integer("cleandatabase_register_state", &opt_cleandatabase_register_state));
 			addConfigItem(new FILE_LINE(42121) cConfigItem_integer("cleandatabase_register_failed", &opt_cleandatabase_register_failed));
 			addConfigItem(new FILE_LINE(42121) cConfigItem_integer("cleandatabase_sip_msg", &opt_cleandatabase_sip_msg));
+			addConfigItem(new FILE_LINE(0) cConfigItem_integer("cleandatabase_cdr_stat", &opt_cleandatabase_cdr_stat));
 			addConfigItem(new FILE_LINE(42122) cConfigItem_integer("cleandatabase_rtp_stat", &opt_cleandatabase_rtp_stat));
 			addConfigItem(new FILE_LINE(0) cConfigItem_integer("cleandatabase_log_sensor", &opt_cleandatabase_log_sensor));
 		subgroup("backup");
@@ -6960,6 +7040,11 @@ void cConfig::addConfigItems() {
 				addConfigItem(new FILE_LINE(0) cConfigItem_string("spooldir_group", opt_spooldir_group, sizeof(opt_spooldir_group)));
 				addConfigItem(new FILE_LINE(42189) cConfigItem_string("convertchar", opt_convert_char, sizeof(opt_convert_char)));
 				addConfigItem(new FILE_LINE(42190) cConfigItem_string("cachedir", opt_cachedir, sizeof(opt_cachedir)));
+				addConfigItem((new FILE_LINE(0) cConfigItem_yesno("tar_move", &opt_tar_move))
+					->addValues("move:1|m:1|copy:2|c:2"));
+				addConfigItem(new FILE_LINE(0) cConfigItem_string("tar_move_destination_path", &opt_tar_move_destination_path));
+				addConfigItem(new FILE_LINE(0) cConfigItem_string("tar_move_source_trim_path", &opt_tar_move_source_trim_path));
+				addConfigItem(new FILE_LINE(0) cConfigItem_integer("tar_move_max_threads", &opt_tar_move_max_threads));
 					expert();
 					addConfigItem(new FILE_LINE(42191) cConfigItem_yesno("convert_dlt_sll2en10", &opt_convert_dlt_sll_to_en10));
 					addConfigItem(new FILE_LINE(42192) cConfigItem_yesno("dumpallpackets", &opt_pcapdump));
@@ -7051,7 +7136,7 @@ void cConfig::addConfigItems() {
 					addConfigItem(new FILE_LINE(0) cConfigItem_yesno("saveaudio_dedup_seq", &opt_saveaudio_dedup_seq));
 					addConfigItem(new FILE_LINE(42230) cConfigItem_yesno("plcdisable", &opt_disableplc));
 					addConfigItem(new FILE_LINE(0) cConfigItem_yesno("fix_packetization_in_create_audio", &opt_fix_packetization_in_create_audio));
-					addConfigItem(new FILE_LINE(1162) cConfigItem_string("opt_curl_hook_wav", opt_curl_hook_wav, sizeof(opt_curl_hook_wav)));
+					addConfigItem(new FILE_LINE(1162) cConfigItem_string("curl_hook_wav", opt_curl_hook_wav, sizeof(opt_curl_hook_wav)));
 		setDisableIfEnd();
 	group("data spool directory cleaning");
 		setDisableIfBegin("sniffer_mode=" + snifferMode_sender_str);
@@ -7108,6 +7193,8 @@ void cConfig::addConfigItems() {
 			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("ssl_log_errors", &opt_ssl_log_errors));
 			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("ssl_ignore_error_invalid_mac", &opt_ssl_ignore_error_invalid_mac));
 			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("ssl_ignore_error_bad_finished_digest", &opt_ssl_ignore_error_bad_finished_digest));
+			addConfigItem((new FILE_LINE(0) cConfigItem_yesno("ssl_tls_12_sessionkey_mode", &opt_ssl_tls_12_sessionkey_mode))
+				->addValues("dssl:0|ws:1"));
 			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("ssl_unlimited_reassembly_attempts", &opt_ssl_unlimited_reassembly_attempts));
 			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("ssl_destroy_tcp_link_on_rst", &opt_ssl_destroy_tcp_link_on_rst));
 			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("ssl_destroy_ssl_session_on_rst", &opt_ssl_destroy_ssl_session_on_rst));
@@ -7142,6 +7229,7 @@ void cConfig::addConfigItems() {
 			addConfigItem(new FILE_LINE(0) cConfigItem_integer("bye_timeout", &opt_bye_timeout));
 			addConfigItem(new FILE_LINE(0) cConfigItem_integer("bye_confirmed_timeout", &opt_bye_confirmed_timeout));
 			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("ignore_rtp_after_bye_confirmed", &opt_ignore_rtp_after_bye_confirmed));
+			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("ignore_duration_after_bye_confirmed", &opt_ignore_duration_after_bye_confirmed));
 			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("ignore_rtp_after_cancel_confirmed", &opt_ignore_rtp_after_cancel_confirmed));
 			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("ignore_rtp_after_auth_failed", &opt_ignore_rtp_after_auth_failed));
 			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("get_reason_from_bye_cancel", &opt_get_reason_from_bye_cancel));
@@ -7185,6 +7273,7 @@ void cConfig::addConfigItems() {
 			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("callernum_numberonly", &opt_callernum_numberonly));
 				advanced();
 				addConfigItem(new FILE_LINE(42277) cConfigItem_yesno("custom_headers_last_value", &opt_custom_headers_last_value));
+				addConfigItem(new FILE_LINE(0) cConfigItem_integer("custom_headers_max_size", &opt_custom_headers_max_size));
 				addConfigItem(new FILE_LINE(42278) cConfigItem_yesno("remotepartyid", &opt_remotepartyid));
 				addConfigItem(new FILE_LINE(42279) cConfigItem_yesno("passertedidentity", &opt_passertedidentity));
 				addConfigItem(new FILE_LINE(42280) cConfigItem_yesno("ppreferredidentity", &opt_ppreferredidentity));
@@ -7566,6 +7655,9 @@ void cConfig::addConfigItems() {
 				addConfigItem(new FILE_LINE(0) cConfigItem_integer("client_server_sleep_ms_if_queue_is_full", &opt_client_server_sleep_ms_if_queue_is_full));
 		subgroup("other");
 			addConfigItem(new FILE_LINE(42459) cConfigItem_string("keycheck", opt_keycheck, sizeof(opt_keycheck)));
+			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("cdr_stat", &opt_cdr_stat_values));
+			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("cdr_stat_sources", &opt_cdr_stat_sources));
+			addConfigItem(new FILE_LINE(0) cConfigItem_integer("cdr_stat_interval", &opt_cdr_stat_interval));
 			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("charts_cache", &opt_charts_cache));
 			addConfigItem(new FILE_LINE(0) cConfigItem_integer("charts_cache_max_threads", &opt_charts_cache_max_threads));
 			addConfigItem(new FILE_LINE(0) cConfigItem_yesno("charts_cache_store", &opt_charts_cache_store));
@@ -7598,6 +7690,7 @@ void cConfig::addConfigItems() {
 					addConfigItem(new FILE_LINE(0) cConfigItem_ip("kamailio_srcip",  &opt_kamailio_srcip));
 					addConfigItem(new FILE_LINE(0) cConfigItem_integer("kamailio_port",  &opt_kamailio_port));
 					addConfigItem(new FILE_LINE(0) cConfigItem_yesno("socket_use_poll",  &opt_socket_use_poll));
+					addConfigItem(new FILE_LINE(0) cConfigItem_yesno("interrupts_counters",  &opt_interrupts_counters));
 					addConfigItem(new FILE_LINE(0) cConfigItem_yesno("new-config", &useNewCONFIG));
 					addConfigItem(new FILE_LINE(0) cConfigItem_yesno("ipv6", &useIPv6));
 					addConfigItem(new FILE_LINE(0) cConfigItem_yesno("hugepages_anon", &opt_hugepages_anon));
@@ -7805,21 +7898,18 @@ void cConfig::evSetConfigItem(cConfigItem *configItem) {
 		if(configItem->getValueInt()) {
 			opt_save_query_to_files = true;
 			opt_load_query_from_files = 1;
-			opt_load_query_from_files_inotify = true;
 		}
 	}
 	if(configItem->config_name == "query_cache_charts") {
 		if(configItem->getValueInt()) {
 			opt_save_query_charts_to_files = true;
 			opt_load_query_from_files = 1;
-			opt_load_query_from_files_inotify = true;
 		}
 	}
 	if(configItem->config_name == "query_cache_charts_remote") {
 		if(configItem->getValueInt()) {
 			opt_save_query_charts_remote_to_files = true;
 			opt_load_query_from_files = 1;
-			opt_load_query_from_files_inotify = true;
 		}
 	}
 	if(configItem->config_name == "cdr_ignore_response") {
@@ -7947,6 +8037,7 @@ void parse_command_line_arguments(int argc, char *argv[]) {
 	    {"continue-after-read", 0, 0, 302},
 	    {"nonstop-read", 0, 0, 335},
 	    {"diff-days", 1, 0, 303},
+	    {"diff-secs", 1, 0, 349},
 	    {"time-adjustment", 1, 0, 343},
 	    {"reindex-all", 0, 0, 304},
 	    {"run-cleanspool", 0, 0, 305},
@@ -7954,6 +8045,7 @@ void parse_command_line_arguments(int argc, char *argv[]) {
 	    {"test-cleanspool-load", 1, 0, 317},
 	    {"run-droppartitions-maxdays", 1, 0, 313},
 	    {"run-droppartitions-rtp_stat-maxdays", 1, 0, 346},
+	    {"run-droppartitions-cdr_stat-maxdays", 1, 0, 348},
 	    {"clean-obsolete", 0, 0, 306},
 	    {"check-db", 0, 0, 307},
 	    {"fax-deduplicate", 0, 0, 308},
@@ -8158,6 +8250,10 @@ void parse_verb_param(string verbParam) {
 	else if(verbParam.substr(0, 11) == "trace_call=")
 								{ sverb.trace_call = new FILE_LINE(0) char[strlen(verbParam.c_str() + 11) + 1]; strcpy(sverb.trace_call, verbParam.c_str() + 11); }
 	else if(verbParam == "energylevels")			sverb.energylevels = 1;
+	else if(verbParam == "cdr_stat_only")			sverb.cdr_stat_only = 1;
+	else if(verbParam.substr(0, 24) == "cdr_stat_interval_store=")	
+								sverb.cdr_stat_interval_store = atoi(verbParam.c_str() + 24);
+	else if(verbParam == "disable_unlink_qfile")		sverb.disable_unlink_qfile = 1;
 	//
 	else if(verbParam == "debug1")				sverb._debug1 = 1;
 	else if(verbParam == "debug2")				sverb._debug2 = 1;
@@ -8444,7 +8540,18 @@ void get_command_line_arguments() {
 				opt_time_to_terminate = atoi(optarg);
 				break;
 			case 303:
-				opt_pb_read_from_file_acttime_diff_days = atoi(optarg);
+				{
+				cEvalFormula f(cEvalFormula::_est_na);
+				cEvalFormula::sValue v = f.e(optarg);
+				opt_pb_read_from_file_acttime_diff_days = v.getInteger();
+				}
+				break;
+			case 349:
+				{
+				cEvalFormula f(cEvalFormula::_est_na);
+				cEvalFormula::sValue v = f.e(optarg);
+				opt_pb_read_from_file_acttime_diff_secs = v.getInteger();
+				}
 				break;
 			case 343:
 				{
@@ -9111,10 +9218,12 @@ void set_context_config() {
 		opt_ipfix = false;
 		syslog(LOG_ERR, "the ipfix option is not supported on a client with packet buffer sending or in mirror sender mode");
 	}
-	
-	if(!(useNewCONFIG ? CONFIG.isSet("ipfix") : opt_ipfix_set)) {
-		opt_ipfix = !opt_ipfix_bind_ip.empty() && opt_ipfix_bind_port;
+
+	opt_is_client_packetbuffer_sender = is_client_packetbuffer_sender();
+	if(opt_is_client_packetbuffer_sender && opt_t2_boost && !opt_pcap_queue_use_blocks_read_check) {
+		opt_pcap_queue_use_blocks_read_check = 1;
 	}
+
 }
 
 void check_context_config() {
@@ -9875,6 +9984,9 @@ int eval_config(string inistr) {
 	if((value = ini.GetValue("general", "cleandatabase_sip_msg", NULL))) {
 		opt_cleandatabase_sip_msg = atoi(value);
 	}
+	if((value = ini.GetValue("general", "cleandatabase_cdr_stat", NULL))) {
+		opt_cleandatabase_cdr_stat = atoi(value);
+	}
 	if((value = ini.GetValue("general", "cleandatabase_rtp_stat", NULL))) {
 		opt_cleandatabase_rtp_stat = atoi(value);
 	}
@@ -10350,6 +10462,9 @@ int eval_config(string inistr) {
 	if((value = ini.GetValue("general", "custom_headers_last_value", NULL))) {
 		opt_custom_headers_last_value = yesno(value);
 	}
+	if((value = ini.GetValue("general", "custom_headers_max_size", NULL))) {
+		opt_custom_headers_max_size = atoi(value);
+	}
 	if((value = ini.GetValue("general", "savesip", NULL))) {
 		opt_saveSIP = yesno(value);
 	}
@@ -10587,6 +10702,27 @@ int eval_config(string inistr) {
 	if((value = ini.GetValue("general", "cachedir", NULL))) {
 		strcpy_null_term(opt_cachedir, value);
 		spooldir_mkdir(opt_cachedir);
+	}
+	if((value = ini.GetValue("general", "tar_move", NULL))) {
+		switch(toupper(value[0])) {
+		case 'M':
+			opt_tar_move = 1;
+			break;
+		case 'C':
+			opt_tar_move = 2;
+			break;
+		default:
+			opt_tar_move = yesno(value);
+		}
+	}
+	if((value = ini.GetValue("general", "tar_move_destination_path", NULL))) {
+		opt_tar_move_destination_path = value;
+	}
+	if((value = ini.GetValue("general", "tar_move_source_trim_path", NULL))) {
+		opt_tar_move_source_trim_path = value;
+	}
+	if((value = ini.GetValue("general", "tar_move_max_threads", NULL))) {
+		opt_tar_move_max_threads = atoi(value);
 	}
 	if((value = ini.GetValue("general", "spooldir", NULL))) {
 		strcpy_null_term(opt_spooldir_main, value);
@@ -11024,7 +11160,7 @@ int eval_config(string inistr) {
 		opt_t2_boost_call_threads = atoi(value);
 	}
 	if((value = ini.GetValue("general", "t2_boost_pb_detach_thread", NULL))) {
-		opt_t2_boost_pb_detach_thread = atoi(value);
+		opt_t2_boost_pb_detach_thread = yesno(value);
 	}
 	if((value = ini.GetValue("general", "t2_boost_pcap_dispatch", NULL))) {
 		opt_t2_boost_pcap_dispatch = atoi(value);
@@ -11169,6 +11305,15 @@ int eval_config(string inistr) {
 	}
 	if((value = ini.GetValue("general", "keycheck", NULL))) {
 		strcpy_null_term(opt_keycheck, value);
+	}
+	if((value = ini.GetValue("general", "cdr_stat", NULL))) {
+		opt_cdr_stat_values = yesno(value);
+	}
+	if((value = ini.GetValue("general", "cdr_stat_sources", NULL))) {
+		opt_cdr_stat_sources = yesno(value);
+	}
+	if((value = ini.GetValue("general", "cdr_stat_interval", NULL))) {
+		opt_cdr_stat_interval = atoi(value);
 	}
 	if((value = ini.GetValue("general", "charts_cache", NULL))) {
 		opt_charts_cache = yesno(value);
@@ -11412,6 +11557,10 @@ int eval_config(string inistr) {
 	if((value = ini.GetValue("general", "ssl_ignore_error_bad_finished_digest", NULL))) {
 		opt_ssl_ignore_error_bad_finished_digest = yesno(value);
 	}
+	if((value = ini.GetValue("general", "ssl_tls_12_sessionkey_mode", NULL))) {
+		opt_ssl_tls_12_sessionkey_mode = !strcasecmp(value, "ws") ? 1 : 
+						 !strcasecmp(value, "dssl") ? 0 : yesno(value);
+	}
 	if((value = ini.GetValue("general", "ssl_unlimited_reassembly_attempts", NULL))) {
 		opt_ssl_unlimited_reassembly_attempts = yesno(value);
 	}
@@ -11507,6 +11656,9 @@ int eval_config(string inistr) {
 	}
 	if((value = ini.GetValue("general", "ignore_rtp_after_bye_confirmed", NULL))) {
 		opt_ignore_rtp_after_bye_confirmed = yesno(value);
+	}
+	if((value = ini.GetValue("general", "ignore_duration_after_bye_confirmed", NULL))) {
+		opt_ignore_duration_after_bye_confirmed = yesno(value);
 	}
 	if((value = ini.GetValue("general", "ignore_rtp_after_cancel_confirmed", NULL))) {
 		opt_ignore_rtp_after_cancel_confirmed = yesno(value);
@@ -11961,17 +12113,14 @@ int eval_config(string inistr) {
 	if((value = ini.GetValue("general", "query_cache", NULL)) && yesno(value)) {
 		opt_save_query_to_files = true;
 		opt_load_query_from_files = 1;
-		opt_load_query_from_files_inotify = true;
 	}
 	if((value = ini.GetValue("general", "query_cache_charts", NULL)) && yesno(value)) {
 		opt_save_query_charts_to_files = true;
 		opt_load_query_from_files = 1;
-		opt_load_query_from_files_inotify = true;
 	}
 	if((value = ini.GetValue("general", "query_cache_charts_remote", NULL)) && yesno(value)) {
 		opt_save_query_charts_remote_to_files = true;
 		opt_load_query_from_files = 1;
-		opt_load_query_from_files_inotify = true;
 	}
 	if((value = ini.GetValue("general", "query_cache_speed", NULL))) {
 		opt_query_cache_speed = yesno(value);
@@ -12075,6 +12224,9 @@ int eval_config(string inistr) {
 		opt_socket_use_poll = yesno(value);
 	}
 	
+	if((value = ini.GetValue("general", "interrupts_counters", NULL))) {
+		opt_interrupts_counters = yesno(value);
+	}
 	if((value = ini.GetValue("general", "hugepages_anon", NULL))) {
 		opt_hugepages_anon = yesno(value);
 	}
@@ -12109,7 +12261,7 @@ int eval_config(string inistr) {
 	if((value = ini.GetValue("general", "abort_if_rss_gt_gb", NULL))) {
 		opt_abort_if_rss_gt_gb = atoi(value);
 	}
-	if((value = ini.GetValue("general", "opt_curl_hook_wav", NULL))) {
+	if((value = ini.GetValue("general", "curl_hook_wav", NULL))) {
 		strcpy_null_term(opt_curl_hook_wav, value);
 	}
 
@@ -12647,6 +12799,18 @@ bool useChartsCacheProcessThreads() {
 
 bool existsChartsCacheServer() {
 	return(snifferClientService_charts_cache);
+}
+
+bool useCdrStatInProcessCall() {
+	return((opt_cdr_stat_values || opt_cdr_stat_sources) && !useChartsCacheInStore());
+}
+
+bool useCdrStatInStore() {
+	return((opt_cdr_stat_values || opt_cdr_stat_sources) && useChartsCacheInStore());
+}
+
+bool useCdrStatProcessThreads() {
+	return(opt_cdr_stat_values || opt_cdr_stat_sources);
 }
 
 

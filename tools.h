@@ -328,10 +328,10 @@ int mkdir_r(std::string, mode_t, unsigned uid = 0, unsigned gid = 0);
 int rmdir_r(const char *dir, bool enableSubdir = false, bool withoutRemoveRoot = false);
 int rmdir_r(std::string dir, bool enableSubdir = false, bool withoutRemoveRoot = false);
 int rmdir_if_r(std::string dir, bool if_r, bool enableSubdir = false, bool withoutRemoveRoot = false);
-unsigned long long cp_r(const char *src, const char *dst, bool move = false);
-inline unsigned long long mv_r(const char *src, const char *dst) { return(cp_r(src, dst, true)); }  
-unsigned long long copy_file(const char *src, const char *dst, bool move = false, bool auto_create_dst_dir = false);
-inline unsigned long long move_file(const char *src, const char *dst, bool auto_create_dst_dir = false) { return(copy_file(src, dst, true, auto_create_dst_dir)); }
+int64_t cp_r(const char *src, const char *dst, bool move = false);
+inline int64_t mv_r(const char *src, const char *dst) { return(cp_r(src, dst, true)); }  
+int64_t copy_file(const char *src, const char *dst, bool move = false, bool auto_create_dst_dir = false);
+inline int64_t move_file(const char *src, const char *dst, bool auto_create_dst_dir = false) { return(copy_file(src, dst, true, auto_create_dst_dir)); }
 bool get_url_file(const char *url, const char *toFile, string *error = NULL);
 //uint64_t convert_srcmac_ll(ether_header *header_eth);
 void handleInterfaceOptions(void);
@@ -348,24 +348,78 @@ bool cloud_now_timeout();
 //void cloud_activecheck_start();
 */
 
-struct s_get_url_response_params {
+struct s_get_curl_response_params {
+	enum eRequestType {
+		_rt_get,
+		_rt_post,
+		_rt_json
+	};
+	eRequestType request_type;
 	unsigned timeout_sec;
 	string *auth_user;
 	string *auth_password;
 	vector<dstring> *headers;
+	vector<dstring> *params_array;
+	string *params_string;
 	bool suppress_parameters_encoding;
-	s_get_url_response_params() {
+	string error;
+	s_get_curl_response_params(eRequestType request_type = _rt_get) {
+		this->request_type = request_type;
 		timeout_sec = 0;
 		auth_user = NULL;
 		auth_password = NULL;
 		headers = NULL;
-		suppress_parameters_encoding = false;
+		params_array = NULL;
+		params_string = NULL;
+		suppress_parameters_encoding = request_type == _rt_json;
+	}
+	~s_get_curl_response_params() {
+		if(headers) {
+			delete headers;
+		}
+		if(params_array) {
+			delete params_array;
+		}
+		if(params_string) {
+			delete params_string;
+		}
+	}
+	void addHeader(const char *header, const char *content) {
+		if(!headers) {
+			headers = new FILE_LINE(0) vector<dstring>;
+		}
+		headers->push_back(dstring(header, content));
+	}
+	void setHeaders(vector<dstring> *headers_set) {
+		if(!headers) {
+			headers = new FILE_LINE(0) vector<dstring>;
+		}
+		*headers = *headers_set;
+	}
+	void addParam(const char *name, const char *value) {
+		if(!params_array) {
+			params_array = new FILE_LINE(0) vector<dstring>;
+		}
+		params_array->push_back(dstring(name, value));
+	}
+	void setParams(vector<dstring> *params_set) {
+		if(!params_array) {
+			params_array = new FILE_LINE(0) vector<dstring>;
+		}
+		*params_array = *params_set;
+	}
+	void setParams(const char *params) {
+		if(!params_string) {
+			params_string = new FILE_LINE(0) string;
+		}
+		*params_string = params;
 	}
 };
-bool get_url_response(const char *url, SimpleBuffer *response, vector<dstring> *postData, string *error = NULL,
-		      s_get_url_response_params *params = NULL);
+bool get_curl_response(const char *url, SimpleBuffer *response, s_get_curl_response_params *params = NULL);
+/*
 bool post_url_response(const char *url, SimpleBuffer *response, string *postData, string *error = NULL,
 		      s_get_url_response_params *params = NULL);
+*/
 long long GetFileSize(std::string filename);
 time_t GetFileCreateTime(std::string filename);
 long long GetFileSizeDU(std::string filename, eTypeSpoolFile typeSpoolFile, int spool_index, int dirItemSize = -1);
@@ -397,6 +451,7 @@ string getActDateTimeF(bool useT_symbol = false);
 tm getEasterMondayDate(unsigned year, int decDays = 0, const char *timezone = NULL);
 bool isEasterMondayDate(tm &date, int decDays = 0, const char *timezone = NULL);
 tm getBeginDate(tm dateTime, const char *timezone = NULL);
+tm getNextBeginMonth(tm dateTime, const char *timezone = NULL);
 tm getNextBeginDate(tm dateTime, const char *timezone = NULL);
 tm getPrevBeginDate(tm dateTime, const char *timezone = NULL);
 tm getNextBeginHour(tm dateTime, const char *timezone = NULL);
@@ -509,13 +564,6 @@ struct ip_port
 	std::string ip;
 	int port;
 };
-
-inline u_long getGlobalPacketTimeS() {
-	extern volatile unsigned int glob_last_packet_time;
-	return(is_read_from_file() ?
-		getTimeMS_rdtsc() / 1000 :
-		glob_last_packet_time);
-}
 
 class FileZipHandler : public CompressStream_baseEv {
 public:
@@ -3588,6 +3636,7 @@ public:
 	sDbString *findColumn(unsigned table_enum, const char *column, unsigned rowIndex, int *columnIndex);
 	int getCountRows(const char *table);
 	int getCountRows(unsigned table_enum);
+	bool existsColumn(unsigned table_enum, const char *column, unsigned rowIndex = 0);
 	const char *getValue_str(unsigned table_enum, const char *column, bool *null = NULL, unsigned rowIndex = 0, int *columnIndex = NULL);
 	const char *getValue_string(unsigned table_enum, const char *column, bool *null = NULL, unsigned rowIndex = 0) {
 		const char *str = getValue_str(table_enum, column, null, rowIndex);

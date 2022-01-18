@@ -13,6 +13,20 @@ enum eTypeSci {
 	sci_hangup = (1 << 3)
 };
 
+struct sSciPacketInfo {
+	string caller_number;
+	string called_number_to;
+	string called_number_uri;
+	string callername;
+	string caller_domain;
+	string called_domain_to;
+	string called_domain_uri;
+	vmIP src_ip;
+	vmIP dst_ip;
+	vmPort src_port;
+	vmPort dst_port;
+};
+
 struct sSciInfo {
 	sSciInfo() {
 		typeSci = 0;
@@ -34,13 +48,21 @@ struct sSciInfo {
 	vmIP caller_ip;
 	vmIP called_ip;
 	u_int64_t at;
+	u_int16_t counter;
+	sSciPacketInfo packet_info;
+	bool packet_info_set;
 };
 
 class SendCallInfoItem {
 public:
+	enum eInfoOnMatch {
+		iom_first,
+		iom_all
+	};
 	enum eRequestType {
 		rt_get,
-		rt_post
+		rt_post,
+		rt_json
 	};
 	enum eCalledSrc {
 		cs_default,
@@ -64,11 +86,13 @@ private:
 	SqlDb_row dbRow;
 	string name;
 	u_int8_t infoOn;
+	eInfoOnMatch infoOnMatch;
 	string requestUrl;
 	eRequestType requestType;
 	bool suppressParametersEncoding;
 	eCalledSrc calledNumberSrc;
 	eCalledSrc calledDomainSrc;
+	bool additionalPacketInformation;
 	bool jsonOutput;
 	string authUser;
 	string authPassword;
@@ -90,12 +114,13 @@ public:
 	void clear(bool lock = true);
 	void refresh();
 	void stopPopCallInfoThread(bool wait = false);
-	void evCall(class Call *call, eTypeSci typeSci, u_int64_t at);
+	void evCall(class Call *call, eTypeSci typeSci, u_int64_t at, u_int16_t counter, sSciPacketInfo *packet_info);
 private:
 	void initPopCallInfoThread();
 	void popCallInfoThread();
 	void getSciFromCall(sSciInfo *sciInfo, Call *call, 
-			    eTypeSci typeSci, u_int64_t at);
+			    eTypeSci typeSci, u_int64_t at,
+			    u_int16_t counter, sSciPacketInfo *packet_info);
 	void lock() {
 		while(__sync_lock_test_and_set(&this->_sync, 1));
 	}
@@ -119,8 +144,12 @@ inline bool isSendCallInfoReady() {
 	extern volatile int _sendCallInfo_ready;
 	return(_sendCallInfo_ready);
 }
+inline bool useAdditionalPacketInformationInSendCallInfo() {
+	extern volatile int _sendCallInfo_useAdditionalPacketInformation;
+	return(_sendCallInfo_useAdditionalPacketInformation);
+}
 void refreshSendCallInfo();
-void sendCallInfoEvCall(Call *call, eTypeSci typeSci, struct timeval tv);
+void sendCallInfoEvCall(Call *call, eTypeSci typeSci, struct timeval tv, u_int16_t counter, sSciPacketInfo *packet_info);
 bool isExistsSendCallInfo(SqlDb *sqlDb = NULL);
 
 
