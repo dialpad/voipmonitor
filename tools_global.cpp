@@ -27,6 +27,10 @@ void *vm_pthread_create_start_routine(void *arg) {
 		       thread_data.description.c_str(), get_unix_tid());
 	}
 	#ifdef CLOUD_ROUTER_CLIENT
+	if(sverb.thread_create) {
+		syslog(LOG_NOTICE, "start thread '%s' %i", 
+		       thread_data.description.c_str(), get_unix_tid());
+	}
 	threadMonitor.registerThread(thread_data.description.c_str());
 	#endif
 	void *rslt = thread_data.start_routine(thread_data.arg);
