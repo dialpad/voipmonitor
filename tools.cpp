@@ -2307,11 +2307,11 @@ bool RestartUpgrade::runGitUpgrade(const char *cmd) {
 		pexecCmd += ";'";
 		vm_pexec(pexecCmd.c_str(), &out, &err, &exitCode, 600, 600);
 		if(exitCode == 0) {
-			syslog(LOG_NOTICE, "runGitUpgrade command %s OK", cmd);
+			syslog(LOG_NOTICE, "runGitUpgrade command %s (%s) OK", cmd, pexecCmd.c_str());
 			return(true);
 		} else {
 			this->errorString = string(out) + "\n" + string(err);
-			syslog(LOG_NOTICE, "runGitUpgrade command %s FAILED: %s", cmd, this->errorString.c_str());
+			syslog(LOG_NOTICE, "runGitUpgrade command %s (%s) FAILED: %s", cmd, pexecCmd.c_str(), this->errorString.c_str());
 			return(false);
 		}
 	}
@@ -2924,12 +2924,21 @@ void ListPhoneNumber::addComb(const char *number, ListPhoneNumber *negList) {
 	}
 }
 
-void ListUA::addComb(string &ua, ListUA *negList) {
-	addComb(ua.c_str(), negList);
+void ListUA::addComb(string &ua, ListUA *negList,
+		     bool enableSpaceSeparator, const char *separators, const char *separatorsSeparator) {
+	addComb(ua.c_str(), negList,
+		enableSpaceSeparator, separators, separatorsSeparator);
 }
 
-void ListUA::addComb(const char *ua, ListUA *negList) {
-	vector<string>ua_elems = split(ua, split(" |,|;|\t|\r|\n", "|"), true);
+void ListUA::addComb(const char *ua, ListUA *negList,
+		     bool enableSpaceSeparator, const char *separators, const char *separatorsSeparator) {
+	if(!separators) {
+		separators = enableSpaceSeparator ? " |,|;|\t|\r|\n" : ",|;|\t|\r|\n";
+	}
+	if(!separatorsSeparator) {
+		separatorsSeparator = "|";
+	}
+	vector<string>ua_elems = split(ua, split(separators, separatorsSeparator), true);
 	for(size_t i = 0; i < ua_elems.size(); i++) {
 		if(ua_elems[i][0] == '!') {
 			if(negList) {
@@ -2941,12 +2950,21 @@ void ListUA::addComb(const char *ua, ListUA *negList) {
 	}
 }
 
-void ListCheckString::addComb(string &checkString, ListCheckString *negList) {
-	addComb(checkString.c_str(), negList);
+void ListCheckString::addComb(string &checkString, ListCheckString *negList,
+			      bool enableSpaceSeparator, const char *separators, const char *separatorsSeparator) {
+	addComb(checkString.c_str(), negList,
+		enableSpaceSeparator, separators, separatorsSeparator);
 }
 
-void ListCheckString::addComb(const char *checkString, ListCheckString *negList) {
-	vector<string>checkString_elems = split(checkString, split(" |,|;|\t|\r|\n", "|"), true);
+void ListCheckString::addComb(const char *checkString, ListCheckString *negList,
+			      bool enableSpaceSeparator, const char *separators, const char *separatorsSeparator) {
+	if(!separators) {
+		separators = enableSpaceSeparator ? " |,|;|\t|\r|\n" : ",|;|\t|\r|\n";
+	}
+	if(!separatorsSeparator) {
+		separatorsSeparator = "|";
+	}
+	vector<string>checkString_elems = split(checkString, split(separators, separatorsSeparator), true);
 	for(size_t i = 0; i < checkString_elems.size(); i++) {
 		if(checkString_elems[i][0] == '!') {
 			if(negList) {
@@ -3005,20 +3023,28 @@ ListUA_wb::ListUA_wb(bool autoLock)
    black(autoLock) {
 }
 
-void ListUA_wb::addWhite(string &ua) {
-	white.addComb(ua, &black);
+void ListUA_wb::addWhite(string &ua,
+			 bool enableSpaceSeparator, const char *separators, const char *separatorsSeparator) {
+	white.addComb(ua, &black,
+		      enableSpaceSeparator, separators, separatorsSeparator);
 }
 
-void ListUA_wb::addWhite(const char *ua) {
-	white.addComb(ua, &black);
+void ListUA_wb::addWhite(const char *ua,
+			 bool enableSpaceSeparator, const char *separators, const char *separatorsSeparator) {
+	white.addComb(ua, &black,
+		      enableSpaceSeparator, separators, separatorsSeparator);
 }
 
-void ListUA_wb::addBlack(string &ua) {
-	black.addComb(ua, &white);
+void ListUA_wb::addBlack(string &ua,
+			 bool enableSpaceSeparator, const char *separators, const char *separatorsSeparator) {
+	black.addComb(ua, &white,
+		      enableSpaceSeparator, separators, separatorsSeparator);
 }
 
-void ListUA_wb::addBlack(const char *ua) {
-	black.addComb(ua, &white);
+void ListUA_wb::addBlack(const char *ua,
+			 bool enableSpaceSeparator, const char *separators, const char *separatorsSeparator) {
+	black.addComb(ua, &white,
+		      enableSpaceSeparator, separators, separatorsSeparator);
 }
 
 ListCheckString_wb::ListCheckString_wb(bool autoLock)
@@ -3026,20 +3052,28 @@ ListCheckString_wb::ListCheckString_wb(bool autoLock)
    black(autoLock) {
 }
 
-void ListCheckString_wb::addWhite(string &checkString) {
-	white.addComb(checkString, &black);
+void ListCheckString_wb::addWhite(string &checkString,
+				  bool enableSpaceSeparator, const char *separators, const char *separatorsSeparator) {
+	white.addComb(checkString, &black,
+		      enableSpaceSeparator, separators, separatorsSeparator);
 }
 
-void ListCheckString_wb::addWhite(const char *checkString) {
-	white.addComb(checkString, &black);
+void ListCheckString_wb::addWhite(const char *checkString,
+				  bool enableSpaceSeparator, const char *separators, const char *separatorsSeparator) {
+	white.addComb(checkString, &black,
+		      enableSpaceSeparator, separators, separatorsSeparator);
 }
 
-void ListCheckString_wb::addBlack(string &checkString) {
-	black.addComb(checkString, &white);
+void ListCheckString_wb::addBlack(string &checkString,
+				  bool enableSpaceSeparator, const char *separators, const char *separatorsSeparator) {
+	black.addComb(checkString, &white,
+		      enableSpaceSeparator, separators, separatorsSeparator);
 }
 
-void ListCheckString_wb::addBlack(const char *checkString) {
-	black.addComb(checkString, &white);
+void ListCheckString_wb::addBlack(const char *checkString,
+				  bool enableSpaceSeparator, const char *separators, const char *separatorsSeparator) {
+	black.addComb(checkString, &white,
+		      enableSpaceSeparator, separators, separatorsSeparator);
 }
 
 
@@ -3728,10 +3762,7 @@ bool FileZipHandler::writeToBuffer(char *data, int length) {
 	if(!this->buffer) {
 		return(false);
 	}
-	if(this->useBufferLength && this->useBufferLength + length > this->bufferLength) {
-		flushBuffer();
-	}
-	if(length <= this->bufferLength) {
+	if(this->useBufferLength + length <= this->bufferLength) {
 		memcpy_heapsafe(this->buffer + this->useBufferLength, this->buffer,
 				data, NULL,
 				length,
@@ -3739,7 +3770,19 @@ bool FileZipHandler::writeToBuffer(char *data, int length) {
 		this->useBufferLength += length;
 		return(true);
 	} else {
-		return(this->writeToFile(data, length));
+		if(this->useBufferLength) {
+			flushBuffer();
+		}
+		if(length <= this->bufferLength) {
+			memcpy_heapsafe(this->buffer, this->buffer,
+					data, NULL,
+					length,
+					__FILE__, __LINE__);
+			this->useBufferLength = length;
+			return(true);
+		} else {
+			return(this->writeToFile(data, length));
+		}
 	}
 }
 
