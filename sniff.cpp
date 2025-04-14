@@ -2371,6 +2371,8 @@ int mimeSubtypeToInt(char *mimeSubtype) {
 	       return PAYLOAD_AMR;
        else if(strcasecmp(mimeSubtype,"AMR-WB") == 0)
 	       return PAYLOAD_AMRWB;
+       else if(strcasecmp(mimeSubtype,"VP8") == 0)
+         return PAYLOAD_VP8;
        else if(strcasecmp(mimeSubtype,"telephone-event") == 0)
 	       return PAYLOAD_TELEVENT;
        else if(strcasecmp(mimeSubtype,"MP4A-LATM") == 0)
@@ -6738,7 +6740,9 @@ inline int process_packet__rtp_call_info(packet_s_process_calls_info *call_info,
 		iscaller = call_info->calls[call_info_index].iscaller;
 		sdp_flags = call_info->calls[call_info_index].sdp_flags;
 		is_rtcp = call_info->calls[call_info_index].is_rtcp || 
-			  ((sdp_flags.is_audio() || sdp_flags.is_video()) && packetS->datalen_() > 1 && RTP::isRTCP_enforce(packetS->data_()));
+			  ((sdp_flags.is_audio() || sdp_flags.is_video()) && packetS->datalen_() > 1 &&
+        ((u_char)packetS->data_()[1] == 0xC8 || (u_char)packetS->data_()[1] == 0xC9) &&
+        RTP::isRTCP_enforce(packetS->data_()));
 		stream_in_multiple_calls = call_info->calls[call_info_index].multiple_calls;
 		
 		if(!call_info->find_by_dest && iscaller_is_set(iscaller)) {
