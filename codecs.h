@@ -60,7 +60,7 @@
 #define PAYLOAD_TELEVENT 400
 
 #define PAYLOAD_VIDEO 10000
-#define VP8 10001
+#define PAYLOAD_VP8 10001
 
 inline const char *codec2text(int codec) {
 	switch(codec) {

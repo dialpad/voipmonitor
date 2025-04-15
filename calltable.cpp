@@ -2113,7 +2113,6 @@ bool Call::_read_rtp(CallBranch *c_branch, packet_s_process_0 *packetS, int isca
 	
 	*record_dtmf = false;
 	*disable_save = false;
-	*is_video = false;
 	
 	if(opt_vlan_siprtpsame && VLAN_IS_SET(c_branch->vlan) &&
 	   packetS->pid.vlan != c_branch->vlan) {
