@@ -132,7 +132,6 @@ extern int opt_printinsertid;
 extern int opt_cdronlyanswered;
 extern int opt_cdronlyrtp;
 extern int opt_newdir;
-extern int opt_video_recording;
 extern char opt_keycheck[1024];
 extern char opt_vmcodecs_path[1024];
 extern int opt_norecord_dtmf;

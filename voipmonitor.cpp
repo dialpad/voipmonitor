@@ -385,7 +385,6 @@ int opt_cdronlyanswered = 0;
 int opt_cdronlyrtp = 0;
 int opt_pcap_split = 1;
 int opt_newdir = 1;
-int opt_video_recording = 0;
 int opt_spooldir_by_sensor = 0;
 int opt_spooldir_by_sensorname = 0;
 int opt_callslimit = 0;
@@ -7101,7 +7100,6 @@ void cConfig::addConfigItems() {
 				->setPrefixSuffix("\n", ":"));
 			addConfigItem(new FILE_LINE(42321) cConfigItem_integer("pauserecordingdtmf_timeout", &opt_pauserecordingdtmf_timeout));
 			addConfigItem(new FILE_LINE(42322) cConfigItem_yesno("182queuedpauserecording", &opt_182queuedpauserecording));
-			addConfigItem(new FILE_LINE(0) cConfigItem_integer("record_video_payload", &opt_video_recording));
 			addConfigItem((new FILE_LINE(0) cConfigItem_string("energylevelheader", opt_energylevelheader, sizeof(opt_energylevelheader)))
 				->setPrefixSuffix("\n", ":"));
 			addConfigItem(new FILE_LINE(42323) cConfigItem_yesno("vlan_siprtpsame", &opt_vlan_siprtpsame));

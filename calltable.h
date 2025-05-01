@@ -457,8 +457,7 @@ struct ip_port_call_info {
 	enum eTypeAddr {
 		_ta_base,
 		_ta_natalias,
-		_ta_sdp_reverse_ipport,
-		_ta_base_video,
+		_ta_sdp_reverse_ipport
 	};
 	vmIP addr;
 	u_int8_t type_addr;
