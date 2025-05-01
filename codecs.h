@@ -60,7 +60,6 @@
 #define PAYLOAD_TELEVENT 400
 
 #define PAYLOAD_VIDEO 10000
-#define PAYLOAD_VP8 10001
 
 inline const char *codec2text(int codec) {
 	switch(codec) {
@@ -124,8 +123,6 @@ inline const char *codec2text(int codec) {
 	case PAYLOAD_VXOPUS24:
 	case PAYLOAD_VXOPUS48:
 		return "VXOPUS";
-	case PAYLOAD_VP8:
-		return "VP8";
 	case PAYLOAD_TELEVENT:
 		return "TELEPHONE EVENT";
 	case PAYLOAD_MP4ALATM128:
