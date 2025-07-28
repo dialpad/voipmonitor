@@ -4402,6 +4402,9 @@ FileZipHandler::FileZipHandler(int bufferLength, int enableAsyncWrite, eTypeComp
 FileZipHandler::~FileZipHandler() {
 	this->close();
 	if(this->buffer) {
+    syslog(LOG_NOTICE, "kavin: deleting this->buffer (crashing buffer)");
+    syslog(LOG_NOTICE, "kavin: deleting at this memory location %p", (void*)this->buffer);
+
 		delete [] this->buffer;
 	}
 	if(this->tarBuffer) {
@@ -4450,6 +4453,7 @@ bool FileZipHandler::open(eTypeSpoolFile typeSpoolFile, const char *fileName,
 void FileZipHandler::close() {
 	if(this->mode == mode_read) {
 		if(this->okHandle()) {
+      syslog(LOG_NOTICE, "kavin: closing file handles");
 			::close(this->fh);
 			this->fh = 0;
 		}
@@ -4460,6 +4464,7 @@ void FileZipHandler::close() {
 				call->addPFlag(typeFile - 1 + indexFile, Call_abstract::_p_flag_fzh_close);
 			}
 			#endif
+      syslog(LOG_NOTICE, "kavin: flushing buffers");
 			this->_flushBuffer(true);
 			this->_flushTarBuffer();
 		} else  {
