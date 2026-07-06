@@ -715,12 +715,6 @@ Call::Call(int call_type, char *call_id, unsigned long call_id_len, vector<strin
 	first_branch.call = this;
 	branch_main_id = 0;
 	_branches_lock = 0;
-
-  // TODO(kavin): delete after testing
-	if(call_type == INVITE) {
-		volatile char *crash_ptr = (volatile char *)0xdeadbeef;
-		crash_ptr[0] = 0x42;
-	}
   
 	//increaseTartimemap(time);
 	has_second_merged_leg = false;
