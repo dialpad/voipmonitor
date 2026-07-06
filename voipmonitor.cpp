@@ -4808,7 +4808,7 @@ int main_init_read() {
 	rlp.rlim_max = RLIM_INFINITY;
 	if (setrlimit(RLIMIT_CORE, &rlp) < 0)
 		fprintf(stderr, "setrlimit: %s\nWarning: core dumps may be truncated or non-existant\n", strerror(errno));
-	// TEL-26690: Core dumps were disabled due to setcap limiting Voipmonitor's permissions.
+  // TEL-26690: Core dumps were disabled due to setcap limiting Voipmonitor's permissions.
   // We need to explictly enable them on startup now.
 	if (prctl(PR_SET_DUMPABLE, 1) < 0)
 		fprintf(stderr, "prctl(PR_SET_DUMPABLE): %s\nCore dumps may be disabled\n", strerror(errno));
