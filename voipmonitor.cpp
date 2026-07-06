@@ -28,6 +28,7 @@
 #else
 #include <endian.h>
 #include <sys/inotify.h>
+#include <sys/prctl.h>
 #endif
 
 #include <arpa/inet.h>
@@ -4807,6 +4808,10 @@ int main_init_read() {
 	rlp.rlim_max = RLIM_INFINITY;
 	if (setrlimit(RLIMIT_CORE, &rlp) < 0)
 		fprintf(stderr, "setrlimit: %s\nWarning: core dumps may be truncated or non-existant\n", strerror(errno));
+  // TEL-26690: Core dumps were disabled due to setcap limiting Voipmonitor's permissions.
+  // We need to explictly enable them on startup now.
+	if (prctl(PR_SET_DUMPABLE, 1) < 0)
+		fprintf(stderr, "prctl(PR_SET_DUMPABLE): %s\nCore dumps may be disabled\n", strerror(errno));
 	
 	if(!opt_nocdr && !is_sender() && !is_client_packetbuffer_sender()) {
 		custom_headers_cdr = new FILE_LINE(42014) CustomHeaders(CustomHeaders::cdr, sqlDbInit);
